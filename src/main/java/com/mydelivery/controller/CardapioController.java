@@ -1,0 +1,163 @@
+package com.mydelivery.controller;
+
+import java.util.List;
+import java.util.Map;
+
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ResponseStatusException;
+
+import com.mydelivery.dto.cardapio.CategoriaComProdutosResponse;
+import com.mydelivery.dto.cardapio.CategoriaRequest;
+import com.mydelivery.dto.cardapio.ProdutoRequest;
+import com.mydelivery.dto.cardapio.ProdutoResponse;
+import com.mydelivery.model.Categoria;
+import com.mydelivery.model.Restaurante;
+import com.mydelivery.repository.RestauranteRepository;
+import com.mydelivery.service.CardapioService;
+
+import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
+
+@RestController
+@RequiredArgsConstructor
+public class CardapioController {
+
+    private final CardapioService cardapioService;
+    private final RestauranteRepository restauranteRepository;
+
+    // ─── PÚBLICO ──────────────────────────────────────────────────────────
+    @GetMapping("/api/cardapio/{slug}")
+    public ResponseEntity<List<CategoriaComProdutosResponse>> getCardapioPublico(
+            @PathVariable String slug) {
+        // no-cache: garante que alterações de produto/categoria/foto feitas no
+        // painel apareçam no cardápio do cliente sem precisar de Ctrl+F5.
+        return ResponseEntity.ok()
+                .header("Cache-Control", "no-cache, no-store, must-revalidate")
+                .header("Pragma", "no-cache")
+                .body(cardapioService.getCardapioPublico(slug));
+    }
+
+    @GetMapping("/api/restaurante/publico/{slug}/horarios")
+    public ResponseEntity<?> horariosDisponiveis(@PathVariable String slug) {
+        Restaurante r = restauranteRepository.findBySlug(slug)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+
+        return ResponseEntity.ok(Map.of(
+                "ativo",        Boolean.TRUE.equals(r.getAgendamentoAtivo()),
+                "slots",        r.getAgendamentoSlots() != null ? r.getAgendamentoSlots() : List.of(),
+                "intervalo",    r.getAgendamentoIntervalo() != null ? r.getAgendamentoIntervalo() : 30,
+                "antecedencia", r.getAgendamentoAntecedencia() != null ? r.getAgendamentoAntecedencia() : 1
+        ));
+    }
+
+    // ─── PRIVADO ──────────────────────────────────────────────────────────
+    @GetMapping("/api/restaurante/{slug}/categorias")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<List<Categoria>> getCategorias(
+            @PathVariable String slug,
+            @AuthenticationPrincipal String email) {
+        Long restauranteId = getRestauranteId(email);
+        return ResponseEntity.ok(cardapioService.getCategorias(restauranteId));
+    }
+
+    @PostMapping("/api/restaurante/{slug}/categorias")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Categoria> criarCategoria(
+            @PathVariable String slug,
+            @AuthenticationPrincipal String email,
+            @Valid @RequestBody CategoriaRequest request) {
+        Long restauranteId = getRestauranteId(email);
+        return ResponseEntity.ok(cardapioService.criarCategoria(restauranteId, request));
+    }
+
+    @PutMapping("/api/restaurante/{slug}/categorias/{id}")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Categoria> atualizarCategoria(
+            @PathVariable String slug,
+            @AuthenticationPrincipal String email,
+            @PathVariable Long id,
+            @Valid @RequestBody CategoriaRequest request) {
+        Long restauranteId = getRestauranteId(email);
+        return ResponseEntity.ok(cardapioService.atualizarCategoria(restauranteId, id, request));
+    }
+
+    @DeleteMapping("/api/restaurante/{slug}/categorias/{id}")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Void> deletarCategoria(
+            @PathVariable String slug,
+            @AuthenticationPrincipal String email,
+            @PathVariable Long id) {
+        Long restauranteId = getRestauranteId(email);
+        cardapioService.deletarCategoria(restauranteId, id);
+        return ResponseEntity.noContent().build();
+    }
+
+    @GetMapping("/api/restaurante/{slug}/categorias/{categoriaId}/produtos")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<List<ProdutoResponse>> getProdutosPorCategoria(
+            @PathVariable String slug,
+            @AuthenticationPrincipal String email,
+            @PathVariable Long categoriaId) {
+        Long restauranteId = getRestauranteId(email);
+        return ResponseEntity.ok(cardapioService.getProdutosPorCategoria(restauranteId, categoriaId));
+    }
+
+    @GetMapping("/api/restaurante/{slug}/produtos")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<List<ProdutoResponse>> getProdutos(
+            @PathVariable String slug,
+            @AuthenticationPrincipal String email) {
+        Long restauranteId = getRestauranteId(email);
+        return ResponseEntity.ok(cardapioService.getProdutos(restauranteId));
+    }
+
+    @PostMapping("/api/restaurante/{slug}/produtos")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<ProdutoResponse> criarProduto(
+            @PathVariable String slug,
+            @AuthenticationPrincipal String email,
+            @Valid @RequestBody ProdutoRequest request) {
+        Long restauranteId = getRestauranteId(email);
+        return ResponseEntity.ok(cardapioService.criarProduto(restauranteId, request));
+    }
+
+    @PutMapping("/api/restaurante/{slug}/produtos/{id}")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<ProdutoResponse> atualizarProduto(
+            @PathVariable String slug,
+            @AuthenticationPrincipal String email,
+            @PathVariable Long id,
+            @Valid @RequestBody ProdutoRequest request) {
+        Long restauranteId = getRestauranteId(email);
+        return ResponseEntity.ok(cardapioService.atualizarProduto(restauranteId, id, request));
+    }
+
+    @DeleteMapping("/api/restaurante/{slug}/produtos/{id}")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Void> deletarProduto(
+            @PathVariable String slug,
+            @AuthenticationPrincipal String email,
+            @PathVariable Long id) {
+        Long restauranteId = getRestauranteId(email);
+        cardapioService.deletarProduto(restauranteId, id);
+        return ResponseEntity.noContent().build();
+    }
+
+    // ─── Helper ───────────────────────────────────────────────────────────
+    private Long getRestauranteId(String email) {
+        return restauranteRepository
+                .findByUsuarioEmail(email)
+                .orElseThrow(() -> new RuntimeException("Restaurante não encontrado"))
+                .getId();
+    }
+}

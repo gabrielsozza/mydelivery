@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./mvnw -q compile)",
+      "Bash(grep -nB1 -A8 \"\\\\.skeleton-card\\\\|\\\\.skeleton \" /Users/gabriel.psouza/Desktop/Mydelivery/carrinhos.html)",
+      "Bash(grep -n \"function fmt\\\\|R\\\\$ \" /Users/gabriel.psouza/Desktop/Mydelivery/pedidos.html)",
+      "Bash(grep -nE \"cliente: \\\\{ nome: nome, telefone:|telefoneCliente: tel\" /Users/gabriel.psouza/Desktop/Mydelivery/client/cardapio-client.html)",
+      "Bash(xargs -n1 basename)",
+      "Bash(echo \"EXIT: $?\")",
+      "Bash(awk '/^    <script>$|^<script>$/{c++; print NR\" SCRIPT_\"c\" START\"} /^    <\\\\/script>$|^<\\\\/script>$/{print NR\" SCRIPT END\"}' /Users/gabriel.psouza/Desktop/Mydelivery/client/cardapio-client.html)",
+      "Bash(javac --version)",
+      "Bash(grep -nA 3 'href=\"cardapio.html\"' /Users/gabriel.psouza/Desktop/Mydelivery/pedidos.html /Users/gabriel.psouza/Desktop/Mydelivery/configuracoes.html /Users/gabriel.psouza/Desktop/Mydelivery/cardapio.html /Users/gabriel.psouza/Desktop/Mydelivery/carrinhos.html /Users/gabriel.psouza/Desktop/Mydelivery/fidelidade.html /Users/gabriel.psouza/Desktop/Mydelivery/cupons.html /Users/gabriel.psouza/Desktop/Mydelivery/estoque.html)",
+      "Bash(timeout 60 ./mvnw -q spring-boot:run)",
+      "Read(//private/tmp/**)",
+      "Bash(pkill -9 -f \"spring-boot:run\")",
+      "Bash(pkill -9 -f \"mvnw\")",
+      "Bash(lsof -ti:8080)",
+      "Bash(xargs -r kill -9)",
+      "Bash(./mvnw -q package -DskipTests)",
+      "Bash(echo \"PKG_EXIT: $?\")",
+      "Bash(/usr/bin/curl -sS -i -X POST http://localhost:8080/api/upload/imagem -F file=@/tmp/test.png)",
+      "Bash(CURL=/usr/bin/curl *)"
+    ]
+  }
+}

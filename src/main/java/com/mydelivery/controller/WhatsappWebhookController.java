@@ -1,0 +1,146 @@
+package com.mydelivery.controller;
+
+import java.util.Map;
+
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RestController;
+
+import com.mydelivery.model.WhatsappInstance;
+import com.mydelivery.service.whatsapp.WhatsappBotService;
+import com.mydelivery.service.whatsapp.WhatsappService;
+
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+
+/**
+ * Recebe eventos da Evolution API.
+ *
+ * Eventos tratados:
+ *  - MESSAGES_UPSERT   → mensagem recebida; passa pro WhatsappBotService.
+ *  - CONNECTION_UPDATE → state "open"/"close" muda status local.
+ *  - QRCODE_UPDATED    → ignorado (frontend faz polling em /status).
+ *
+ * Segurança: endpoint público porque Evolution não tem como apresentar JWT.
+ * O caminho inclui {instanceName} — só processamos se acharmos uma instância
+ * local com esse nome. Para hardening em prod, considerar IP allowlist da Evolution.
+ */
+@Slf4j
+@RestController
+@RequiredArgsConstructor
+public class WhatsappWebhookController {
+
+    private final WhatsappService whatsappService;
+    private final WhatsappBotService botService;
+
+    @PostMapping("/api/webhooks/whatsapp/{instanceName}")
+    public ResponseEntity<Void> receber(
+            @PathVariable String instanceName,
+            @RequestBody(required = false) Map<String, Object> payload) {
+
+        if (payload == null) {
+            log.debug("[WA-Webhook] {} sem body", instanceName);
+            return ResponseEntity.ok().build();
+        }
+
+        WhatsappInstance inst = whatsappService.buscarPorNome(instanceName);
+        if (inst == null) {
+            log.warn("[WA-Webhook] instância {} não encontrada localmente — descartando evento", instanceName);
+            return ResponseEntity.ok().build();
+        }
+
+        String event = strDe(payload, "event");
+        log.debug("[WA-Webhook] {} evento={}", instanceName, event);
+
+        try {
+            switch (event == null ? "" : event) {
+                case "messages.upsert", "MESSAGES_UPSERT" -> tratarMensagem(inst, payload);
+                case "connection.update", "CONNECTION_UPDATE" -> tratarConexao(inst, payload);
+                default -> { /* outros eventos ignorados */ }
+            }
+        } catch (Exception e) {
+            log.error("[WA-Webhook] Erro tratando evento {}: {}", event, e.getMessage(), e);
+            // Devolve 200 mesmo assim — Evolution não precisa retry pra erros nossos
+        }
+
+        return ResponseEntity.ok().build();
+    }
+
+    @SuppressWarnings("unchecked")
+    private void tratarMensagem(WhatsappInstance inst, Map<String, Object> payload) {
+        Object data = payload.get("data");
+        if (!(data instanceof Map<?, ?> d)) return;
+        Map<String, Object> dataMap = (Map<String, Object>) d;
+
+        // Evolution envia "key": { "remoteJid": "...", "fromMe": bool, "id": "..." }
+        Object key = dataMap.get("key");
+        boolean fromMe = false;
+        String remoteJid = null;
+        if (key instanceof Map<?, ?> k) {
+            Map<String, Object> kMap = (Map<String, Object>) k;
+            fromMe = Boolean.TRUE.equals(kMap.get("fromMe"));
+            Object rj = kMap.get("remoteJid");
+            if (rj != null) remoteJid = rj.toString();
+        }
+        if (fromMe) return; // Não processa mensagens que NÓS enviamos
+        if (remoteJid == null) return;
+
+        // Texto: pode estar em message.conversation ou message.extendedTextMessage.text
+        String texto = extrairTexto(dataMap);
+        if (texto == null || texto.isBlank()) return;
+
+        // Ignora grupos (remoteJid termina em @g.us)
+        if (remoteJid.endsWith("@g.us")) {
+            log.debug("[WA-Webhook] mensagem de grupo ignorada");
+            return;
+        }
+
+        log.info("[WA-Webhook] msg recebida — instância={}, de={}***, len={}",
+                inst.getInstanceName(),
+                remoteJid.length() > 5 ? remoteJid.substring(0, 5) : remoteJid,
+                texto.length());
+
+        botService.processar(inst, remoteJid, texto);
+    }
+
+    @SuppressWarnings("unchecked")
+    private void tratarConexao(WhatsappInstance inst, Map<String, Object> payload) {
+        Object data = payload.get("data");
+        if (!(data instanceof Map<?, ?> d)) return;
+        Map<String, Object> dataMap = (Map<String, Object>) d;
+        String state = strDe(dataMap, "state");
+
+        if ("open".equalsIgnoreCase(state)) {
+            // Tenta extrair número conectado (pode vir em wuid/owner/me)
+            String phone = strDe(dataMap, "wuid");
+            if (phone == null) phone = strDe(dataMap, "owner");
+            if (phone != null) phone = phone.replaceAll("[^0-9]", "");
+            whatsappService.marcarConectada(inst, phone);
+        } else if ("close".equalsIgnoreCase(state)) {
+            whatsappService.marcarDesconectada(inst);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private String extrairTexto(Map<String, Object> dataMap) {
+        Object msg = dataMap.get("message");
+        if (!(msg instanceof Map<?, ?> m)) return null;
+        Map<String, Object> mMap = (Map<String, Object>) m;
+        Object conv = mMap.get("conversation");
+        if (conv != null) return conv.toString();
+        Object ext = mMap.get("extendedTextMessage");
+        if (ext instanceof Map<?, ?> e) {
+            Object txt = ((Map<String, Object>) e).get("text");
+            if (txt != null) return txt.toString();
+        }
+        return null;
+    }
+
+    private String strDe(Map<String, Object> m, String k) {
+        if (m == null) return null;
+        Object v = m.get(k);
+        return v == null ? null : v.toString();
+    }
+}

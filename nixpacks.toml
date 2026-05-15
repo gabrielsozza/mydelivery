@@ -1,0 +1,11 @@
+# Railway/Nixpacks build config — força Java 21 (Maven detecta sozinho).
+# https://nixpacks.com/docs/providers/java
+
+[phases.setup]
+nixPkgs = ["maven", "jdk21"]
+
+[phases.build]
+cmds = ["./mvnw -B -DskipTests clean package"]
+
+[start]
+cmd = "java -Dserver.address=0.0.0.0 -Dserver.port=$PORT -jar target/mydelivery-api-0.0.1-SNAPSHOT.jar"

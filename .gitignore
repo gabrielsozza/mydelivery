@@ -35,5 +35,22 @@ build/
 # Credenciais locais — nunca commitar
 .env
 .env.local
+.env.*
+!.env.example
 application-local.properties
+application-*-local.properties
 src/main/resources/application-local.properties
+src/main/resources/application-*-local.properties
+
+# Uploads locais (legacy — Cloudinary é o storage real)
+uploads/
+*.log
+logs/
+
+# macOS / OS
+.DS_Store
+Thumbs.db
+*.swp
+
+# Claude Code working files
+.claude/

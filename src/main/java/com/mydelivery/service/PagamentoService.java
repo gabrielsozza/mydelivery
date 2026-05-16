@@ -143,10 +143,20 @@ public class PagamentoService {
         String firstName = partesNome[0];
         String lastName = partesNome.length > 1 ? partesNome[1] : partesNome[0];
 
+        // CPF é obrigatório no MP pra PIX no Brasil — sem ele retorna 400.
+        String cpfPagador = req.getPayerCpf() == null ? null : req.getPayerCpf().replaceAll("\\D", "");
+        if (cpfPagador == null || cpfPagador.length() != 11) {
+            throw new RuntimeException("CPF do pagador é obrigatório pra PIX (Mercado Pago Brasil).");
+        }
+
         MpPayer payer = MpPayer.builder()
                 .email(email)
                 .firstName(firstName)
                 .lastName(lastName)
+                .identification(MpPayer.Identification.builder()
+                        .type("CPF")
+                        .number(cpfPagador)
+                        .build())
                 .build();
 
         String dateOfExpiration = formatarExpiracaoMp(expiraEm);

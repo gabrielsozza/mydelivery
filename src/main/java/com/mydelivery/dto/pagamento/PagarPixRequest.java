@@ -20,4 +20,7 @@ public class PagarPixRequest {
 
     /** Nome do pagador (display only). */
     private String payerNome;
+
+    /** CPF do pagador (obrigatório pelo MP pra PIX no Brasil — só números ou com máscara). */
+    private String payerCpf;
 }

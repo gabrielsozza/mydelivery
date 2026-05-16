@@ -69,7 +69,10 @@ public class EvolutionClient {
                 "webhook", Map.of(
                         "url", webhookUrl,
                         "byEvents", false,
-                        "base64", false,
+                        // base64=true é OBRIGATÓRIO na v2.1.x: sem isso o
+                        // QRCODE_UPDATED chega só com o texto do QR, sem
+                        // a imagem base64 que o frontend precisa renderizar.
+                        "base64", true,
                         "events", java.util.List.of(
                                 "MESSAGES_UPSERT",
                                 "CONNECTION_UPDATE",

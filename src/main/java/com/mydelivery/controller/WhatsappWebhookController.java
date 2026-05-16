@@ -21,7 +21,7 @@ import lombok.extern.slf4j.Slf4j;
  * Eventos tratados:
  *  - MESSAGES_UPSERT   → mensagem recebida; passa pro WhatsappBotService.
  *  - CONNECTION_UPDATE → state "open"/"close" muda status local.
- *  - QRCODE_UPDATED    → ignorado (frontend faz polling em /status).
+ *  - QRCODE_UPDATED    → QR base64 vem aqui na Evolution v2.1.x; salva pro frontend ler.
  *
  * Segurança: endpoint público porque Evolution não tem como apresentar JWT.
  * O caminho inclui {instanceName} — só processamos se acharmos uma instância
@@ -58,6 +58,7 @@ public class WhatsappWebhookController {
             switch (event == null ? "" : event) {
                 case "messages.upsert", "MESSAGES_UPSERT" -> tratarMensagem(inst, payload);
                 case "connection.update", "CONNECTION_UPDATE" -> tratarConexao(inst, payload);
+                case "qrcode.updated", "QRCODE_UPDATED" -> tratarQrCode(inst, payload);
                 default -> { /* outros eventos ignorados */ }
             }
         } catch (Exception e) {
@@ -103,6 +104,46 @@ public class WhatsappWebhookController {
                 texto.length());
 
         botService.processar(inst, remoteJid, texto);
+    }
+
+    /**
+     * Evolution v2.1.x envia o QR Code via webhook. Payload típico:
+     *   { "event": "qrcode.updated", "data": { "qrcode": { "base64": "data:image/png;base64,..." } } }
+     * ou em algumas variantes diretamente:
+     *   { "event": "qrcode.updated", "data": { "base64": "..." } }
+     */
+    @SuppressWarnings("unchecked")
+    private void tratarQrCode(WhatsappInstance inst, Map<String, Object> payload) {
+        Object data = payload.get("data");
+        if (!(data instanceof Map<?, ?> d)) return;
+        Map<String, Object> dataMap = (Map<String, Object>) d;
+
+        // Tenta data.qrcode.base64 primeiro (formato v2.1.x)
+        String qr = null;
+        Object qrcode = dataMap.get("qrcode");
+        if (qrcode instanceof Map<?, ?> qm) {
+            Object b64 = ((Map<String, Object>) qm).get("base64");
+            if (b64 != null) qr = b64.toString();
+            if (qr == null) {
+                Object code = ((Map<String, Object>) qm).get("code");
+                if (code != null) qr = code.toString();
+            }
+        }
+        // Fallback: data.base64 ou data.code (formato antigo)
+        if (qr == null) {
+            Object b64 = dataMap.get("base64");
+            if (b64 != null) qr = b64.toString();
+        }
+        if (qr == null) {
+            Object code = dataMap.get("code");
+            if (code != null) qr = code.toString();
+        }
+
+        if (qr != null) {
+            whatsappService.salvarQrCode(inst, qr);
+        } else {
+            log.warn("[WA-Webhook] QRCODE_UPDATED chegou sem base64/code: {}", payload.keySet());
+        }
     }
 
     @SuppressWarnings("unchecked")

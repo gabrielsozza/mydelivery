@@ -57,16 +57,34 @@ public class WhatsappService {
             Map<String, Object> resp = evolutionClient.conectar(inst.getInstanceName());
             String qr = extrairQrCode(resp);
             if (qr != null) {
+                // Evolution v1.x devolveu QR direto no response
                 inst.setQrCode(qr);
                 inst.setQrExpiraEm(LocalDateTime.now().plusSeconds(60));
-                inst.setStatus(WhatsappInstance.Status.AGUARDANDO_QR);
             }
+            // Em Evolution v2.1.x o /connect responde {"count":0} sem QR — ele chega
+            // depois via webhook QRCODE_UPDATED. Marcamos AGUARDANDO_QR de qualquer
+            // forma pra o frontend começar o polling em /status.
+            inst.setStatus(WhatsappInstance.Status.AGUARDANDO_QR);
         } catch (RuntimeException e) {
             log.error("[WhatsApp] Erro ao gerar QR pra {}: {}", inst.getInstanceName(), e.getMessage());
             inst.setStatus(WhatsappInstance.Status.ERRO);
         }
 
         return repo.save(inst);
+    }
+
+    /**
+     * Salva QR Code recebido via webhook QRCODE_UPDATED da Evolution v2.1.x.
+     * Chamado pelo WhatsappWebhookController quando o evento chega.
+     */
+    @Transactional
+    public void salvarQrCode(WhatsappInstance inst, String qrBase64) {
+        if (qrBase64 == null || qrBase64.isBlank()) return;
+        inst.setQrCode(qrBase64);
+        inst.setQrExpiraEm(LocalDateTime.now().plusSeconds(60));
+        inst.setStatus(WhatsappInstance.Status.AGUARDANDO_QR);
+        repo.save(inst);
+        log.info("[WhatsApp] QR atualizado via webhook pra {}", inst.getInstanceName());
     }
 
     /** Polling do frontend pra detectar conexão. Atualiza status local antes de devolver. */

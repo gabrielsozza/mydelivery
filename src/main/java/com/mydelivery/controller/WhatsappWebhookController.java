@@ -52,7 +52,8 @@ public class WhatsappWebhookController {
         }
 
         String event = strDe(payload, "event");
-        log.debug("[WA-Webhook] {} evento={}", instanceName, event);
+        // TEMP: log INFO pra diagnostico v2.1.x. Voltar pra debug depois.
+        log.info("[WA-Webhook] {} evento={} keys={}", instanceName, event, payload.keySet());
 
         try {
             switch (event == null ? "" : event) {
@@ -115,6 +116,10 @@ public class WhatsappWebhookController {
     @SuppressWarnings("unchecked")
     private void tratarQrCode(WhatsappInstance inst, Map<String, Object> payload) {
         Object data = payload.get("data");
+        // TEMP log diagnóstico pra ver estrutura real do payload Evolution v2.1.x
+        log.info("[WA-Webhook][QR] data type={} content={}",
+                data == null ? "null" : data.getClass().getSimpleName(),
+                data instanceof Map<?, ?> m ? m.keySet() : data);
         if (!(data instanceof Map<?, ?> d)) return;
         Map<String, Object> dataMap = (Map<String, Object>) d;
 

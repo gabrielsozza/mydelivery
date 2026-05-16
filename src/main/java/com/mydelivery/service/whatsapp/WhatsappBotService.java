@@ -138,7 +138,7 @@ public class WhatsappBotService {
 
     private String montarLinkCardapio(Restaurante r) {
         // Link público do cardápio. Em prod, app.url + ?slug=.
-        return "https://mydelivery.com.br/?slug=" + r.getSlug();
+        return "https://mydeliveryfood.com.br/" + r.getSlug();
     }
 
     private String montarRespostaHorario(Restaurante r) {

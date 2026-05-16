@@ -228,13 +228,24 @@ public class WhatsappService {
         return direct != null ? direct.toString() : null;
     }
 
+    @SuppressWarnings("unchecked")
     private String extrairQrCode(Map<String, Object> resp) {
         if (resp == null) return null;
-        // Evolution devolve em "base64" ou "code" dependendo da versão
+        // Evolution v1.x e algumas v2.x devolvem no root
         Object b64 = resp.get("base64");
         if (b64 != null) return b64.toString();
         Object code = resp.get("code");
-        return code != null ? code.toString() : null;
+        if (code != null) return code.toString();
+        // Evolution v2.1.x envolve dentro de um objeto "qrcode"
+        Object qrcode = resp.get("qrcode");
+        if (qrcode instanceof Map<?, ?> m) {
+            Map<String, Object> q = (Map<String, Object>) m;
+            Object qb64 = q.get("base64");
+            if (qb64 != null) return qb64.toString();
+            Object qcode = q.get("code");
+            if (qcode != null) return qcode.toString();
+        }
+        return null;
     }
 
     @SuppressWarnings("unchecked")

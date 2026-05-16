@@ -166,6 +166,16 @@ public class WhatsappService {
 
     @Transactional
     public void marcarDesconectada(WhatsappInstance inst) {
+        // Evolution v2.1.x manda CONNECTION_UPDATE com state=close logo apos
+        // criar a instancia (so dizendo "nao pareado ainda"). Esse evento
+        // chega ANTES do QRCODE_UPDATED e nao deve sobrescrever o estado de
+        // espera do QR. So marcamos DESCONECTADA se realmente estavamos
+        // CONECTADA antes (cliente saiu do WhatsApp).
+        if (inst.getStatus() != WhatsappInstance.Status.CONECTADA) {
+            log.debug("[WhatsApp] Ignorando close em {} (status atual={}, nao estava pareada)",
+                    inst.getInstanceName(), inst.getStatus());
+            return;
+        }
         inst.setStatus(WhatsappInstance.Status.DESCONECTADA);
         inst.setQrCode(null);
         inst.setQrExpiraEm(null);

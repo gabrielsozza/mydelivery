@@ -53,7 +53,9 @@ public class WhatsappWebhookController {
 
         String event = strDe(payload, "event");
         // TEMP: log INFO pra diagnostico v2.1.x. Voltar pra debug depois.
-        log.info("[WA-Webhook] {} evento={} keys={}", instanceName, event, payload.keySet());
+        Object dataDbg = payload.get("data");
+        log.info("[WA-Webhook] {} evento={} data-keys={}", instanceName, event,
+                dataDbg instanceof Map<?, ?> mdbg ? mdbg.keySet() : (dataDbg == null ? "null" : dataDbg.getClass().getSimpleName()));
 
         try {
             switch (event == null ? "" : event) {

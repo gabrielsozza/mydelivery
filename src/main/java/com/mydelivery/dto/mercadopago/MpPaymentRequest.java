@@ -1,6 +1,7 @@
 package com.mydelivery.dto.mercadopago;
 
 import java.math.BigDecimal;
+import java.util.Map;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
@@ -60,4 +61,13 @@ public class MpPaymentRequest {
     private String dateOfExpiration;
 
     private MpPayer payer;
+
+    /**
+     * Dados adicionais usados pelo MOTOR ANTIFRAUDE do MP. Quanto mais dados aqui,
+     * MENOR o risco de "high_risk" rejection. Estrutura típica:
+     *   { "items": [...], "payer": {...}, "shipments": {...} }
+     * Usamos Map em vez de DTO tipado porque a estrutura é grande e raramente muda.
+     */
+    @JsonProperty("additional_info")
+    private Map<String, Object> additionalInfo;
 }

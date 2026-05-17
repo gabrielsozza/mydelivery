@@ -5,6 +5,7 @@ import java.security.SecureRandom;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.Map;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -247,6 +248,10 @@ public class PagamentoService {
                     + "@mydelivery.app";
         }
 
+        // ── additional_info pro motor antifraude do MP ──
+        // Sem isso, MP rejeita por "high_risk" mais facilmente (cartão virtual, etc).
+        Map<String, Object> additionalInfo = montarAdditionalInfoCartao(pedido, req);
+
         MpPaymentRequest body = MpPaymentRequest.builder()
                 .transactionAmount(pedido.getTotal())
                 .paymentMethodId(req.getPaymentMethodId())
@@ -262,6 +267,7 @@ public class PagamentoService {
                                 .number(req.getPayerDocNumero().replaceAll("\\D", ""))
                                 .build())
                         .build())
+                .additionalInfo(additionalInfo)
                 .build();
 
         MpPaymentResponse resp = mpClient.criarPagamento(cfg.getMpAccessToken(), idempotencyKey, body);
@@ -316,6 +322,90 @@ public class PagamentoService {
             throw new RuntimeException("Restaurante não configurou as credenciais do Mercado Pago");
         }
         return cfg;
+    }
+
+    /**
+     * Monta o additional_info do MP pra pagamento com cartão.
+     *
+     * Inclui: lista de itens (id, título, qtd, preço), dados estendidos do pagador
+     * (nome, telefone, doc, data de cadastro), e endereço de entrega quando disponível.
+     *
+     * O motor antifraude do MP usa esses campos pra calcular o risk score — quanto
+     * mais dados aqui, menor a chance de "high_risk" rejection.
+     * Doc: https://www.mercadopago.com.br/developers/pt/docs/checkout-api/integration-configuration/integration-via-cardform/improve-approval-rates
+     */
+    private Map<String, Object> montarAdditionalInfoCartao(
+            com.mydelivery.model.Pedido pedido,
+            com.mydelivery.dto.pagamento.PagarCartaoRequest req) {
+
+        Map<String, Object> info = new java.util.HashMap<>();
+
+        // ── items ──
+        java.util.List<Map<String, Object>> items = new java.util.ArrayList<>();
+        if (pedido.getItens() != null) {
+            for (var it : pedido.getItens()) {
+                Map<String, Object> item = new java.util.HashMap<>();
+                item.put("id", it.getProduto() != null ? String.valueOf(it.getProduto().getId()) : "item");
+                item.put("title", it.getProduto() != null ? it.getProduto().getNome() : "Item do pedido");
+                item.put("description", "Pedido #" + pedido.getId());
+                item.put("category_id", "food_and_drink");
+                item.put("quantity", it.getQuantidade() != null ? it.getQuantidade() : 1);
+                item.put("unit_price", it.getPrecoUnitario() != null ? it.getPrecoUnitario() : pedido.getTotal());
+                items.add(item);
+            }
+        }
+        if (items.isEmpty()) {
+            // Sempre manda pelo menos 1 item (regra do MP)
+            Map<String, Object> fallback = new java.util.HashMap<>();
+            fallback.put("id", "pedido-" + pedido.getId());
+            fallback.put("title", "Pedido #" + pedido.getId());
+            fallback.put("category_id", "food_and_drink");
+            fallback.put("quantity", 1);
+            fallback.put("unit_price", pedido.getTotal());
+            items.add(fallback);
+        }
+        info.put("items", items);
+
+        // ── payer estendido (alem do basico no payer.identification) ──
+        Map<String, Object> payerExt = new java.util.HashMap<>();
+        if (pedido.getCliente() != null) {
+            var cli = pedido.getCliente();
+            if (cli.getNome() != null && !cli.getNome().isBlank()) {
+                String[] partes = cli.getNome().trim().split("\\s+", 2);
+                payerExt.put("first_name", partes[0]);
+                if (partes.length > 1) payerExt.put("last_name", partes[1]);
+            }
+            if (cli.getTelefone() != null && !cli.getTelefone().isBlank()) {
+                String tel = cli.getTelefone().replaceAll("\\D", "");
+                if (tel.length() >= 10) {
+                    Map<String, Object> phone = new java.util.HashMap<>();
+                    phone.put("area_code", tel.substring(0, 2));
+                    phone.put("number", tel.substring(2));
+                    payerExt.put("phone", phone);
+                }
+            }
+            if (req.getPayerDocNumero() != null) {
+                Map<String, Object> ident = new java.util.HashMap<>();
+                ident.put("type", req.getPayerDocTipo() != null ? req.getPayerDocTipo() : "CPF");
+                ident.put("number", req.getPayerDocNumero().replaceAll("\\D", ""));
+                payerExt.put("registration_date",
+                        java.time.LocalDateTime.now().minusDays(1).toString());
+            }
+        }
+        if (!payerExt.isEmpty()) info.put("payer", payerExt);
+
+        // ── shipments (endereço de entrega) ──
+        // Pedido só guarda o endereço como string única — usamos como street_name.
+        // Mesmo assim ajuda o MP a entender que é entrega física (vs. digital).
+        if (pedido.getEnderecoEntrega() != null && !pedido.getEnderecoEntrega().isBlank()) {
+            Map<String, Object> shipments = new java.util.HashMap<>();
+            Map<String, Object> receiver = new java.util.HashMap<>();
+            receiver.put("street_name", pedido.getEnderecoEntrega());
+            shipments.put("receiver_address", receiver);
+            info.put("shipments", shipments);
+        }
+
+        return info;
     }
 
     /** Retorna o primeiro valor não-blank, ou null se todos forem null/blank. */

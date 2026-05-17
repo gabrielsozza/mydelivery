@@ -283,6 +283,10 @@ public class PagamentoService {
                 .valor(pedido.getTotal())
                 .build();
 
+        // Log diagnóstico — captura o que MP realmente respondeu pra cada cartão.
+        log.info("[CARTAO] MP respondeu — pedido #{}, mpPaymentId={}, status={}, statusDetail={}, paymentMethodId={}",
+                pedido.getId(), resp.getId(), resp.getStatus(), resp.getStatusDetail(), req.getPaymentMethodId());
+
         p.setMetodo(Pedido.FormaPagamento.CARTAO_CREDITO);
         p.setMpPaymentId(resp.getId());
         p.setMpIdempotencyKey(idempotencyKey);

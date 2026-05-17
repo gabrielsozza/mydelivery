@@ -70,4 +70,20 @@ public class MpPaymentRequest {
      */
     @JsonProperty("additional_info")
     private Map<String, Object> additionalInfo;
+
+    /**
+     * 3-D Secure (3DS) — verificação adicional via banco emissor (OTP/biometria).
+     * Valores: "optional" (recomendado), "mandatory", null (desligado).
+     * "optional" deixa MP escolher: alto risco vira "pending_challenge", baixo risco passa direto.
+     * Aumenta drasticamente a taxa de aprovação porque transfere a verificação pro banco.
+     */
+    @JsonProperty("three_d_secure_mode")
+    private String threeDSecureMode;
+
+    /**
+     * Texto que aparece na fatura do cartão do cliente (máx ~22 chars).
+     * Ajuda na identificação do estabelecimento e reduz chargebacks por desconhecimento.
+     */
+    @JsonProperty("statement_descriptor")
+    private String statementDescriptor;
 }

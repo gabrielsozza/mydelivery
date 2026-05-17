@@ -268,6 +268,11 @@ public class PagamentoService {
                                 .build())
                         .build())
                 .additionalInfo(additionalInfo)
+                // 3DS optional: MP roteia high-risk pra verificação do banco (OTP/biometria)
+                // em vez de rejeitar direto. Sobe MUITO a taxa de aprovação.
+                .threeDSecureMode("optional")
+                // Aparece na fatura do cartão do cliente — reduz chargebacks por desconhecimento.
+                .statementDescriptor("MYDELIVERY")
                 .build();
 
         MpPaymentResponse resp = mpClient.criarPagamento(cfg.getMpAccessToken(), idempotencyKey, body);

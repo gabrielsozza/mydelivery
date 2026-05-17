@@ -273,6 +273,8 @@ public class PagamentoService {
                 .threeDSecureMode("optional")
                 // Aparece na fatura do cartão do cliente — reduz chargebacks por desconhecimento.
                 .statementDescriptor("MYDELIVERY")
+                // Recomendado pelo MP pra delivery — decisão instantânea, sem pending limbo.
+                .binaryMode(true)
                 .build();
 
         MpPaymentResponse resp = mpClient.criarPagamento(cfg.getMpAccessToken(), idempotencyKey, body);

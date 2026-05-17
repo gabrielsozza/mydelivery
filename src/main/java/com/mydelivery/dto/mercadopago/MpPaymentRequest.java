@@ -86,4 +86,12 @@ public class MpPaymentRequest {
      */
     @JsonProperty("statement_descriptor")
     private String statementDescriptor;
+
+    /**
+     * Decisão binária: true = MP aprova/rejeita IMEDIATAMENTE, sem "pending".
+     * Recomendado pra delivery (cliente espera resposta, não quer payment em limbo).
+     * Trade-off: alguns pagamentos que ficariam pending pra revisão viram rejeição direta.
+     */
+    @JsonProperty("binary_mode")
+    private Boolean binaryMode;
 }

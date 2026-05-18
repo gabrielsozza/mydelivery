@@ -67,11 +67,14 @@ public class EvolutionClient {
         body.put("qrcode", true);
         body.put("integration", "WHATSAPP-BAILEYS");
         body.put("webhook", Map.of(
+                // enabled=true é OBRIGATÓRIO na v2.3.x: sem essa flag, a Evolution
+                // simplesmente não persiste o webhook (silencioso, sem erro), e
+                // mensagens recebidas nunca chegam no backend.
+                "enabled", true,
                 "url", webhookUrl,
                 "byEvents", false,
-                // base64=true é OBRIGATÓRIO na v2.1.x: sem isso o
-                // QRCODE_UPDATED chega só com o texto do QR, sem
-                // a imagem base64 que o frontend precisa renderizar.
+                // base64=true é OBRIGATÓRIO: sem isso o QRCODE_UPDATED chega só
+                // com o texto do QR, sem a imagem base64 que o frontend precisa.
                 "base64", true,
                 "events", java.util.List.of(
                         "MESSAGES_UPSERT",

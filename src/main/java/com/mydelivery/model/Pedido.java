@@ -14,6 +14,12 @@ public class Pedido {
     @ManyToOne @JoinColumn(name="restaurante_id",nullable=false) private Restaurante restaurante;
     @ManyToOne @JoinColumn(name="cliente_id") private Cliente cliente;
     @ManyToOne(fetch=FetchType.LAZY) @JoinColumn(name="entregador_id") private Entregador entregador;
+
+    // ── Mesa (presencial) ──
+    // Quando tipo=MESA, pedido fica vinculado à mesa física e ao nome digitado
+    // pelo cliente. Pedidos delivery/retirada deixam ambos null.
+    @ManyToOne(fetch=FetchType.LAZY) @JoinColumn(name="mesa_id") private Mesa mesa;
+    @Column(name="nome_cliente_mesa", length=80) private String nomeClienteMesa;
     // length=30 garante que AGUARDANDO_PAGAMENTO (20 chars) caiba. ddl-auto=update
     // não amplia colunas existentes — pra bancos já criados, ver MigracaoEnumLengthJob.
     @Enumerated(EnumType.STRING) @Column(nullable=false, length=30) private Status status;

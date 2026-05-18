@@ -22,6 +22,7 @@ import com.mydelivery.model.Restaurante;
 import com.mydelivery.repository.ClienteRepository;
 import com.mydelivery.repository.ConfiguracaoRestauranteRepository;
 import com.mydelivery.repository.EntregadorRepository;
+import com.mydelivery.repository.MesaRepository;
 import com.mydelivery.repository.PedidoRepository;
 import com.mydelivery.repository.ProdutoRepository;
 import com.mydelivery.repository.RestauranteRepository;
@@ -38,6 +39,7 @@ public class PedidoService {
     private final ClienteRepository clienteRepository;
     private final ConfiguracaoRestauranteRepository configuracaoRepository;
     private final EntregadorRepository entregadorRepository;
+    private final MesaRepository mesaRepository;
     private final CarrinhoAbandonadoService carrinhoAbandonadoService;
     private final CupomService cupomService;
     private final FidelidadeService fidelidadeService;
@@ -68,10 +70,8 @@ public class PedidoService {
                 clienteRepository.save(cliente);
             }
         }
-        // ── Cálculo da taxa por bairro ──
-        // Pedido delivery: lê o bairro do endereço do cliente e busca a taxa
-        // configurada pra ele. Se o bairro não estiver na lista, recusa o pedido
-        // — front já deveria ter bloqueado, mas validamos no backend também.
+        // ── Taxa de entrega (só DELIVERY) ──
+        // Mesa e retirada não cobram taxa. Delivery faz lookup por bairro.
         BigDecimal taxaEntrega = BigDecimal.ZERO;
         if ("delivery".equalsIgnoreCase(request.getModo())) {
             String bairroCliente = request.getEndereco() == null ? null
@@ -81,9 +81,30 @@ public class PedidoService {
             }
             taxaEntrega = buscarTaxaPorBairro(restaurante, bairroCliente);
             if (taxaEntrega == null) {
-                // Bairro fora da área — mesma mensagem do front pra consistência
                 throw new RuntimeException("Desculpe, nossa loja ainda não entrega nessa região.");
             }
+        }
+
+        // ── Mesa (presencial) ──
+        // Resolve a mesa via slug que vem no endereço, e o nome do cliente que
+        // assina a comanda. Não criamos registro em Cliente (mesa não tem telefone).
+        com.mydelivery.model.Mesa mesa = null;
+        String nomeClienteMesa = null;
+        if ("mesa".equalsIgnoreCase(request.getModo())) {
+            String mesaSlug = request.getEndereco() == null ? null
+                    : request.getEndereco().getOrDefault("mesa", null);
+            if (mesaSlug == null || mesaSlug.isBlank()) {
+                throw new RuntimeException("Mesa não identificada.");
+            }
+            mesa = mesaRepository.findByRestauranteIdAndSlug(restaurante.getId(), mesaSlug)
+                    .orElseThrow(() -> new RuntimeException("Mesa não encontrada."));
+            nomeClienteMesa = request.getCliente() != null ? request.getCliente().getNome() : null;
+            if (nomeClienteMesa == null || nomeClienteMesa.isBlank()) {
+                throw new RuntimeException("Informe seu nome pra abrir a comanda da mesa.");
+            }
+            // Para pedido de mesa NÃO criamos/buscamos cliente — fica null no Pedido.
+            // O nome digitado fica em nome_cliente_mesa pra agrupar comandas.
+            cliente = null;
         }
         Pedido.Tipo tipo = switch (request.getModo().toLowerCase()) {
             case "delivery" ->
@@ -119,14 +140,18 @@ public class PedidoService {
         String enderecoStr = null;
         if (request.getEndereco() != null && !request.getEndereco().isEmpty()) {
             if ("delivery".equalsIgnoreCase(request.getModo())) {
-                enderecoStr = request.getEndereco().getOrDefault("rua", "") + ", " + request.getEndereco().getOrDefault("numero", "") + " - " + request.getEndereco().getOrDefault("bairro", ""); 
-            }else if ("mesa".equalsIgnoreCase(request.getModo())) {
-                enderecoStr = "Mesa " + request.getEndereco().getOrDefault("mesa", "");
+                enderecoStr = request.getEndereco().getOrDefault("rua", "") + ", " + request.getEndereco().getOrDefault("numero", "") + " - " + request.getEndereco().getOrDefault("bairro", "");
+            } else if ("mesa".equalsIgnoreCase(request.getModo())) {
+                // Mesa real (mesa != null) → usa nome cadastrado. Senão fallback no que veio.
+                enderecoStr = (mesa != null ? mesa.getNome() : ("Mesa " + request.getEndereco().getOrDefault("mesa", "")))
+                            + (nomeClienteMesa != null ? " · " + nomeClienteMesa : "");
             }
         }
         Pedido pedido = new Pedido();
         pedido.setRestaurante(restaurante);
         pedido.setCliente(cliente);
+        pedido.setMesa(mesa);
+        pedido.setNomeClienteMesa(nomeClienteMesa);
         pedido.setTipo(tipo);
         pedido.setFormaPagamento(fp);
         pedido.setModoPagamento(modoPagamento);

@@ -130,15 +130,56 @@ public class EvolutionClient {
     /**
      * Envia mensagem de texto. Number aceita formatos "55119...", "55119...@s.whatsapp.net"
      * (Evolution normaliza). Usa o token da instância (não a chave global).
+     *
+     * @param delayMs ms de "digitando…" mostrado ao destinatário antes da msg aparecer.
+     *                Evolution v2 dispara presença composing automaticamente quando delay > 0.
+     *                Passe 0 pra enviar imediatamente.
      */
     @SuppressWarnings("unchecked")
-    public Map<String, Object> enviarTexto(String instanceName, String instanceToken, String number, String text) {
-        Map<String, Object> body = Map.of(
-                "number", number,
-                "text", text
-        );
+    public Map<String, Object> enviarTexto(String instanceName, String instanceToken, String number, String text, int delayMs) {
+        java.util.Map<String, Object> body = new java.util.HashMap<>();
+        body.put("number", number);
+        body.put("text", text);
+        if (delayMs > 0) body.put("delay", delayMs);
         String key = instanceToken != null && !instanceToken.isBlank() ? instanceToken : props.getApiKey();
         return executar("POST", "/message/sendText/" + instanceName, key, body, Map.class);
+    }
+
+    /** Overload sem delay — mantém compatibilidade. */
+    public Map<String, Object> enviarTexto(String instanceName, String instanceToken, String number, String text) {
+        return enviarTexto(instanceName, instanceToken, number, text, 0);
+    }
+
+    /**
+     * Devolve a configuração atual de webhook salva na Evolution pra essa instância.
+     * Útil pra diagnosticar quando msgs não chegam no backend.
+     * Resposta típica: { "enabled": true, "url": "https://.../api/webhooks/whatsapp/...", "events": [...] }
+     */
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> consultarWebhook(String instanceName) {
+        return executar("GET", "/webhook/find/" + instanceName, apiKeyGlobal(), null, Map.class);
+    }
+
+    /**
+     * Reseta o webhook da instância pra apontar pra {@code webhookUrl}.
+     * Usado quando a URL salva na Evolution está errada (ex: env trocada após criação).
+     */
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> definirWebhook(String instanceName, String webhookUrl) {
+        Map<String, Object> body = Map.of(
+                "webhook", Map.of(
+                        "enabled", true,
+                        "url", webhookUrl,
+                        "byEvents", false,
+                        "base64", true,
+                        "events", java.util.List.of(
+                                "MESSAGES_UPSERT",
+                                "CONNECTION_UPDATE",
+                                "QRCODE_UPDATED"
+                        )
+                )
+        );
+        return executar("POST", "/webhook/set/" + instanceName, apiKeyGlobal(), body, Map.class);
     }
 
     // ── infra ──

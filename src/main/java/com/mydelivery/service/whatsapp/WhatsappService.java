@@ -130,19 +130,53 @@ public class WhatsappService {
     /**
      * Envia mensagem usando a instância do restaurante.
      * Usado pelo WhatsappBotService — não é endpoint público.
+     *
+     * @param delayMs ms de "digitando…" mostrado antes da msg (0 = imediato).
      */
-    public void enviarMensagem(WhatsappInstance inst, String numeroDestino, String texto) {
+    public void enviarMensagem(WhatsappInstance inst, String numeroDestino, String texto, int delayMs) {
         if (inst.getStatus() != WhatsappInstance.Status.CONECTADA) {
             log.warn("[WhatsApp] Pulando envio: instância {} não está conectada", inst.getInstanceName());
             return;
         }
         try {
-            evolutionClient.enviarTexto(inst.getInstanceName(), inst.getInstanceToken(), numeroDestino, texto);
+            evolutionClient.enviarTexto(inst.getInstanceName(), inst.getInstanceToken(),
+                    numeroDestino, texto, delayMs);
             log.info("[WhatsApp] Mensagem enviada — instância={}, para={}***", inst.getInstanceName(),
                     numeroDestino.length() > 5 ? numeroDestino.substring(0, 5) : numeroDestino);
         } catch (RuntimeException e) {
             log.error("[WhatsApp] Falha ao enviar: {}", e.getMessage());
         }
+    }
+
+    /** Overload sem delay — mantém callers antigos. */
+    public void enviarMensagem(WhatsappInstance inst, String numeroDestino, String texto) {
+        enviarMensagem(inst, numeroDestino, texto, 0);
+    }
+
+    // ── diagnóstico de webhook ──
+
+    /** GET na Evolution pra ver qual URL/eventos estão configurados pra essa instância. */
+    public Map<String, Object> diagWebhook(Restaurante restaurante) {
+        WhatsappInstance inst = repo.findByRestauranteId(restaurante.getId())
+                .orElseThrow(() -> new RuntimeException("WhatsApp ainda não conectado"));
+        try {
+            return evolutionClient.consultarWebhook(inst.getInstanceName());
+        } catch (RuntimeException e) {
+            log.warn("[WhatsApp] diagWebhook falhou: {}", e.getMessage());
+            return Map.of("erro", e.getMessage());
+        }
+    }
+
+    /**
+     * Re-configura o webhook da Evolution apontando pra URL atual do backend.
+     * Útil quando a URL salva ficou errada (env mudou após criar instância).
+     */
+    public Map<String, Object> resetWebhook(Restaurante restaurante) {
+        WhatsappInstance inst = repo.findByRestauranteId(restaurante.getId())
+                .orElseThrow(() -> new RuntimeException("WhatsApp ainda não conectado"));
+        String webhookUrl = props.getWebhookBaseUrl() + "/api/webhooks/whatsapp/" + inst.getInstanceName();
+        log.info("[WhatsApp] Re-configurando webhook de {} pra {}", inst.getInstanceName(), webhookUrl);
+        return evolutionClient.definirWebhook(inst.getInstanceName(), webhookUrl);
     }
 
     // ── webhook helpers ──

@@ -3,6 +3,8 @@ package com.mydelivery.service.whatsapp;
 import java.text.Normalizer;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -18,19 +20,18 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * Bot de atendimento — leve, reativo, anti-spam.
+ * Bot de atendimento — leve, reativo, anti-spam, sem LLM.
  *
  * Princípios:
  *  - Só responde a quem mandar mensagem primeiro.
- *  - 1 resposta automática por número a cada N segundos (throttle).
- *  - Cliente pede "atendente" → bot fica silente por N minutos (modo humano).
- *  - Nenhum disparo em massa, nenhuma sequência automática, nenhum follow-up.
- *  - Regras simples por palavra-chave; sem chamada de LLM nesta versão.
+ *  - Detecta intenção em qualquer mensagem (taxa, cardápio, regiões, tempo, mínimo…).
+ *  - Se nada casar e for a 1ª interação → saudação + menu de opções.
+ *  - Se já saudou e nada casar → dica curta com o menu.
+ *  - Cliente pede "atendente" → bot fica em silêncio até alguém devolver pelo painel
+ *    (ou expirar o timer de fallback em props.silencioMinutos).
+ *  - Envia com delay de "digitando…" pra parecer humano.
  *
- * Estado in-memory por número:
- *  - ultimaResposta: pra throttle.
- *  - silencioAte: pra modo atendente humano.
- * Reset no restart é OK — bot retoma comportamento normal.
+ * Estado in-memory por número (instanceName + ":" + numero). Reset no restart é OK.
  */
 @Slf4j
 @Service
@@ -41,16 +42,15 @@ public class WhatsappBotService {
     private final ConfiguracaoRestauranteRepository configRepo;
     private final EvolutionProperties props;
 
+    /** Delay (ms) de "digitando…" antes da msg aparecer. Curto pra não atrasar UX. */
+    private static final int TYPING_DELAY_MS = 1500;
+
     /** Estado por número (key = instanceName + ":" + numero). */
     private final Map<String, EstadoNumero> estados = new ConcurrentHashMap<>();
 
     /**
      * Processa mensagem recebida. Se bot está ligado e regras casam, responde.
      * Caso contrário, fica em silêncio.
-     *
-     * @param inst   instância do restaurante destinatário
-     * @param numero remetente (formato Evolution: 5511XXX@s.whatsapp.net ou só dígitos)
-     * @param texto  mensagem recebida (texto puro; mídias são ignoradas)
      */
     public void processar(WhatsappInstance inst, String numero, String texto) {
         if (!Boolean.TRUE.equals(inst.getBotAtivo())) {
@@ -80,92 +80,207 @@ public class WhatsappBotService {
 
         String resposta = decidirResposta(inst.getRestaurante(), texto, st);
         if (resposta == null) {
-            // Sem regra casando: não responde (evita ruído).
-            return;
+            return; // sem regra casando → silêncio
         }
 
-        whatsappService.enviarMensagem(inst, numeroLimpo, resposta);
+        whatsappService.enviarMensagem(inst, numeroLimpo, resposta, TYPING_DELAY_MS);
         st.ultimaResposta = agora;
         st.saudou = true;
 
-        // Se a regra ativou modo humano, marca silêncio
+        // Se ativou modo humano, marca silêncio (timer é fallback caso ninguém devolva pelo painel)
         if (st.pediuAtendente) {
             st.silencioAte = agora.plusMinutes(props.getBot().getSilencioMinutos());
             st.pediuAtendente = false;
+            log.info("[Bot] modo humano ativado pra {} (silêncio até {})", chave, st.silencioAte);
         }
     }
 
-    // ── regras ──
+    // ── decisão ──
 
     /** Retorna texto da resposta ou null pra ignorar a mensagem. */
-    private String decidirResposta(Restaurante restaurante, String texto, EstadoNumero st) {
+    private String decidirResposta(Restaurante r, String texto, EstadoNumero st) {
         String t = normalizar(texto);
-        ConfiguracaoRestaurante cfg = configRepo.findByRestauranteId(restaurante.getId()).orElse(null);
+        ConfiguracaoRestaurante cfg = configRepo.findByRestauranteId(r.getId()).orElse(null);
 
-        // 1. Atendente humano (prioridade máxima)
-        if (contemAlguma(t, "atendente", "humano", "pessoa", "falar com alguem", "falar com voce")) {
+        // 1. Atendente humano — prioridade máxima
+        if (contemAlguma(t, "atendente", "humano", "pessoa", "falar com alguem",
+                "falar com voce", "atendimento humano", "operador")) {
             st.pediuAtendente = true;
-            return "Sem problema! Em instantes um atendente da " + restaurante.getNome()
-                    + " vai continuar com você por aqui. 😊";
+            return "Sem problema! 👤 Vou transferir você pra um atendente humano da " + r.getNome() + ".\n\n"
+                    + "Em instantes alguém da equipe responde aqui mesmo. 😊";
         }
 
-        // 2. Cardápio / menu
-        if (contemAlguma(t, "cardapio", "menu", "ver cardapio", "produtos", "comprar")) {
-            String link = montarLinkCardapio(restaurante);
-            return "Aqui está nosso cardápio 👉 " + link + "\n\nÉ só escolher os itens e fazer o pedido pelo site!";
+        // 2. Regiões / bairros atendidos
+        if (contemAlguma(t, "regiao", "regioes", "atende", "atendem", "atende aqui",
+                "entrega aqui", "bairro", "bairros", "atendido", "cobertura")) {
+            return montarRespostaRegioes(r);
         }
 
-        // 3. Horário
-        if (contemAlguma(t, "horario", "que horas", "abre", "aberto", "funcionamento")) {
-            return montarRespostaHorario(restaurante);
+        // 3. Taxa de entrega
+        if (contemAlguma(t, "taxa", "frete", "valor da entrega", "quanto a entrega", "custo de entrega")) {
+            return montarRespostaTaxa(r);
         }
 
-        // 4. Taxa de entrega / pedido mínimo
-        if (contemAlguma(t, "taxa", "entrega", "frete", "minimo")) {
-            return montarRespostaEntrega(restaurante, cfg);
+        // 4. Pedido mínimo
+        if (contemAlguma(t, "minimo", "pedido min", "valor minimo", "quanto preciso pedir")) {
+            return montarRespostaMinimo(r);
         }
 
-        // 5. Saudação inicial (só na primeira interação do número)
-        if (!st.saudou && contemAlguma(t, "oi", "ola", "bom dia", "boa tarde", "boa noite", "hey")) {
-            String link = montarLinkCardapio(restaurante);
-            return "Olá! 👋 Aqui é da " + restaurante.getNome() + ".\n\n"
-                    + "Você pode fazer seu pedido pelo nosso cardápio online: " + link + "\n\n"
-                    + "Posso te ajudar com algo? (digite *cardápio*, *horário*, *taxa* ou *atendente*)";
+        // 5. Tempo de entrega
+        if (contemAlguma(t, "demora", "quanto tempo", "tempo de entrega", "leva quanto",
+                "tempo medio", "demorar", "rapido")) {
+            return montarRespostaTempo(r);
         }
 
-        return null; // sem regra → silêncio
+        // 6. Cardápio
+        if (contemAlguma(t, "cardapio", "menu", "produtos", "comprar", "pedir",
+                "fazer pedido", "fazer um pedido")) {
+            String link = montarLinkCardapio(r);
+            return "Aqui está nosso cardápio 👉 " + link + "\n\nÉ só escolher os itens e finalizar pelo site. 🍽️";
+        }
+
+        // 7. Horário / aberto
+        if (contemAlguma(t, "horario", "que horas", "abre", "aberto", "ta aberto",
+                "estao abertos", "funcionamento", "fechado")) {
+            return montarRespostaHorario(r);
+        }
+
+        // 8. Agradecimento curto — responde gentil sem repetir menu
+        if (contemAlguma(t, "obrigado", "obrigada", "valeu", "vlw", "thanks")) {
+            return "Por nada! 😊 Qualquer coisa é só chamar.";
+        }
+
+        // 9. Saudação / 1ª interação → apresenta o bot
+        boolean ehSaudacao = contemAlguma(t, "oi", "ola", "ola ", "opa", "bom dia",
+                "boa tarde", "boa noite", "hey", "eai", "e ai", "tudo bem");
+        if (!st.saudou || ehSaudacao) {
+            return montarApresentacao(r);
+        }
+
+        // 10. Fallback: já saudou e não entendeu — mostra menu curto
+        return montarMenuCurto(r);
+    }
+
+    // ── builders de resposta ──
+
+    private String montarApresentacao(Restaurante r) {
+        String link = montarLinkCardapio(r);
+        StringBuilder sb = new StringBuilder();
+        sb.append("Olá! 👋 Aqui é da *").append(r.getNome()).append("*.\n\n");
+        sb.append("Como posso te ajudar hoje?\n\n");
+        sb.append("Você pode me perguntar sobre:\n");
+        sb.append("• 🍽️ *Cardápio*\n");
+        sb.append("• 🛵 *Taxa de entrega*\n");
+        sb.append("• 📍 *Regiões atendidas*\n");
+        sb.append("• ⏱️ *Tempo de entrega*\n");
+        sb.append("• 💰 *Pedido mínimo*\n");
+        sb.append("• 🕒 *Horário de funcionamento*\n");
+        sb.append("• 👤 *Falar com atendente*\n\n");
+        sb.append("Ou já faça seu pedido pelo cardápio 👉 ").append(link);
+        return sb.toString();
+    }
+
+    private String montarMenuCurto(Restaurante r) {
+        return "Posso te ajudar com: *cardápio*, *taxa*, *regiões*, *tempo*, *pedido mínimo*, "
+                + "*horário* ou *atendente*. É só me dizer! 🙂\n\n"
+                + "Cardápio: " + montarLinkCardapio(r);
     }
 
     private String montarLinkCardapio(Restaurante r) {
-        // Link público do cardápio. Em prod, app.url + ?slug=.
         return "https://mydeliveryfood.com.br/" + r.getSlug();
     }
 
     private String montarRespostaHorario(Restaurante r) {
         if (Boolean.TRUE.equals(r.getAberto())) {
-            return "Estamos *abertos* agora! 🟢 Faça seu pedido pelo cardápio.";
+            return "🟢 Estamos *abertos* agora!\n\nFaça seu pedido pelo cardápio: "
+                    + montarLinkCardapio(r);
         }
-        return "No momento estamos fechados. 🌙 Mas você pode dar uma olhada no cardápio: "
+        return "🌙 No momento estamos *fechados*.\n\n"
+                + "Mas você pode dar uma olhada no cardápio e voltar depois: "
                 + montarLinkCardapio(r);
     }
 
-    private String montarRespostaEntrega(Restaurante r, ConfiguracaoRestaurante cfg) {
-        StringBuilder sb = new StringBuilder();
-        if (r.getTaxaEntrega() != null) {
-            sb.append("🛵 Taxa de entrega: R$ ").append(r.getTaxaEntrega()).append("\n");
+    private String montarRespostaTaxa(Restaurante r) {
+        if (r.getTaxaEntrega() == null) {
+            return "A taxa de entrega pode variar conforme a região. Confira ao montar o pedido no cardápio: "
+                    + montarLinkCardapio(r);
         }
-        if (r.getPedidoMinimo() != null) {
-            sb.append("💰 Pedido mínimo: R$ ").append(r.getPedidoMinimo()).append("\n");
+        return "🛵 Nossa taxa de entrega é *R$ " + formatar(r.getTaxaEntrega()) + "*.\n\n"
+                + "O valor exato pode variar conforme o endereço — você vê no checkout do cardápio: "
+                + montarLinkCardapio(r);
+    }
+
+    private String montarRespostaMinimo(Restaurante r) {
+        if (r.getPedidoMinimo() == null || r.getPedidoMinimo().signum() == 0) {
+            return "Não temos valor mínimo de pedido. 😉 Pode pedir o que quiser pelo cardápio: "
+                    + montarLinkCardapio(r);
         }
-        if (r.getTempoEntrega() != null) {
-            sb.append("⏱️ Tempo médio: ").append(r.getTempoEntrega()).append(" minutos\n");
+        return "💰 Nosso pedido mínimo é *R$ " + formatar(r.getPedidoMinimo()) + "*.\n\n"
+                + "Cardápio: " + montarLinkCardapio(r);
+    }
+
+    private String montarRespostaTempo(Restaurante r) {
+        if (r.getTempoEntrega() == null) {
+            return "O tempo de entrega varia conforme a região e a fila do momento. "
+                    + "Geralmente sai rapidinho! 🛵";
         }
-        if (sb.length() == 0) {
-            return "As taxas variam por região — confira no nosso cardápio: " + montarLinkCardapio(r);
+        return "⏱️ Nosso tempo médio de entrega é de cerca de *"
+                + r.getTempoEntrega() + " minutos*.\n\n"
+                + "(Pode variar conforme a região e o horário.)";
+    }
+
+    private String montarRespostaRegioes(Restaurante r) {
+        List<String> bairros = r.getBairrosAtendidos();
+        if (bairros == null || bairros.isEmpty()) {
+            return "Atendemos diversas regiões! 📍 Coloque seu endereço no cardápio pra ver se entregamos aí: "
+                    + montarLinkCardapio(r);
         }
-        sb.append("\nFaça seu pedido pelo cardápio: ").append(montarLinkCardapio(r));
+        StringBuilder sb = new StringBuilder("📍 *Regiões atendidas:*\n\n");
+        int max = Math.min(bairros.size(), 20); // evita msg gigante
+        for (int i = 0; i < max; i++) {
+            sb.append("• ").append(bairros.get(i)).append("\n");
+        }
+        if (bairros.size() > max) {
+            sb.append("• … e mais ").append(bairros.size() - max).append(" regiões\n");
+        }
+        sb.append("\nConfere o endereço completo no cardápio: ").append(montarLinkCardapio(r));
         return sb.toString();
     }
+
+    // ── atendimento humano (handoff) ──
+
+    /**
+     * Lista números atualmente em modo silêncio (atendimento humano) pra essa instância.
+     * Usado pelo painel pra mostrar quais conversas o dono já assumiu.
+     */
+    public List<AtendimentoHumano> listarAtendimentosHumanos(WhatsappInstance inst) {
+        String prefix = inst.getInstanceName() + ":";
+        LocalDateTime agora = LocalDateTime.now();
+        List<AtendimentoHumano> out = new ArrayList<>();
+        estados.forEach((k, st) -> {
+            if (!k.startsWith(prefix)) return;
+            if (st.silencioAte == null || agora.isAfter(st.silencioAte)) return;
+            out.add(new AtendimentoHumano(k.substring(prefix.length()), st.silencioAte));
+        });
+        return out;
+    }
+
+    /**
+     * Devolve um número pro bot — limpa o silêncio e permite que o bot volte a responder.
+     * @return true se havia silêncio ativo (foi liberado); false se número não estava em modo humano.
+     */
+    public boolean devolverParaBot(WhatsappInstance inst, String numero) {
+        String chave = inst.getInstanceName() + ":" + limparNumero(numero);
+        EstadoNumero st = estados.get(chave);
+        if (st == null || st.silencioAte == null) return false;
+        st.silencioAte = null;
+        st.saudou = false; // próxima msg volta a saudar
+        log.info("[Bot] {} devolvido pro bot pelo painel", chave);
+        return true;
+    }
+
+    /** DTO simples — número + quando o timer de silêncio expira automaticamente. */
+    public record AtendimentoHumano(String numero, LocalDateTime silencioAte) {}
 
     // ── helpers ──
 
@@ -174,11 +289,15 @@ public class WhatsappBotService {
         return false;
     }
 
-    /** Normaliza: lowercase + remove acentos. */
+    private String formatar(java.math.BigDecimal v) {
+        return v.setScale(2, java.math.RoundingMode.HALF_UP).toPlainString().replace('.', ',');
+    }
+
+    /** Normaliza: lowercase + remove acentos + colapsa espaços. */
     private String normalizar(String s) {
         String n = Normalizer.normalize(s, Normalizer.Form.NFD)
                 .replaceAll("\\p{InCombiningDiacriticalMarks}+", "");
-        return n.toLowerCase();
+        return n.toLowerCase().trim().replaceAll("\\s+", " ");
     }
 
     /** Tira sufixo @s.whatsapp.net e qualquer não-dígito. */

@@ -65,9 +65,12 @@ public class WhatsappBotService {
 
         LocalDateTime agora = LocalDateTime.now();
 
-        // Modo silêncio: cliente pediu atendente humano → bot fica quieto
+        // Modo silêncio: cliente pediu atendente humano → bot fica quieto.
+        // Janela deslizante: cada nova msg do cliente reseta o timer pros próximos N min.
+        // Assim, se cliente+atendente ficam X min em silêncio, o bot retoma sozinho.
         if (st.silencioAte != null && agora.isBefore(st.silencioAte)) {
-            log.debug("[Bot] em silêncio pra {} (até {})", chave, st.silencioAte);
+            st.silencioAte = agora.plusMinutes(props.getBot().getSilencioMinutos());
+            log.debug("[Bot] em silêncio pra {} (renovado até {})", chave, st.silencioAte);
             return;
         }
 

@@ -381,6 +381,83 @@ public class PedidoService {
     }
 
     /**
+     * Cliente cancela um item da própria comanda. Validações:
+     *  - pedido pertence à mesa do slug
+     *  - nome bate (não dá pra cancelar item de outra pessoa da mesa)
+     *  - status permite (PENDENTE ou CONFIRMADO; depois de EM_PREPARO já era)
+     *
+     * Se removeu o último item, o pedido inteiro vira CANCELADO.
+     * Total/subtotal recalculados in-place.
+     */
+    @Transactional
+    public void cancelarItemComanda(String slugRestaurante, String slugMesa,
+                                     Long pedidoId, Long itemId, String nomePessoa) {
+        var mesa = mesaRepository.findByRestauranteSlugAndSlug(slugRestaurante, slugMesa)
+                .orElseThrow(() -> new RuntimeException("Mesa não encontrada"));
+        var pedido = pedidoRepository.findById(pedidoId)
+                .orElseThrow(() -> new RuntimeException("Pedido não encontrado"));
+
+        if (pedido.getMesa() == null || !pedido.getMesa().getId().equals(mesa.getId())) {
+            throw new RuntimeException("Esse pedido não é dessa mesa.");
+        }
+        if (nomePessoa == null || nomePessoa.isBlank()
+                || pedido.getNomeClienteMesa() == null
+                || !normalizarBairro(pedido.getNomeClienteMesa()).equals(normalizarBairro(nomePessoa))) {
+            throw new RuntimeException("Esse pedido não está em sua comanda.");
+        }
+        var status = pedido.getStatus();
+        if (status == Pedido.Status.EM_PREPARO
+                || status == Pedido.Status.SAIU_ENTREGA
+                || status == Pedido.Status.ENTREGUE
+                || status == Pedido.Status.CANCELADO) {
+            throw new RuntimeException("Esse item já foi pra cozinha e não pode ser cancelado.");
+        }
+
+        var alvo = pedido.getItens().stream()
+                .filter(i -> i.getId().equals(itemId))
+                .findFirst()
+                .orElseThrow(() -> new RuntimeException("Item não encontrado."));
+        pedido.getItens().remove(alvo);
+
+        if (pedido.getItens().isEmpty()) {
+            // Sem itens → cancela o pedido inteiro
+            pedido.setStatus(Pedido.Status.CANCELADO);
+            pedido.setSubtotal(BigDecimal.ZERO);
+            pedido.setTotal(BigDecimal.ZERO);
+        } else {
+            BigDecimal sub = pedido.getItens().stream()
+                    .map(i -> i.getSubtotal() != null ? i.getSubtotal() : BigDecimal.ZERO)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            pedido.setSubtotal(sub);
+            // Mesa não tem taxa de entrega; total = subtotal
+            pedido.setTotal(sub.add(pedido.getTaxaEntrega() != null ? pedido.getTaxaEntrega() : BigDecimal.ZERO));
+        }
+        pedidoRepository.save(pedido);
+    }
+
+    /**
+     * Fecha a comanda inteira da mesa (todos os pedidos ativos viram ENTREGUE+pago).
+     * Usado pelo dono ao receber o pagamento final no balcão.
+     */
+    @Transactional
+    public int fecharComandaMesa(Long restauranteId, Long mesaId) {
+        var mesa = mesaRepository.findById(mesaId)
+                .orElseThrow(() -> new RuntimeException("Mesa não encontrada"));
+        if (!mesa.getRestaurante().getId().equals(restauranteId)) {
+            throw new RuntimeException("Mesa de outro restaurante.");
+        }
+        var ativos = pedidoRepository.findComandaAtivaPorMesa(mesaId);
+        var agora = java.time.LocalDateTime.now();
+        ativos.forEach(p -> {
+            p.setStatus(Pedido.Status.ENTREGUE);
+            p.setPago(true);
+            if (p.getPagoEm() == null) p.setPagoEm(agora);
+        });
+        pedidoRepository.saveAll(ativos);
+        return ativos.size();
+    }
+
+    /**
      * Comanda ATIVA da mesa pra cliente acompanhar (público). Se nome informado,
      * filtra só os pedidos daquela pessoa — assim Maria não vê o que João pediu.
      * Se nome vazio, retorna todos os pedidos ativos (uso pela cozinha).

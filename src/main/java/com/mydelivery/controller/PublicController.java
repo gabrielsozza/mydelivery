@@ -128,6 +128,22 @@ public class PublicController {
     }
 
     /**
+     * Cliente cancela um item específico da própria comanda — só funciona se o
+     * pedido ainda não foi pra preparo. Validação inclui nome da pessoa, então
+     * Maria não consegue cancelar item de João mesmo na mesma mesa.
+     */
+    @org.springframework.web.bind.annotation.DeleteMapping("/restaurante/{slug}/mesa/{slugMesa}/comanda/{pedidoId}/itens/{itemId}")
+    public ResponseEntity<Map<String, Object>> cancelarItemComanda(
+            @PathVariable String slug,
+            @PathVariable String slugMesa,
+            @PathVariable Long pedidoId,
+            @PathVariable Long itemId,
+            @RequestParam("nome") String nome) {
+        pedidoService.cancelarItemComanda(slug, slugMesa, pedidoId, itemId, nome);
+        return ResponseEntity.ok(Map.of("ok", true));
+    }
+
+    /**
      * Comanda do cliente: lista pedidos ATIVOS da mesa, opcionalmente filtrados
      * pelo nome da pessoa. Usado pelo cardápio mobile pra mostrar "Minha comanda"
      * depois que o cliente envia o primeiro pedido — e atualizar em tempo real

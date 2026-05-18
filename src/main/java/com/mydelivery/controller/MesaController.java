@@ -21,6 +21,7 @@ import com.mydelivery.model.Mesa;
 import com.mydelivery.model.Restaurante;
 import com.mydelivery.repository.MesaRepository;
 import com.mydelivery.repository.RestauranteRepository;
+import com.mydelivery.service.PedidoService;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -39,6 +40,7 @@ public class MesaController {
 
     private final MesaRepository mesaRepo;
     private final RestauranteRepository restauranteRepo;
+    private final PedidoService pedidoService;
 
     /** Lista as mesas do restaurante logado. */
     @GetMapping("/api/mesas")
@@ -78,6 +80,20 @@ public class MesaController {
                 .ativa(true)
                 .build());
         return ResponseEntity.status(HttpStatus.CREATED).body(serializar(m));
+    }
+
+    /**
+     * Fecha a comanda da mesa: todos os pedidos ativos viram ENTREGUE + pago.
+     * Equivalente ao "fechar conta" no balcão. Não altera mesa em si.
+     */
+    @PostMapping("/api/mesas/{id}/fechar-comanda")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Map<String, Object>> fecharComanda(
+            @AuthenticationPrincipal String email,
+            @PathVariable Long id) {
+        Restaurante r = restauranteRepo.findByUsuarioEmail(email).orElseThrow();
+        int fechados = pedidoService.fecharComandaMesa(r.getId(), id);
+        return ResponseEntity.ok(Map.of("ok", true, "pedidosFechados", fechados));
     }
 
     /** Remove mesa (não apaga pedidos passados — apenas remove o QR ativo). */

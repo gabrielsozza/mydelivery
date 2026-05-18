@@ -16,12 +16,28 @@ public class RestaurantePublicResponse {
     private String corPrimaria;
     private Boolean aberto;
     private Integer tempoEntrega;
+    /**
+     * Taxa flat antiga — MANTIDA pra compatibilidade de clientes mobile/cache
+     * mas o cardápio web NÃO deve mais usar. A taxa real vem por bairro
+     * via GET /publico/{slug}/bairros/{nome}/taxa.
+     */
     private BigDecimal taxaEntrega;
     private BigDecimal pedidoMinimo;
     private List<String> modos;
     private List<String> pagamentos;
-    /** Lista de bairros atendidos pela loja — exibida no cardápio público. */
-    private List<String> bairrosAtendidos;
+    /**
+     * Bairros atendidos com suas taxas. Cliente vê só os nomes no modal "Bairros
+     * onde essa loja entrega"; a taxa é revelada no checkout ao informar o endereço.
+     */
+    private List<BairroAtendidoPublic> bairrosAtendidos;
+
+    @Data
+    @Builder
+    public static class BairroAtendidoPublic {
+        private String nome;
+        /** Taxa pode ser null se o dono ainda não configurou — front trata. */
+        private BigDecimal taxa;
+    }
     /**
      * Public Key do Mercado Pago do restaurante.
      * Enviada ao frontend pra inicializar o SDK e tokenizar cartão no browser —

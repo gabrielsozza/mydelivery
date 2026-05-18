@@ -29,10 +29,20 @@ public class ConfiguracaoRequest {
 
     private List<String> modos;
     private List<String> pagamentos;
-    /** Bairros atendidos pelo restaurante (formato livre "Bairro - Cidade"). */
-    private List<String> bairrosAtendidos;
+    /**
+     * Bairros atendidos com taxa por bairro. Cada item é {nome, taxa}.
+     * Taxa null = dono ainda não definiu (front avisa).
+     */
+    private List<BairroDTO> bairrosAtendidos;
 
     private AgendamentoDTO agendamento;
+
+    @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class BairroDTO {
+        private String nome;
+        private BigDecimal taxa;
+    }
 
     // ── Credenciais Mercado Pago (multi-tenant) ──
     // Mantidas opcionais: restaurante pode operar sem MP (recebe só PIX manual/dinheiro).

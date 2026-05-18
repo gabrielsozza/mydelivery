@@ -116,14 +116,18 @@ public class Restaurante {
     private List<String> agendamentoSlots = new ArrayList<>();  // ← adicionado
 
     /**
-     * Regiões de entrega — cada item no formato livre "Bairro - Cidade".
-     * Exibido no cardápio público como "Bairros onde essa loja entrega" + modal.
+     * Regiões de entrega — cada item tem nome do bairro + taxa própria.
+     * No cardápio público a taxa NÃO aparece de cara; só é revelada no checkout
+     * quando o cliente informa o bairro (lookup via /publico/{slug}/bairros/{nome}/taxa).
+     *
+     * Antes era List<String> (só nome). Hibernate em ddl-auto=update adiciona a coluna
+     * "taxa" na tabela restaurante_bairros existente — registros antigos ficam com taxa=null
+     * até o dono reconfigurar.
      */
     @ElementCollection(fetch = FetchType.EAGER)
     @CollectionTable(name = "restaurante_bairros", joinColumns = @JoinColumn(name = "restaurante_id"))
-    @Column(name = "bairro", length = 120)
     @Builder.Default
-    private List<String> bairrosAtendidos = new ArrayList<>();
+    private List<BairroEntrega> bairrosAtendidos = new ArrayList<>();
 
     // ── Status / plano ──
     @Enumerated(EnumType.STRING)

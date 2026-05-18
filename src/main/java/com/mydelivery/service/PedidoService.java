@@ -1,6 +1,7 @@
 package com.mydelivery.service;
 
 import java.math.BigDecimal;
+import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -67,10 +68,22 @@ public class PedidoService {
                 clienteRepository.save(cliente);
             }
         }
+        // ── Cálculo da taxa por bairro ──
+        // Pedido delivery: lê o bairro do endereço do cliente e busca a taxa
+        // configurada pra ele. Se o bairro não estiver na lista, recusa o pedido
+        // — front já deveria ter bloqueado, mas validamos no backend também.
         BigDecimal taxaEntrega = BigDecimal.ZERO;
         if ("delivery".equalsIgnoreCase(request.getModo())) {
-            taxaEntrega = configuracaoRepository.findByRestauranteId(restaurante.getId())
-                    .map(c -> c.getTaxaEntrega() != null ? c.getTaxaEntrega() : BigDecimal.ZERO).orElse(BigDecimal.ZERO);
+            String bairroCliente = request.getEndereco() == null ? null
+                    : request.getEndereco().getOrDefault("bairro", null);
+            if (bairroCliente == null || bairroCliente.isBlank()) {
+                throw new RuntimeException("Informe o bairro de entrega.");
+            }
+            taxaEntrega = buscarTaxaPorBairro(restaurante, bairroCliente);
+            if (taxaEntrega == null) {
+                // Bairro fora da área — mesma mensagem do front pra consistência
+                throw new RuntimeException("Desculpe, nossa loja ainda não entrega nessa região.");
+            }
         }
         Pedido.Tipo tipo = switch (request.getModo().toLowerCase()) {
             case "delivery" ->
@@ -371,5 +384,34 @@ public class PedidoService {
                 .entregadorId(p.getEntregador() != null ? p.getEntregador().getId() : null)
                 .entregadorNome(p.getEntregador() != null ? p.getEntregador().getNome() : null)
                 .itens(itens).build();
+    }
+
+    /**
+     * Busca a taxa configurada pro bairro informado pelo cliente.
+     * Match tolerante: case + acento + substring (assim "Eldorado" casa
+     * mesmo se cadastrado como "Eldorado - Serra").
+     *
+     * @return taxa em BigDecimal (zero se cadastrado mas sem taxa setada),
+     *         ou null se o bairro NÃO está na lista de atendimento.
+     */
+    private BigDecimal buscarTaxaPorBairro(Restaurante r, String bairroCliente) {
+        if (r.getBairrosAtendidos() == null || r.getBairrosAtendidos().isEmpty()) return null;
+        String alvo = normalizarBairro(bairroCliente);
+        return r.getBairrosAtendidos().stream()
+                .filter(b -> b != null && b.getNome() != null)
+                .filter(b -> {
+                    String n = normalizarBairro(b.getNome());
+                    return n.contains(alvo) || alvo.contains(n);
+                })
+                .findFirst()
+                .map(b -> b.getTaxa() != null ? b.getTaxa() : BigDecimal.ZERO)
+                .orElse(null);
+    }
+
+    private static String normalizarBairro(String s) {
+        if (s == null) return "";
+        return Normalizer.normalize(s, Normalizer.Form.NFD)
+                .replaceAll("\\p{InCombiningDiacriticalMarks}+", "")
+                .toLowerCase().trim();
     }
 }

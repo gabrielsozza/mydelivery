@@ -4,6 +4,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.mydelivery.dto.restaurante.ConfiguracaoRequest;
+import com.mydelivery.model.BairroEntrega;
 import com.mydelivery.model.ConfiguracaoRestaurante;
 import com.mydelivery.model.Restaurante;
 import com.mydelivery.repository.ConfiguracaoRestauranteRepository;
@@ -36,7 +37,13 @@ public class ConfiguracaoService {
         if (req.getQtdMesas() != null)     restaurante.setQtdMesas(req.getQtdMesas());
         if (req.getModos() != null)        restaurante.setModos(req.getModos());
         if (req.getPagamentos() != null)   restaurante.setPagamentos(req.getPagamentos());
-        if (req.getBairrosAtendidos() != null) restaurante.setBairrosAtendidos(req.getBairrosAtendidos());
+        if (req.getBairrosAtendidos() != null) {
+            // Filtra entradas inválidas (sem nome) e mapeia DTO → entidade
+            restaurante.setBairrosAtendidos(req.getBairrosAtendidos().stream()
+                    .filter(b -> b != null && b.getNome() != null && !b.getNome().isBlank())
+                    .map(b -> new BairroEntrega(b.getNome().trim(), b.getTaxa()))
+                    .toList());
+        }
 
         if (req.getAgendamento() != null) {
             var ag = req.getAgendamento();

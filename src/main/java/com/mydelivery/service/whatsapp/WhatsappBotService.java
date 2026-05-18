@@ -204,12 +204,28 @@ public class WhatsappBotService {
     }
 
     private String montarRespostaTaxa(Restaurante r) {
-        if (r.getTaxaEntrega() == null) {
-            return "A taxa de entrega pode variar conforme a região. Confira ao montar o pedido no cardápio: "
+        // Taxa agora varia por bairro — não dá pra dizer um valor único.
+        var bairros = r.getBairrosAtendidos();
+        if (bairros == null || bairros.isEmpty()) {
+            return "A taxa de entrega varia conforme o seu bairro. Coloque seu endereço no cardápio pra ver o valor exato: "
                     + montarLinkCardapio(r);
         }
-        return "🛵 Nossa taxa de entrega é *R$ " + formatar(r.getTaxaEntrega()) + "*.\n\n"
-                + "O valor exato pode variar conforme o endereço — você vê no checkout do cardápio: "
+        // Mostra um range pra dar uma ideia
+        java.math.BigDecimal min = null, max = null;
+        for (var b : bairros) {
+            if (b == null || b.getTaxa() == null) continue;
+            if (min == null || b.getTaxa().compareTo(min) < 0) min = b.getTaxa();
+            if (max == null || b.getTaxa().compareTo(max) > 0) max = b.getTaxa();
+        }
+        if (min == null) {
+            return "🛵 A taxa de entrega depende do seu bairro. Coloque seu endereço no cardápio pra ver o valor: "
+                    + montarLinkCardapio(r);
+        }
+        String range = min.equals(max)
+                ? "*R$ " + formatar(min) + "*"
+                : "*R$ " + formatar(min) + "* a *R$ " + formatar(max) + "*";
+        return "🛵 Nossa taxa de entrega varia por bairro: " + range + ".\n\n"
+                + "Informe seu endereço no cardápio pra ver o valor exato pro seu bairro: "
                 + montarLinkCardapio(r);
     }
 
@@ -233,7 +249,7 @@ public class WhatsappBotService {
     }
 
     private String montarRespostaRegioes(Restaurante r) {
-        List<String> bairros = r.getBairrosAtendidos();
+        var bairros = r.getBairrosAtendidos();
         if (bairros == null || bairros.isEmpty()) {
             return "Atendemos diversas regiões! 📍 Coloque seu endereço no cardápio pra ver se entregamos aí: "
                     + montarLinkCardapio(r);
@@ -241,7 +257,11 @@ public class WhatsappBotService {
         StringBuilder sb = new StringBuilder("📍 *Regiões atendidas:*\n\n");
         int max = Math.min(bairros.size(), 20); // evita msg gigante
         for (int i = 0; i < max; i++) {
-            sb.append("• ").append(bairros.get(i)).append("\n");
+            var b = bairros.get(i);
+            if (b == null || b.getNome() == null) continue;
+            sb.append("• ").append(b.getNome());
+            if (b.getTaxa() != null) sb.append(" — R$ ").append(formatar(b.getTaxa()));
+            sb.append("\n");
         }
         if (bairros.size() > max) {
             sb.append("• … e mais ").append(bairros.size() - max).append(" regiões\n");

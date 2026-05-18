@@ -67,9 +67,6 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.POST, "/api/webhooks/mercadopago").permitAll()
                 // Webhook da Evolution API (WhatsApp) — público, validação pelo nome da instância no path
                 .requestMatchers(HttpMethod.POST, "/api/webhooks/whatsapp/**").permitAll()
-                // Webhook da Meta WhatsApp Cloud API — público. GET é a verificação inicial, POST recebe eventos
-                .requestMatchers(HttpMethod.GET, "/api/webhooks/whatsapp-cloud").permitAll()
-                .requestMatchers(HttpMethod.POST, "/api/webhooks/whatsapp-cloud").permitAll()
                 .requestMatchers("/api/admin/**").hasRole("ADMIN")
                 .requestMatchers("/api/restaurante/**").hasAnyRole("RESTAURANTE", "ADMIN")
                 .anyRequest().authenticated()

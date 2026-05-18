@@ -28,6 +28,9 @@ import lombok.NoArgsConstructor;
  * a mesma sessão se o backend reiniciar. O instanceToken é gerado pela Evolution
  * no momento da criação e usado pra autenticar operações daquela instância
  * (envio de mensagem, etc.) sem expor a apiKey global.
+ *
+ * Self-hosting: Evolution roda em VPS (Hetzner) atrás de proxy residencial
+ * sticky (Proxy-Seller) pra evitar bloqueio de IP de datacenter pelo WhatsApp.
  */
 @Entity
 @Table(name = "whatsapp_instances", indexes = {

@@ -61,25 +61,42 @@ public class EvolutionClient {
      */
     @SuppressWarnings("unchecked")
     public Map<String, Object> criarInstancia(String instanceName, String webhookUrl) {
-        Map<String, Object> body = Map.of(
-                "instanceName", instanceName,
-                "qrcode", true,
-                "integration", "WHATSAPP-BAILEYS",
-                // webhook configurado já na criação — evita chamada extra a /webhook/set
-                "webhook", Map.of(
-                        "url", webhookUrl,
-                        "byEvents", false,
-                        // base64=true é OBRIGATÓRIO na v2.1.x: sem isso o
-                        // QRCODE_UPDATED chega só com o texto do QR, sem
-                        // a imagem base64 que o frontend precisa renderizar.
-                        "base64", true,
-                        "events", java.util.List.of(
-                                "MESSAGES_UPSERT",
-                                "CONNECTION_UPDATE",
-                                "QRCODE_UPDATED"
-                        )
+        // Body mutável porque a chave "proxy" só entra se estiver configurada
+        java.util.Map<String, Object> body = new java.util.HashMap<>();
+        body.put("instanceName", instanceName);
+        body.put("qrcode", true);
+        body.put("integration", "WHATSAPP-BAILEYS");
+        body.put("webhook", Map.of(
+                "url", webhookUrl,
+                "byEvents", false,
+                // base64=true é OBRIGATÓRIO na v2.1.x: sem isso o
+                // QRCODE_UPDATED chega só com o texto do QR, sem
+                // a imagem base64 que o frontend precisa renderizar.
+                "base64", true,
+                "events", java.util.List.of(
+                        "MESSAGES_UPSERT",
+                        "CONNECTION_UPDATE",
+                        "QRCODE_UPDATED"
                 )
-        );
+        ));
+
+        // Proxy residencial (Proxy-Seller) — só inclui se configurado. Evita que
+        // o Baileys conecte direto pelo IP da VPS (datacenter), que é banido
+        // rapidamente pelo WhatsApp.
+        if (props.getProxy().isAtivo()) {
+            body.put("proxy", Map.of(
+                    "host", props.getProxy().getHost(),
+                    "port", props.getProxy().getPort(),
+                    "protocol", props.getProxy().getProtocol(),
+                    "username", props.getProxy().getUsername(),
+                    "password", props.getProxy().getPassword()
+            ));
+            log.info("[Evolution] criando instância {} com proxy {}:{}",
+                    instanceName, props.getProxy().getHost(), props.getProxy().getPort());
+        } else {
+            log.warn("[Evolution] criando instância {} SEM proxy (risco de ban pelo WhatsApp)", instanceName);
+        }
+
         return executar("POST", "/instance/create", apiKeyGlobal(), body, Map.class);
     }
 

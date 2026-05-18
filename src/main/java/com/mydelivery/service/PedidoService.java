@@ -380,6 +380,26 @@ public class PedidoService {
         return toResponse(pedidoRepository.findById(pid).orElseThrow(() -> new RuntimeException("Pedido nao encontrado")));
     }
 
+    /**
+     * Comanda ATIVA da mesa pra cliente acompanhar (público). Se nome informado,
+     * filtra só os pedidos daquela pessoa — assim Maria não vê o que João pediu.
+     * Se nome vazio, retorna todos os pedidos ativos (uso pela cozinha).
+     */
+    @Transactional(readOnly = true)
+    public List<PedidoResponse> comandaDaMesa(String slugRestaurante, String slugMesa, String nomePessoa) {
+        var mesa = mesaRepository.findByRestauranteSlugAndSlug(slugRestaurante, slugMesa)
+                .orElseThrow(() -> new RuntimeException("Mesa não encontrada"));
+        var pedidos = pedidoRepository.findComandaAtivaPorMesa(mesa.getId());
+        if (nomePessoa != null && !nomePessoa.isBlank()) {
+            String alvo = normalizarBairro(nomePessoa); // mesmo normalizador (lowercase+sem-acento)
+            pedidos = pedidos.stream()
+                    .filter(p -> p.getNomeClienteMesa() != null
+                            && normalizarBairro(p.getNomeClienteMesa()).equals(alvo))
+                    .toList();
+        }
+        return pedidos.stream().map(this::toResponse).toList();
+    }
+
     private PedidoResponse toResponse(Pedido p) {
         // Nome do produto vem do snapshot (i.getNomeProduto). Fallback pra produto.getNome()
         // só pra pedidos antigos sem snapshot. Se ambos nulos, "Produto removido".
@@ -408,6 +428,14 @@ public class PedidoService {
                 .restauranteNome(p.getRestaurante() != null ? p.getRestaurante().getNome() : null)
                 .entregadorId(p.getEntregador() != null ? p.getEntregador().getId() : null)
                 .entregadorNome(p.getEntregador() != null ? p.getEntregador().getNome() : null)
+                .mesaId(p.getMesa() != null ? p.getMesa().getId() : null)
+                .mesaNome(p.getMesa() != null ? p.getMesa().getNome() : null)
+                .mesaSlug(p.getMesa() != null ? p.getMesa().getSlug() : null)
+                .nomeClienteMesa(p.getNomeClienteMesa())
+                // Pra pedidos de mesa o cliente real fica em nomeClienteMesa — devolve
+                // ele também em nomeCliente pra UIs antigas mostrarem algo coerente.
+                .nomeCliente(p.getCliente() != null ? p.getCliente().getNome()
+                            : p.getNomeClienteMesa())
                 .itens(itens).build();
     }
 

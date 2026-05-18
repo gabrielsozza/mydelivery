@@ -128,6 +128,22 @@ public class PublicController {
     }
 
     /**
+     * Comanda do cliente: lista pedidos ATIVOS da mesa, opcionalmente filtrados
+     * pelo nome da pessoa. Usado pelo cardápio mobile pra mostrar "Minha comanda"
+     * depois que o cliente envia o primeiro pedido — e atualizar em tempo real
+     * conforme o restaurante muda o status (CONFIRMADO → EM_PREPARO → ENTREGUE).
+     */
+    @GetMapping("/restaurante/{slug}/mesa/{slugMesa}/comanda")
+    public ResponseEntity<List<com.mydelivery.dto.pedido.PedidoResponse>> comandaPublica(
+            @PathVariable String slug,
+            @PathVariable String slugMesa,
+            @org.springframework.web.bind.annotation.RequestParam(value = "nome", required = false) String nome) {
+        return ResponseEntity.ok()
+                .header("Cache-Control", "no-cache, no-store, must-revalidate")
+                .body(pedidoService.comandaDaMesa(slug, slugMesa, nome));
+    }
+
+    /**
      * Consulta se o restaurante atende um bairro e qual a taxa.
      *
      * Resposta:

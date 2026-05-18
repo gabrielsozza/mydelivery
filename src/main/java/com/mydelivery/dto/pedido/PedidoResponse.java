@@ -27,6 +27,11 @@ public class PedidoResponse {
     private String restauranteNome;
     private Long entregadorId;
     private String entregadorNome;
+    // ── Pedido de mesa (presencial) ──
+    private Long mesaId;
+    private String mesaNome;
+    private String mesaSlug;
+    private String nomeClienteMesa;
     private List<ItemPedidoResponse> itens;
 
     @Data @Builder

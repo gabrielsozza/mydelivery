@@ -18,4 +18,13 @@ public interface PedidoRepository extends JpaRepository<Pedido, Long> {
            "AND p.criadoEm BETWEEN :inicio AND :fim ORDER BY p.criadoEm DESC")
     List<Pedido> findByRestauranteIdAndPeriodo(
             Long restauranteId, LocalDateTime inicio, LocalDateTime fim);
+
+    /**
+     * Comanda da mesa (todos os pedidos ATIVOS — não cancelados/entregues —
+     * dessa mesa). Usado tanto pelo cliente final (visão própria filtrada
+     * por nome) quanto pelo painel (visão geral por mesa).
+     */
+    @Query("SELECT p FROM Pedido p WHERE p.mesa.id = :mesaId " +
+           "AND p.status NOT IN ('CANCELADO', 'ENTREGUE') ORDER BY p.criadoEm ASC")
+    List<Pedido> findComandaAtivaPorMesa(Long mesaId);
 }

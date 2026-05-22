@@ -102,6 +102,23 @@ public class Restaurante {
     @Builder.Default
     private Boolean aceitarPedidosAutomaticamente = false;
 
+    // ── Horários de funcionamento ──
+    // JSON serializado: { "seg": {"aberto":true,"abertura":"11:00","fechamento":"22:00"}, ... }
+    // Guardado como TEXT pra evitar tabela separada — o front já trata como objeto.
+    // Hibernate ddl-auto=update adiciona a coluna sem afetar dados existentes.
+    @Column(name = "horarios_json", columnDefinition = "TEXT")
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    private String horariosJson;
+
+    /** Expõe como objeto JSON pro front (mais natural que string). */
+    @com.fasterxml.jackson.annotation.JsonProperty("horarios")
+    public Object getHorariosAsObject() {
+        if (horariosJson == null || horariosJson.isBlank()) return null;
+        try {
+            return new com.fasterxml.jackson.databind.ObjectMapper().readValue(horariosJson, Object.class);
+        } catch (Exception e) { return null; }
+    }
+
     // ── Agendamento ──
     @Builder.Default
     private Boolean agendamentoAtivo = false;

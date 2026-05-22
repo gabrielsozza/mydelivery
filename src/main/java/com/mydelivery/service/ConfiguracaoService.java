@@ -45,6 +45,17 @@ public class ConfiguracaoService {
                     .toList());
         }
 
+        // Horários: aceita objeto (Map<dia, {aberto, abertura, fechamento}>) ou
+        // string JSON. Serializa pra string TEXT no banco.
+        if (req.getHorarios() != null) {
+            try {
+                String json = req.getHorarios() instanceof String
+                        ? (String) req.getHorarios()
+                        : new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(req.getHorarios());
+                restaurante.setHorariosJson(json);
+            } catch (Exception ignore) { /* preserva valor antigo se serializar quebrar */ }
+        }
+
         if (req.getAgendamento() != null) {
             var ag = req.getAgendamento();
             if (ag.getAtivo() != null)        restaurante.setAgendamentoAtivo(ag.getAtivo());

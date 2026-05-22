@@ -29,6 +29,8 @@ public class ConfiguracaoRequest {
 
     private List<String> modos;
     private List<String> pagamentos;
+    /** Horários de funcionamento — { seg: {aberto,abertura,fechamento}, ... } */
+    private Object horarios;
     /**
      * Bairros atendidos com taxa por bairro. Cada item é {nome, taxa}.
      * Taxa null = dono ainda não definiu (front avisa).

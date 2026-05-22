@@ -186,12 +186,15 @@ public class CardapioService {
 
         validarPropriedade(produto.getRestaurante().getId(), restauranteId);
 
-        produto.setNome(request.getNome());
-        produto.setDescricao(request.getDescricao());
-        produto.setPreco(request.getPreco());
-        produto.setFotoUrl(request.getFotoUrl());
-        produto.setDisponivel(request.getDisponivel());
-        produto.setDestaque(request.getDestaque());
+        // Update parcial-friendly: só sobrescreve quando o campo foi enviado.
+        // Antes setFotoUrl(null) zerava a foto se o front PUT-asse sem incluí-la
+        // (ex: ao editar só nome/preço) — isso fazia a foto SUMIR após salvar.
+        if (request.getNome() != null)         produto.setNome(request.getNome());
+        if (request.getDescricao() != null)    produto.setDescricao(request.getDescricao());
+        if (request.getPreco() != null)        produto.setPreco(request.getPreco());
+        if (request.getFotoUrl() != null)      produto.setFotoUrl(request.getFotoUrl());
+        if (request.getDisponivel() != null)   produto.setDisponivel(request.getDisponivel());
+        if (request.getDestaque() != null)     produto.setDestaque(request.getDestaque());
 
         if (request.getCategoriaId() != null) {
             Categoria cat = categoriaRepository.findById(request.getCategoriaId())

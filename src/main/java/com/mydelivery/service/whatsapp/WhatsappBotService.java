@@ -161,9 +161,12 @@ public class WhatsappBotService {
             return montarRespostaTelefone(r);
         }
 
-        // 7c. CNPJ / CPF — informações fiscais
+        // 7c. CNPJ / CPF — POR POLÍTICA, o bot não revela documentos fiscais.
+        // Mesmo que estejam cadastrados, são dados sensíveis. Respondemos
+        // educadamente direcionando pra falar com a equipe.
         if (contemAlguma(t, "cnpj", "cpf", "documento", "razao social", "razão social")) {
-            return montarRespostaDocumento(r);
+            return "Essa informação não está disponível no atendimento automático. "
+                    + "Se precisar do dado fiscal pra nota, fale com a equipe — digite *atendente*.";
         }
 
         // 8. Agradecimento curto — responde gentil sem repetir menu
@@ -202,9 +205,20 @@ public class WhatsappBotService {
         return sb.toString();
     }
 
+    /**
+     * Fallback amigável quando a msg do cliente não casou com nenhuma intent.
+     * Lista as opções principais — sempre cordial, nunca culpa o cliente.
+     */
     private String montarMenuCurto(Restaurante r) {
-        return "Posso te ajudar com: *cardápio*, *taxa*, *endereço*, *telefone*, *horário*, "
-                + "*tempo*, *pedido mínimo* ou *atendente*. É só me dizer! 🙂\n\n"
+        return "Desculpe, não consegui entender. 😅\n\n"
+                + "Posso te ajudar com:\n"
+                + "• 🍽️ *Cardápio*\n"
+                + "• 🕒 *Horário* de funcionamento\n"
+                + "• 📍 *Endereço* da loja\n"
+                + "• 🛵 *Taxa de entrega*\n"
+                + "• ⏱️ *Tempo* de entrega\n"
+                + "• 💰 *Pedido mínimo*\n"
+                + "• 👤 *Falar com atendente*\n\n"
                 + "Cardápio: " + montarLinkCardapio(r);
     }
 

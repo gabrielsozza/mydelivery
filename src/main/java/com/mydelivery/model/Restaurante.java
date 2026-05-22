@@ -89,7 +89,11 @@ public class Restaurante {
     @Builder.Default
     private Boolean aberto = false;
 
+    /** Tempo mínimo de entrega (em minutos). Mostrado como "30 - 50 min" se max definido. */
     private Integer tempoEntrega;
+    /** Tempo máximo de entrega — opcional. Se preenchido, vira range "min - max". */
+    @Column(name = "tempo_entrega_max")
+    private Integer tempoEntregaMax;
 
     @Column(precision = 10, scale = 2)
     private BigDecimal taxaEntrega;

@@ -46,6 +46,7 @@ public class ConfiguracaoService {
         if (req.getTemaCardapio() != null) restaurante.setTemaCardapio(req.getTemaCardapio());
         if (req.getAberto() != null)       restaurante.setAberto(req.getAberto());
         if (req.getTempoEntrega() != null) restaurante.setTempoEntrega(req.getTempoEntrega());
+        if (req.getTempoEntregaMax() != null) restaurante.setTempoEntregaMax(req.getTempoEntregaMax());
         if (req.getTaxaEntrega() != null)  restaurante.setTaxaEntrega(req.getTaxaEntrega());
         if (req.getPedidoMinimo() != null) restaurante.setPedidoMinimo(req.getPedidoMinimo());
         if (req.getQtdMesas() != null)     restaurante.setQtdMesas(req.getQtdMesas());

@@ -30,6 +30,7 @@ public class ConfiguracaoRequest {
 
     private Boolean aberto;
     private Integer tempoEntrega;
+    private Integer tempoEntregaMax;
     private BigDecimal taxaEntrega;
     private BigDecimal pedidoMinimo;
     private Integer qtdMesas;

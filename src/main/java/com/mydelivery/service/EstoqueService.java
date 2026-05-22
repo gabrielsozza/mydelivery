@@ -42,7 +42,10 @@ public class EstoqueService {
     // ── INSUMOS: CRUD ───────────────────────────────────────────────────────
 
     public List<InsumoDTO> listarPorRestaurante(Long restauranteId) {
-        var insumos = insumoRepository.findByRestauranteIdOrderByNomeAsc(restauranteId);
+        // Mostra apenas ATIVOS. O DELETE faz soft-delete (setAtivo=false) pra
+        // preservar histórico de movimentações, mas a UI deve esconder os
+        // inativos — o dono espera que ao excluir o item suma da listagem.
+        var insumos = insumoRepository.findByRestauranteIdAndAtivoTrueOrderByNomeAsc(restauranteId);
         // Conta quantos produtos usam cada insumo (1 query agregando em memória)
         var fichas = fichaRepository.findByProdutoRestauranteId(restauranteId);
         Map<Long, Integer> usos = new HashMap<>();

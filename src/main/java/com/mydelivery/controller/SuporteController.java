@@ -12,7 +12,9 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -109,6 +111,44 @@ public class SuporteController {
         Restaurante r = restauranteRepository.findByUsuarioEmail(email).orElseThrow();
         SuporteTicket t = suporteService.criarTicket(r, assunto, texto, anexos);
         return ResponseEntity.ok(serializarTicket(t));
+    }
+
+    /**
+     * Cancela/encerra o ticket. Mantém histórico (vira FECHADO) — o dono pode
+     * usar pra "fechei o assunto, não preciso mais". Não some da lista mas
+     * aparece como encerrado.
+     */
+    @PatchMapping("/tickets/{id}/cancelar")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    @org.springframework.transaction.annotation.Transactional
+    public ResponseEntity<Map<String, Object>> cancelar(@AuthenticationPrincipal String email,
+                                                         @PathVariable Long id) {
+        Restaurante r = restauranteRepository.findByUsuarioEmail(email).orElseThrow();
+        SuporteTicket t = ticketRepository.findByIdAndRestauranteId(id, r.getId())
+                .orElseThrow(() -> new RuntimeException("Ticket não encontrado"));
+        t.setStatus(SuporteTicket.Status.FECHADO);
+        t.setResolvidoEm(java.time.LocalDateTime.now());
+        ticketRepository.save(t);
+        return ResponseEntity.ok(Map.of("ok", true, "status", "FECHADO"));
+    }
+
+    /**
+     * Apaga ticket PERMANENTEMENTE (mensagens + anexos por cascade).
+     * Útil pra limpar histórico de coisas resolvidas. Operação irreversível.
+     */
+    @DeleteMapping("/tickets/{id}")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    @org.springframework.transaction.annotation.Transactional
+    public ResponseEntity<Void> apagar(@AuthenticationPrincipal String email,
+                                       @PathVariable Long id) {
+        Restaurante r = restauranteRepository.findByUsuarioEmail(email).orElseThrow();
+        SuporteTicket t = ticketRepository.findByIdAndRestauranteId(id, r.getId())
+                .orElseThrow(() -> new RuntimeException("Ticket não encontrado"));
+        // Cascade.ALL + orphanRemoval no model já apaga mensagens. Anexos seguem
+        // junto se também estiverem em cascade — senão ficam orfãos no banco
+        // (aceitável, próximo job de limpeza pega).
+        ticketRepository.delete(t);
+        return ResponseEntity.noContent().build();
     }
 
     @PostMapping(value = "/tickets/{id}/mensagens", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)

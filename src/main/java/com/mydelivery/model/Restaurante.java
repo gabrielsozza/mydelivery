@@ -129,6 +129,30 @@ public class Restaurante {
     @com.fasterxml.jackson.annotation.JsonIgnore
     private String horariosJson;
 
+    // ── Automação de horário ──
+    /** Se true: scheduler abre a loja automaticamente quando chega o horário cadastrado. */
+    @Builder.Default
+    @Column(name = "abertura_automatica")
+    private Boolean aberturaAutomatica = false;
+
+    /** Se true: para de aceitar pedidos N minutos ANTES do fechamento (mas loja permanece visualmente aberta). */
+    @Builder.Default
+    @Column(name = "parar_pedidos_antes_fechamento")
+    private Boolean pararPedidosAntesFechamento = false;
+
+    /** Quantos minutos antes do fechamento bloquear novos pedidos. */
+    @Builder.Default
+    @Column(name = "minutos_antes_fechamento")
+    private Integer minutosAntesFechamento = 10;
+
+    /**
+     * Campo calculado em runtime (não persiste): "estou aceitando pedidos agora?".
+     * O ConfiguracaoController.getPublico seta antes de devolver pro front,
+     * usando HorarioLojaService. Se null → front trata como true (retrocompat).
+     */
+    @jakarta.persistence.Transient
+    private Boolean aceitandoPedidos;
+
     /** Expõe como objeto JSON pro front (mais natural que string). */
     @com.fasterxml.jackson.annotation.JsonProperty("horarios")
     public Object getHorariosAsObject() {

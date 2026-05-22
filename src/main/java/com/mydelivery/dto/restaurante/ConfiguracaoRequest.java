@@ -38,6 +38,12 @@ public class ConfiguracaoRequest {
     private List<String> pagamentos;
     /** Horários de funcionamento — { seg: {aberto,abertura,fechamento}, ... } */
     private Object horarios;
+    /** Toggle: abre a loja automaticamente no horário cadastrado. */
+    private Boolean aberturaAutomatica;
+    /** Toggle: para de aceitar pedidos N min antes do fechamento. */
+    private Boolean pararPedidosAntesFechamento;
+    /** Quantos minutos antes do fechamento bloquear pedidos novos. */
+    private Integer minutosAntesFechamento;
     /**
      * Bairros atendidos com taxa por bairro. Cada item é {nome, taxa}.
      * Taxa null = dono ainda não definiu (front avisa).

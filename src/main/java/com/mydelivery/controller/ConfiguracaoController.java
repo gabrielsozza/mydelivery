@@ -31,6 +31,7 @@ public class ConfiguracaoController {
     private final RestauranteRepository restauranteRepository;
     private final ConfiguracaoRestauranteRepository configRestauranteRepository;
     private final MercadoPagoClient mercadoPagoClient;
+    private final com.mydelivery.service.HorarioLojaService horarioLojaService;
 
     @GetMapping("/api/restaurante/configuracoes")
     @PreAuthorize("hasRole('RESTAURANTE')")
@@ -46,6 +47,16 @@ public class ConfiguracaoController {
     public ResponseEntity<Restaurante> getPublico(@PathVariable String slug) {
         Restaurante r = restauranteRepository.findBySlug(slug)
                 .orElseThrow(() -> new RuntimeException("Restaurante não encontrado"));
+        // Calcula on-the-fly se está aceitando pedidos AGORA (considera cutoff
+        // antes do fechamento). null = não-determinado (front trata como true).
+        try {
+            var estado = horarioLojaService.calcular(r);
+            // Loja só aceita se aberta manualmente E dentro do horário E não no cutoff.
+            boolean aceita = Boolean.TRUE.equals(r.getAberto()) && !estado.dentroCutoff;
+            r.setAceitandoPedidos(aceita);
+        } catch (Exception e) {
+            r.setAceitandoPedidos(true); // defensivo
+        }
         // no-cache + no-store: cliente final sempre vê dados atuais do restaurante
         // (logo, capa, taxa, status aberto/fechado). Imagens Cloudinary já têm UUID
         // e podem ser cacheadas no nível da URL — só o JSON precisa ser fresh.

@@ -59,6 +59,19 @@ public class ConfiguracaoService {
                     .toList());
         }
 
+        // Automação de horário — toggles e cutoff
+        if (req.getAberturaAutomatica() != null)
+            restaurante.setAberturaAutomatica(req.getAberturaAutomatica());
+        if (req.getPararPedidosAntesFechamento() != null)
+            restaurante.setPararPedidosAntesFechamento(req.getPararPedidosAntesFechamento());
+        if (req.getMinutosAntesFechamento() != null) {
+            int v = req.getMinutosAntesFechamento();
+            // Clamp pra evitar valores absurdos (0 a 120 min)
+            if (v < 0) v = 0;
+            if (v > 120) v = 120;
+            restaurante.setMinutosAntesFechamento(v);
+        }
+
         // Horários: aceita objeto (Map<dia, {aberto, abertura, fechamento}>) ou
         // string JSON. Serializa pra string TEXT no banco.
         if (req.getHorarios() != null) {

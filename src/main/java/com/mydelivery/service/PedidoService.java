@@ -46,11 +46,30 @@ public class PedidoService {
     private final com.mydelivery.repository.CupomRepository cupomRepository;
     private final EstoqueService estoqueService;
     private final PagamentoService pagamentoService;
+    private final HorarioLojaService horarioLojaService;
 
     @Transactional
     public PedidoResponse criarPedido(NovoPedidoRequest request) {
         Restaurante restaurante = restauranteRepository.findBySlug(request.getSlug())
                 .orElseThrow(() -> new RuntimeException("Restaurante nao encontrado"));
+
+        // Validação de aceitação de pedidos:
+        //  - Se a loja está manualmente fechada (aberto=false), recusa.
+        //  - Se está no "cutoff" (N min antes do fechamento com toggle ativo), recusa.
+        //  - Pedidos agendados (agendadoPara no futuro) são SEMPRE aceitos — a loja
+        //    deveria estar aberta no momento marcado, não agora.
+        boolean ehAgendado = request.getAgendadoPara() != null
+                && request.getAgendadoPara().isAfter(java.time.LocalDateTime.now());
+        if (!ehAgendado) {
+            if (!Boolean.TRUE.equals(restaurante.getAberto())) {
+                throw new RuntimeException("Loja fechada no momento. Tente mais tarde.");
+            }
+            var estado = horarioLojaService.calcular(restaurante);
+            if (estado.dentroCutoff) {
+                throw new RuntimeException("Estamos prestes a fechar — não estamos mais aceitando pedidos novos.");
+            }
+        }
+
         Cliente cliente = null;
         if (request.getCliente() != null && request.getCliente().getTelefone() != null) {
             // Sempre normaliza: só dígitos. Garante que telefones com/sem máscara

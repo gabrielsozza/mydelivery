@@ -241,19 +241,32 @@ public class WhatsappService {
 
     @SuppressWarnings("unchecked")
     private WhatsappInstance criarNova(Restaurante restaurante) {
-        String nome = nomeInstancia(restaurante);
+        String nomeBase = nomeInstancia(restaurante);
+        // Se Evolution rejeitar com "already in use", tenta com sufixo timestamp.
+        // Acontece quando o /reset não conseguiu apagar a instância zumbi do lado
+        // da Evolution. Nome novo = instância nova de verdade (com proxy correto).
+        String nome = nomeBase;
         String webhookUrl = props.getWebhookBaseUrl() + "/api/webhooks/whatsapp/" + nome;
+        Map<String, Object> resp = null;
 
-        log.info("[WhatsApp] Criando instância {} (webhook={})", nome, webhookUrl);
-
-        Map<String, Object> resp;
-        try {
-            resp = evolutionClient.criarInstancia(nome, webhookUrl);
-        } catch (RuntimeException e) {
-            // Pode ser que a instância já exista na Evolution (caso DB local foi resetado).
-            // Recupera o estado dela em vez de falhar.
-            log.warn("[WhatsApp] criarInstancia falhou ({}). Tentando reusar via /connect.", e.getMessage());
-            resp = Map.of();
+        for (int tentativa = 0; tentativa < 2; tentativa++) {
+            log.info("[WhatsApp] Criando instância {} (webhook={})", nome, webhookUrl);
+            try {
+                resp = evolutionClient.criarInstancia(nome, webhookUrl);
+                break;
+            } catch (RuntimeException e) {
+                String msg = e.getMessage() == null ? "" : e.getMessage();
+                if (tentativa == 0 && msg.toLowerCase().contains("already in use")) {
+                    // Bumpa nome com sufixo timestamp e tenta de novo
+                    nome = nomeBase + "-" + (System.currentTimeMillis() / 1000);
+                    webhookUrl = props.getWebhookBaseUrl() + "/api/webhooks/whatsapp/" + nome;
+                    log.warn("[WhatsApp] Nome em uso na Evolution. Re-tentando com {}", nome);
+                    continue;
+                }
+                log.warn("[WhatsApp] criarInstancia falhou ({}). Tentando reusar via /connect.", msg);
+                resp = Map.of();
+                break;
+            }
         }
 
         String token = extrairInstanceToken(resp);

@@ -118,6 +118,26 @@ public class WhatsappService {
         });
     }
 
+    /**
+     * Reset COMPLETO da instância: tenta logout + delete na Evolution e apaga o registro local.
+     * Próximo /conectar cria instância nova do zero. Use quando a instância está em estado zumbi
+     * (Evolution reporta "open" mas WhatsApp não entrega mensagens — shadow-ban).
+     */
+    @Transactional
+    public void resetar(Restaurante restaurante) {
+        repo.findByRestauranteId(restaurante.getId()).ifPresent(inst -> {
+            String nome = inst.getInstanceName();
+            try { evolutionClient.logout(nome); } catch (RuntimeException e) {
+                log.warn("[WhatsApp] logout falhou no reset (ok): {}", e.getMessage());
+            }
+            try { evolutionClient.deletar(nome); } catch (RuntimeException e) {
+                log.warn("[WhatsApp] delete falhou no reset (ok): {}", e.getMessage());
+            }
+            repo.delete(inst);
+            log.info("[WhatsApp] Reset completo de {}", nome);
+        });
+    }
+
     /** Toggle do bot — uso futuro pela UI (1-clique no painel). */
     @Transactional
     public WhatsappInstance toggleBot(Restaurante restaurante, boolean ativo) {

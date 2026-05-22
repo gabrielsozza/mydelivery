@@ -107,6 +107,19 @@ public class WhatsappController {
         return ResponseEntity.ok(Map.of("liberado", ok));
     }
 
+    /**
+     * RESET FORÇADO — apaga a instância na Evolution e localmente. Use quando
+     * a instância está em "estado zumbi" (Evolution reporta open mas mensagens
+     * não chegam — shadow-ban do WhatsApp). Próximo /conectar cria nova do zero.
+     */
+    @PostMapping("/reset")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Map<String, String>> resetar(@AuthenticationPrincipal String email) {
+        Restaurante r = restauranteRepository.findByUsuarioEmail(email).orElseThrow();
+        whatsappService.resetar(r);
+        return ResponseEntity.ok(Map.of("status", "RESETADA"));
+    }
+
     // ── Diagnóstico do webhook (uso operacional/suporte) ──
 
     /** Devolve a configuração de webhook salva na Evolution pra essa instância. */

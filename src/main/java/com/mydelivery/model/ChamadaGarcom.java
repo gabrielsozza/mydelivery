@@ -58,6 +58,16 @@ public class ChamadaGarcom {
     @Column(name = "nome_cliente", length = 80)
     private String nomeCliente;
 
+    /**
+     * Tipo da solicitação. GARCOM = "Chamar garçom" (default, retrocompat).
+     * FECHAR_CONTA = cliente pediu pra fechar a conta. Mesmo polling no painel,
+     * popup ligeiramente diferente. Coluna nova — ddl-auto=update cria sem
+     * dropar; registros antigos viram GARCOM via @Builder.Default.
+     */
+    @Column(nullable = false, length = 20)
+    @Builder.Default
+    private String tipo = "GARCOM"; // GARCOM | FECHAR_CONTA
+
     @Column(nullable = false, length = 20)
     @Builder.Default
     private String status = "PENDENTE"; // PENDENTE | ATENDIDA

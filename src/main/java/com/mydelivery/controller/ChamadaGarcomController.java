@@ -173,12 +173,50 @@ public class ChamadaGarcomController {
         return ResponseEntity.noContent().build();
     }
 
+    /**
+     * Endpoint PÚBLICO: cliente da mesa solicita fechamento de conta.
+     * Mesma infra do "chamar garçom" — reaproveita ChamadaGarcom com tipo=FECHAR_CONTA.
+     * Body: { slugRestaurante, slugMesa, nomeCliente (opcional) }
+     */
+    @PostMapping("/public/solicitar-fechamento")
+    @Transactional
+    public ResponseEntity<Map<String, Object>> solicitarFechamento(@RequestBody Map<String, String> body) {
+        if (body == null) throw new ResponseStatusException(HttpStatus.BAD_REQUEST);
+        String slugRest = body.get("slugRestaurante");
+        String slugMesa = body.get("slugMesa");
+        String nome = body.get("nomeCliente");
+        if (slugRest == null || slugMesa == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "slugRestaurante e slugMesa são obrigatórios");
+        }
+        Mesa mesa = mesaRepo.findByRestauranteSlugAndSlug(slugRest, slugMesa)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Mesa não encontrada"));
+
+        // Anti-spam: 1 solicitação a cada N segundos por mesa
+        var existente = chamadaRepo.findFirstByMesaIdAndStatusOrderByCriadaEmDesc(mesa.getId(), "PENDENTE");
+        if (existente.isPresent() && "FECHAR_CONTA".equals(existente.get().getTipo())
+                && Duration.between(existente.get().getCriadaEm(), LocalDateTime.now()).getSeconds() < THROTTLE_SEGUNDOS) {
+            return ResponseEntity.ok(Map.of("ok", true, "ja_solicitado", true, "id", existente.get().getId()));
+        }
+
+        ChamadaGarcom c = chamadaRepo.save(ChamadaGarcom.builder()
+                .restaurante(mesa.getRestaurante())
+                .mesa(mesa)
+                .nomeCliente(nome)
+                .tipo("FECHAR_CONTA")
+                .status("PENDENTE")
+                .build());
+        log.info("[FecharConta] Solicitação criada — restaurante={} mesa={} cliente={}",
+                mesa.getRestaurante().getId(), mesa.getSlug(), nome);
+        return ResponseEntity.status(HttpStatus.CREATED).body(Map.of("ok", true, "id", c.getId()));
+    }
+
     private Map<String, Object> serializar(ChamadaGarcom c) {
         Map<String, Object> out = new HashMap<>();
         out.put("id", c.getId());
         out.put("mesaNome", c.getMesa() != null ? c.getMesa().getNome() : null);
         out.put("mesaSlug", c.getMesa() != null ? c.getMesa().getSlug() : null);
         out.put("nomeCliente", c.getNomeCliente());
+        out.put("tipo", c.getTipo() != null ? c.getTipo() : "GARCOM");
         out.put("criadaEm", c.getCriadaEm() != null ? c.getCriadaEm().toString() : null);
         return out;
     }

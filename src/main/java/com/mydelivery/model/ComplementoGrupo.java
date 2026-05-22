@@ -27,6 +27,9 @@ public class ComplementoGrupo {
     private Integer minEscolhas = 0;
     private Integer maxEscolhas = 1;
 
-    @OneToMany(mappedBy = "grupo", cascade = CascadeType.ALL)
+    // EAGER porque open-in-view=false: serialização do response fora da transação
+    // disparava LazyInitException ao iterar getItens() → endpoint retornava 500
+    // e o painel/cardápio ficavam sem complementos mesmo com dados no banco.
+    @OneToMany(mappedBy = "grupo", cascade = CascadeType.ALL, fetch = FetchType.EAGER, orphanRemoval = true)
     private List<ComplementoItem> itens;
 }

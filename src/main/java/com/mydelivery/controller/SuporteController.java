@@ -88,8 +88,12 @@ public class SuporteController {
 
     @GetMapping("/tickets/{id}")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @org.springframework.transaction.annotation.Transactional(readOnly = true)
     public ResponseEntity<Map<String, Object>> detalhar(@AuthenticationPrincipal String email,
                                                          @PathVariable Long id) {
+        // @Transactional aberto pra resolver mensagens + anexos (ambos LAZY) durante
+        // serializarTicket(). Sem isso: LazyInit no abrir → 500 → frontend não exibe
+        // a conversa apesar do ticket existir.
         Restaurante r = restauranteRepository.findByUsuarioEmail(email).orElseThrow();
         SuporteTicket t = ticketRepository.findByIdAndRestauranteId(id, r.getId())
                 .orElseThrow(() -> new RuntimeException("Ticket não encontrado"));

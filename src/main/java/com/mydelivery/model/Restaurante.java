@@ -50,6 +50,13 @@ public class Restaurante {
     @Column(unique = true)
     private String cnpj;
 
+    /**
+     * CPF: opção pra restaurantes menores que não têm CNPJ.
+     * O front exige UM ou OUTRO (não os dois). Único pra evitar duplicidade.
+     */
+    @Column(unique = true, length = 14)
+    private String cpf;
+
     // ── Aparência ──
     private String logoUrl;
     private String capaUrl;
@@ -62,7 +69,19 @@ public class Restaurante {
     // ── Info pública ──
     private String descricao;
     private String telefone;
+
+    /**
+     * Endereço — antes era uma única string "endereco". Agora detalhado:
+     * rua / numero / bairro / cep + cidade / estado. O campo `endereco`
+     * antigo é mantido pra retrocompat de cadastros legados.
+     */
     private String endereco;
+    private String rua;
+    @Column(length = 20)
+    private String numero;
+    private String bairro;
+    @Column(length = 10)
+    private String cep;
     private String cidade;
     private String estado;
 

@@ -26,8 +26,22 @@ public class ConfiguracaoService {
         if (req.getDescricao() != null)    restaurante.setDescricao(req.getDescricao());
         if (req.getTelefone() != null)     restaurante.setTelefone(req.getTelefone());
         if (req.getEndereco() != null)     restaurante.setEndereco(req.getEndereco());
+        if (req.getRua() != null)          restaurante.setRua(req.getRua());
+        if (req.getNumero() != null)       restaurante.setNumero(req.getNumero());
+        if (req.getBairro() != null)       restaurante.setBairro(req.getBairro());
+        if (req.getCep() != null)          restaurante.setCep(req.getCep());
         if (req.getCidade() != null)       restaurante.setCidade(req.getCidade());
         if (req.getEstado() != null)       restaurante.setEstado(req.getEstado());
+        // CPF/CNPJ — aceita só dígitos pra evitar inconsistência de máscara entre cadastros.
+        // String vazia = limpar o campo (ex: trocou de CPF pra CNPJ).
+        if (req.getCnpj() != null) {
+            String s = req.getCnpj().replaceAll("\\D", "");
+            restaurante.setCnpj(s.isEmpty() ? null : s);
+        }
+        if (req.getCpf() != null) {
+            String s = req.getCpf().replaceAll("\\D", "");
+            restaurante.setCpf(s.isEmpty() ? null : s);
+        }
         if (req.getCorPrimaria() != null)  restaurante.setCorPrimaria(req.getCorPrimaria());
         if (req.getTemaCardapio() != null) restaurante.setTemaCardapio(req.getTemaCardapio());
         if (req.getAberto() != null)       restaurante.setAberto(req.getAberto());

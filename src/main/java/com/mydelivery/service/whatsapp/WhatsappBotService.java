@@ -148,6 +148,24 @@ public class WhatsappBotService {
             return montarRespostaHorario(r);
         }
 
+        // 7a. Endereço / localização ("onde fica", "qual endereço", "como chegar")
+        if (contemAlguma(t, "endereco", "onde fica", "onde voces ficam", "onde estao",
+                "localizacao", "localização", "como chegar", "qual o endereco",
+                "qual endereco", "lugar", "endereço")) {
+            return montarRespostaEndereco(r);
+        }
+
+        // 7b. Telefone / contato
+        if (contemAlguma(t, "telefone", "numero", "contato", "telefonar",
+                "ligar", "qual o telefone", "fone", "whats")) {
+            return montarRespostaTelefone(r);
+        }
+
+        // 7c. CNPJ / CPF — informações fiscais
+        if (contemAlguma(t, "cnpj", "cpf", "documento", "razao social", "razão social")) {
+            return montarRespostaDocumento(r);
+        }
+
         // 8. Agradecimento curto — responde gentil sem repetir menu
         if (contemAlguma(t, "obrigado", "obrigada", "valeu", "vlw", "thanks")) {
             return "Por nada! 😊 Qualquer coisa é só chamar.";
@@ -174,7 +192,8 @@ public class WhatsappBotService {
         sb.append("Você pode me perguntar sobre:\n");
         sb.append("• 🍽️ *Cardápio*\n");
         sb.append("• 🛵 *Taxa de entrega*\n");
-        sb.append("• 📍 *Regiões atendidas*\n");
+        sb.append("• 📍 *Endereço da loja* / *Regiões atendidas*\n");
+        sb.append("• 📞 *Telefone*\n");
         sb.append("• ⏱️ *Tempo de entrega*\n");
         sb.append("• 💰 *Pedido mínimo*\n");
         sb.append("• 🕒 *Horário de funcionamento*\n");
@@ -184,8 +203,8 @@ public class WhatsappBotService {
     }
 
     private String montarMenuCurto(Restaurante r) {
-        return "Posso te ajudar com: *cardápio*, *taxa*, *regiões*, *tempo*, *pedido mínimo*, "
-                + "*horário* ou *atendente*. É só me dizer! 🙂\n\n"
+        return "Posso te ajudar com: *cardápio*, *taxa*, *endereço*, *telefone*, *horário*, "
+                + "*tempo*, *pedido mínimo* ou *atendente*. É só me dizer! 🙂\n\n"
                 + "Cardápio: " + montarLinkCardapio(r);
     }
 
@@ -201,6 +220,83 @@ public class WhatsappBotService {
         return "🌙 No momento estamos *fechados*.\n\n"
                 + "Mas você pode dar uma olhada no cardápio e voltar depois: "
                 + montarLinkCardapio(r);
+    }
+
+    /** Endereço da loja — monta a partir dos campos detalhados, com fallback. */
+    private String montarRespostaEndereco(Restaurante r) {
+        // Prioriza os campos novos (rua/numero/bairro/cidade/estado/cep).
+        // Se faltar tudo, usa o "endereco" antigo (campo legado).
+        StringBuilder linha = new StringBuilder();
+        if (notBlank(r.getRua())) {
+            linha.append(r.getRua());
+            if (notBlank(r.getNumero())) linha.append(", ").append(r.getNumero());
+        }
+        if (notBlank(r.getBairro())) {
+            if (linha.length() > 0) linha.append(" — ");
+            linha.append(r.getBairro());
+        }
+        StringBuilder cidadeEstado = new StringBuilder();
+        if (notBlank(r.getCidade())) cidadeEstado.append(r.getCidade());
+        if (notBlank(r.getEstado())) {
+            if (cidadeEstado.length() > 0) cidadeEstado.append(" / ");
+            cidadeEstado.append(r.getEstado());
+        }
+
+        StringBuilder sb = new StringBuilder("📍 *Onde estamos:*\n\n");
+        boolean teveAlgo = false;
+        if (linha.length() > 0)        { sb.append(linha).append("\n"); teveAlgo = true; }
+        if (cidadeEstado.length() > 0) { sb.append(cidadeEstado).append("\n"); teveAlgo = true; }
+        if (notBlank(r.getCep()))      { sb.append("CEP: ").append(r.getCep()).append("\n"); teveAlgo = true; }
+        if (!teveAlgo && notBlank(r.getEndereco())) {
+            sb.append(r.getEndereco()).append("\n");
+            teveAlgo = true;
+        }
+        if (!teveAlgo) {
+            return "Ainda não cadastramos o endereço aqui no chat. Confira no cardápio: "
+                    + montarLinkCardapio(r);
+        }
+        return sb.toString().trim();
+    }
+
+    /** Telefone da loja — formata se vier só com dígitos. */
+    private String montarRespostaTelefone(Restaurante r) {
+        String tel = r.getTelefone();
+        if (!notBlank(tel)) {
+            return "Ainda não cadastramos o telefone aqui. "
+                    + "Você pode falar comigo por aqui mesmo — é só pedir *atendente* pra falar com a equipe.";
+        }
+        return "📞 *Telefone:* " + tel + "\n\n"
+                + "Se preferir, pode falar com a gente por aqui mesmo — digite *atendente*.";
+    }
+
+    /** CPF ou CNPJ (o que tiver cadastrado). */
+    private String montarRespostaDocumento(Restaurante r) {
+        boolean temCnpj = notBlank(r.getCnpj());
+        boolean temCpf  = notBlank(r.getCpf());
+        if (!temCnpj && !temCpf) {
+            return "Não temos documento cadastrado por aqui. Posso te ajudar com mais alguma coisa?";
+        }
+        StringBuilder sb = new StringBuilder("📄 *Documento da loja:*\n\n");
+        if (temCnpj) sb.append("CNPJ: ").append(formatarCnpj(r.getCnpj())).append("\n");
+        if (temCpf)  sb.append("CPF: ").append(formatarCpf(r.getCpf())).append("\n");
+        return sb.toString().trim();
+    }
+
+    private static boolean notBlank(String s) {
+        return s != null && !s.trim().isEmpty();
+    }
+
+    private static String formatarCnpj(String s) {
+        String d = s == null ? "" : s.replaceAll("\\D", "");
+        if (d.length() != 14) return s;
+        return d.substring(0,2) + "." + d.substring(2,5) + "." + d.substring(5,8)
+             + "/" + d.substring(8,12) + "-" + d.substring(12,14);
+    }
+    private static String formatarCpf(String s) {
+        String d = s == null ? "" : s.replaceAll("\\D", "");
+        if (d.length() != 11) return s;
+        return d.substring(0,3) + "." + d.substring(3,6) + "." + d.substring(6,9)
+             + "-" + d.substring(9,11);
     }
 
     private String montarRespostaTaxa(Restaurante r) {

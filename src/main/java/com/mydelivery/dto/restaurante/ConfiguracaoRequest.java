@@ -15,9 +15,16 @@ public class ConfiguracaoRequest {
     private String slug;
     private String descricao;
     private String telefone;
-    private String endereco;
+    private String endereco;     // legado (mantido p/ retrocompat)
+    private String rua;
+    private String numero;
+    private String bairro;
+    private String cep;
     private String cidade;
     private String estado;
+    /** CPF OU CNPJ — um dos dois (restaurantes pequenos costumam só ter CPF). */
+    private String cnpj;
+    private String cpf;
     private String corPrimaria;
     private String temaCardapio;        // "claro" | "escuro"
 

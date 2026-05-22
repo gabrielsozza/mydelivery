@@ -213,13 +213,83 @@ public class WhatsappBotService {
     }
 
     private String montarRespostaHorario(Restaurante r) {
-        if (Boolean.TRUE.equals(r.getAberto())) {
-            return "🟢 Estamos *abertos* agora!\n\nFaça seu pedido pelo cardápio: "
-                    + montarLinkCardapio(r);
+        String horarioHoje = montarLinhaHorarioHoje(r);
+        boolean aberto = Boolean.TRUE.equals(r.getAberto());
+
+        StringBuilder sb = new StringBuilder();
+        if (aberto) {
+            sb.append("🟢 Estamos *abertos* agora!");
+        } else {
+            sb.append("🌙 No momento estamos *fechados*.");
         }
-        return "🌙 No momento estamos *fechados*.\n\n"
-                + "Mas você pode dar uma olhada no cardápio e voltar depois: "
-                + montarLinkCardapio(r);
+        if (notBlank(horarioHoje)) {
+            sb.append("\n\n").append(horarioHoje);
+        }
+        sb.append("\n\nCardápio: ").append(montarLinkCardapio(r));
+        return sb.toString();
+    }
+
+    /**
+     * Lê horariosJson e devolve "Funcionamos hoje das 18h às 23h" ou similar.
+     * Se hoje for "fechado", indica e tenta sugerir o próximo dia aberto.
+     * Retorna string vazia se não tiver nada cadastrado.
+     */
+    private String montarLinhaHorarioHoje(Restaurante r) {
+        if (!notBlank(r.getHorariosJson())) return "";
+        try {
+            @SuppressWarnings("unchecked")
+            java.util.Map<String, Object> all =
+                    new com.fasterxml.jackson.databind.ObjectMapper().readValue(r.getHorariosJson(), java.util.Map.class);
+            String[] dias = {"seg","ter","qua","qui","sex","sab","dom"};
+            String[] nomes = {"segunda","terça","quarta","quinta","sexta","sábado","domingo"};
+            int idxHoje = java.time.LocalDate.now(java.time.ZoneId.of("America/Sao_Paulo"))
+                    .getDayOfWeek().getValue() - 1; // 0=seg ... 6=dom
+
+            Object dia = all.get(dias[idxHoje]);
+            if (dia instanceof java.util.Map<?, ?> m) {
+                @SuppressWarnings("unchecked")
+                java.util.Map<String, Object> mm = (java.util.Map<String, Object>) m;
+                if (Boolean.FALSE.equals(mm.get("aberto"))) {
+                    // Fechado hoje — procura o próximo dia aberto
+                    for (int i = 1; i <= 7; i++) {
+                        int idx = (idxHoje + i) % 7;
+                        Object d2 = all.get(dias[idx]);
+                        if (d2 instanceof java.util.Map<?, ?> m2) {
+                            @SuppressWarnings("unchecked")
+                            java.util.Map<String, Object> mm2 = (java.util.Map<String, Object>) m2;
+                            if (!Boolean.FALSE.equals(mm2.get("aberto"))) {
+                                String ab2 = formatarHora(strOf(mm2.get("abertura")));
+                                String fc2 = formatarHora(strOf(mm2.get("fechamento")));
+                                if (notBlank(ab2) && notBlank(fc2)) {
+                                    return "Hoje estamos fechados. Próxima " + nomes[idx]
+                                            + " funcionamos das *" + ab2 + "* às *" + fc2 + "*.";
+                                }
+                            }
+                        }
+                    }
+                    return "Hoje estamos fechados.";
+                }
+                String ab = formatarHora(strOf(mm.get("abertura")));
+                String fc = formatarHora(strOf(mm.get("fechamento")));
+                if (notBlank(ab) && notBlank(fc)) {
+                    return "Funcionamos hoje das *" + ab + "* às *" + fc + "*.";
+                }
+            }
+        } catch (Exception ignore) {}
+        return "";
+    }
+
+    private static String strOf(Object o) { return o == null ? null : o.toString(); }
+
+    /** "18:00" → "18h" / "18:30" → "18h30". Se vier null/inválido, devolve null. */
+    private static String formatarHora(String s) {
+        if (s == null || s.isBlank()) return null;
+        String[] p = s.split(":");
+        if (p.length < 2) return s;
+        String h = p[0].trim();
+        String m = p[1].trim();
+        if ("00".equals(m)) return h + "h";
+        return h + "h" + m;
     }
 
     /** Endereço da loja — monta a partir dos campos detalhados, com fallback. */

@@ -82,24 +82,11 @@ public class ComplementoController {
                 .obrigatorio(boolOr(body, "obrigatorio", false))
                 .minEscolhas(intOr(body, "minEscolhas", 0))
                 .maxEscolhas(intOr(body, "maxEscolhas", 1))
+                .itens(new java.util.ArrayList<>())  // garante coleção mutável
                 .build();
-        grupoRepo.save(g);
-        // Itens vêm junto (opcional)
-        Object itensRaw = body.get("itens");
-        if (itensRaw instanceof List<?> ll) {
-            for (Object io : ll) {
-                if (!(io instanceof Map<?,?> im)) continue;
-                @SuppressWarnings("unchecked")
-                Map<String, Object> imap = (Map<String, Object>) im;
-                ComplementoItem it = ComplementoItem.builder()
-                        .grupo(g)
-                        .nome(strReq(imap, "nome"))
-                        .precoAdicional(decOr(imap, "precoAdicional", BigDecimal.ZERO))
-                        .ativo(boolOr(imap, "ativo", true))
-                        .build();
-                itemRepo.save(it);
-            }
-        }
+        // Adiciona itens ANTES de salvar — cascade.ALL persiste tudo numa só
+        adicionarItensA(g, body.get("itens"));
+        g = grupoRepo.saveAndFlush(g);
         return ResponseEntity.status(HttpStatus.CREATED).body(serializar(g));
     }
 
@@ -118,25 +105,40 @@ public class ComplementoController {
         if (body.containsKey("obrigatorio"))  g.setObrigatorio(boolOr(body, "obrigatorio", false));
         if (body.containsKey("minEscolhas"))  g.setMinEscolhas(intOr(body, "minEscolhas", 0));
         if (body.containsKey("maxEscolhas"))  g.setMaxEscolhas(intOr(body, "maxEscolhas", 1));
-        grupoRepo.save(g);
 
-        // Substitui a lista inteira de itens — mais simples que diff
-        if (body.containsKey("itens") && body.get("itens") instanceof List<?> novos) {
-            if (g.getItens() != null) g.getItens().forEach(itemRepo::delete);
-            for (Object io : novos) {
-                if (!(io instanceof Map<?,?> im)) continue;
-                @SuppressWarnings("unchecked")
-                Map<String, Object> imap = (Map<String, Object>) im;
-                ComplementoItem it = ComplementoItem.builder()
-                        .grupo(g)
-                        .nome(strReq(imap, "nome"))
-                        .precoAdicional(decOr(imap, "precoAdicional", BigDecimal.ZERO))
-                        .ativo(boolOr(imap, "ativo", true))
-                        .build();
-                itemRepo.save(it);
-            }
+        // ── Substituição completa dos itens (jeito canônico com orphanRemoval=true) ──
+        // Antes: itemRepo.delete() em cada antigo + itemRepo.save() em cada novo. Isso
+        // entrava em conflito com a coleção EAGER gerenciada do Hibernate (os antigos
+        // continuavam em g.getItens() depois do delete via repo). Resultado: ao reabrir
+        // o produto, items deletados voltavam a aparecer e até duplicavam.
+        // Agora: clear() na coleção dispara orphanRemoval (DELETE no banco), e os novos
+        // são adicionados na própria coleção. Cascade.ALL no save persiste tudo. Flush
+        // garante que SQL roda antes do serializar.
+        if (body.containsKey("itens")) {
+            if (g.getItens() == null) g.setItens(new java.util.ArrayList<>());
+            g.getItens().clear();
+            adicionarItensA(g, body.get("itens"));
         }
-        return ResponseEntity.ok(serializar(grupoRepo.findById(grupoId).get()));
+        g = grupoRepo.saveAndFlush(g);
+        return ResponseEntity.ok(serializar(g));
+    }
+
+    /** Helper: parse o body.itens (List<Map>) e adiciona à coleção do grupo. */
+    private void adicionarItensA(ComplementoGrupo g, Object itensRaw) {
+        if (!(itensRaw instanceof List<?> ll)) return;
+        if (g.getItens() == null) g.setItens(new java.util.ArrayList<>());
+        for (Object io : ll) {
+            if (!(io instanceof Map<?,?> im)) continue;
+            @SuppressWarnings("unchecked")
+            Map<String, Object> imap = (Map<String, Object>) im;
+            ComplementoItem it = ComplementoItem.builder()
+                    .grupo(g)
+                    .nome(strReq(imap, "nome"))
+                    .precoAdicional(decOr(imap, "precoAdicional", BigDecimal.ZERO))
+                    .ativo(boolOr(imap, "ativo", true))
+                    .build();
+            g.getItens().add(it);
+        }
     }
 
     @DeleteMapping("/api/complementos/grupos/{grupoId}")

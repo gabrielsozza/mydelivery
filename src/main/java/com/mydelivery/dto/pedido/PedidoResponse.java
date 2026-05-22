@@ -25,6 +25,11 @@ public class PedidoResponse {
     private LocalDateTime criadoEm;
     private LocalDateTime agendadoPara;
     private String restauranteNome;
+    /** Telefone do restaurante — pra botão WhatsApp na tela de acompanhamento. */
+    private String restauranteTelefone;
+    /** Tempo estimado (min) — usado na tela de acompanhamento como "30 min" ou "30-50 min". */
+    private Integer restauranteTempoEntrega;
+    private Integer restauranteTempoEntregaMax;
     private Long entregadorId;
     private String entregadorNome;
     // ── Pedido de mesa (presencial) ──

@@ -18,7 +18,9 @@ public class Pedido {
     // ── Mesa (presencial) ──
     // Quando tipo=MESA, pedido fica vinculado à mesa física e ao nome digitado
     // pelo cliente. Pedidos delivery/retirada deixam ambos null.
-    @ManyToOne(fetch=FetchType.LAZY) @JoinColumn(name="mesa_id") private Mesa mesa;
+    // EAGER porque open-in-view=false: serialização do DTO fora da transação
+    // dispararia LazyInitializationException ao ler mesa.getNome().
+    @ManyToOne @JoinColumn(name="mesa_id") private Mesa mesa;
     @Column(name="nome_cliente_mesa", length=80) private String nomeClienteMesa;
     // length=30 garante que AGUARDANDO_PAGAMENTO (20 chars) caiba. ddl-auto=update
     // não amplia colunas existentes — pra bancos já criados, ver MigracaoEnumLengthJob.

@@ -83,6 +83,41 @@ public class MesaController {
     }
 
     /**
+     * Sincroniza a quantidade total de mesas do restaurante. Body: {"quantidade":25}.
+     *  - Se faltam mesas: cria "Mesa NN" (zero-padded em 2 dígitos) das que faltam.
+     *  - Se sobra: NÃO apaga (preserva histórico de pedidos). O dono remove manualmente
+     *    pelo botão X se quiser reduzir.
+     * Idempotente: chamadas repetidas com mesmo número não criam duplicatas.
+     */
+    @PostMapping("/api/mesas/bulk")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Map<String, Object>> gerarMesasBulk(
+            @AuthenticationPrincipal String email,
+            @RequestBody Map<String, Object> body) {
+        Restaurante r = restauranteRepo.findByUsuarioEmail(email).orElseThrow();
+        int qtd = 0;
+        try { qtd = Integer.parseInt(String.valueOf(body.get("quantidade"))); } catch (Exception ignore) {}
+        if (qtd <= 0 || qtd > 500) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Quantidade inválida (1–500)");
+        }
+        int criadas = 0;
+        for (int i = 1; i <= qtd; i++) {
+            String nome = "Mesa " + String.format("%02d", i);
+            String slug = "mesa-" + String.format("%02d", i);
+            if (mesaRepo.existsByRestauranteIdAndSlug(r.getId(), slug)) continue;
+            mesaRepo.save(Mesa.builder()
+                    .restaurante(r)
+                    .nome(nome)
+                    .slug(slug)
+                    .ativa(true)
+                    .build());
+            criadas++;
+        }
+        log.info("[Mesa] bulk restauranteId={} qtd={} criadas={}", r.getId(), qtd, criadas);
+        return ResponseEntity.ok(Map.of("ok", true, "criadas", criadas, "total", qtd));
+    }
+
+    /**
      * Fecha a comanda da mesa: todos os pedidos ativos viram ENTREGUE + pago.
      * Equivalente ao "fechar conta" no balcão. Não altera mesa em si.
      */

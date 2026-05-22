@@ -97,6 +97,65 @@ public class ChamadaGarcomController {
                 .toList());
     }
 
+    /** 
+     * Endpoint painel: lista chamadas PENDENTES por slug do restaurante. 
+     * Valida que o restaurante autenticado pertence ao slug fornecido.
+     */
+    @GetMapping("/api/restaurante/{slug}/chamados-garcom")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<List<Map<String, Object>>> listarChamadosPorSlug(
+            @AuthenticationPrincipal String email,
+            @PathVariable String slug) {
+        Restaurante r = restauranteRepo.findByUsuarioEmail(email)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED));
+        
+        // Validar que o restaurante autenticado pertence ao slug fornecido
+        if (!r.getSlug().equals(slug)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Acesso negado a este restaurante");
+        }
+        
+        return ResponseEntity.ok(chamadaRepo
+                .findByRestauranteIdAndStatusOrderByCriadaEmAsc(r.getId(), "PENDENTE")
+                .stream()
+                .map(this::serializar)
+                .toList());
+    }
+
+    /** 
+     * Endpoint painel: marca chamado como atendido por slug do restaurante. 
+     * Valida que o restaurante autenticado pertence ao slug fornecido.
+     */
+    @PostMapping("/api/restaurante/{slug}/chamados-garcom/{id}/atender")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    @Transactional
+    public ResponseEntity<Void> atenderChamadoPorSlug(
+            @AuthenticationPrincipal String email,
+            @PathVariable String slug,
+            @PathVariable Long id) {
+        Restaurante r = restauranteRepo.findByUsuarioEmail(email)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED));
+        
+        // Validar que o restaurante autenticado pertence ao slug fornecido
+        if (!r.getSlug().equals(slug)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Acesso negado a este restaurante");
+        }
+        
+        ChamadaGarcom c = chamadaRepo.findById(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+        
+        // Validar que o chamado pertence ao restaurante autenticado
+        if (!c.getRestaurante().getId().equals(r.getId())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Este chamado não pertence ao seu restaurante");
+        }
+        
+        c.setStatus("ATENDIDA");
+        c.setAtendidaEm(LocalDateTime.now());
+        chamadaRepo.save(c);
+        log.info("[Garcom] Chamada atendida — restaurante={} chamadaId={}", r.getId(), id);
+        
+        return ResponseEntity.noContent().build();
+    }
+
     /** Dispensa (marca atendida). */
     @DeleteMapping("/api/chamadas-garcom/{id}")
     @PreAuthorize("hasRole('RESTAURANTE')")

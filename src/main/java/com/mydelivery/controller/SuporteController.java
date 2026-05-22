@@ -55,7 +55,12 @@ public class SuporteController {
 
     @GetMapping("/tickets")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @org.springframework.transaction.annotation.Transactional(readOnly = true)
     public ResponseEntity<List<Map<String, Object>>> listar(@AuthenticationPrincipal String email) {
+        // @Transactional aberto pra resolver as mensagens LAZY no loop abaixo —
+        // com open-in-view=false (padrão), acessar t.getMensagens() fora de
+        // transação dispara LazyInitException e o endpoint retorna 500,
+        // fazendo a lista do painel ficar "Não foi possível carregar".
         Restaurante r = restauranteRepository.findByUsuarioEmail(email).orElseThrow();
         List<SuporteTicket> tickets = ticketRepository.findByRestauranteIdOrderByAtualizadoEmDesc(r.getId());
         List<Map<String, Object>> out = new ArrayList<>();

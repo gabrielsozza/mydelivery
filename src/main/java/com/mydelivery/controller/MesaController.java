@@ -118,6 +118,20 @@ public class MesaController {
     }
 
     /**
+     * Marca a comanda como PAGA sem fechar — pedidos continuam em andamento,
+     * só sinaliza que o cliente já pagou. Botão complementar ao "Fechar conta".
+     */
+    @PostMapping("/api/mesas/{id}/marcar-pago")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Map<String, Object>> marcarPago(
+            @AuthenticationPrincipal String email,
+            @PathVariable Long id) {
+        Restaurante r = restauranteRepo.findByUsuarioEmail(email).orElseThrow();
+        int alterados = pedidoService.marcarComandaPaga(r.getId(), id);
+        return ResponseEntity.ok(Map.of("ok", true, "pedidosAlterados", alterados));
+    }
+
+    /**
      * Fecha a comanda da mesa: todos os pedidos ativos viram ENTREGUE + pago.
      * Equivalente ao "fechar conta" no balcão. Não altera mesa em si.
      */

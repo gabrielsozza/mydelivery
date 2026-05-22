@@ -477,6 +477,31 @@ public class PedidoService {
     }
 
     /**
+     * Marca a comanda como PAGA sem fechar/entregar — útil quando o cliente
+     * já pagou mas a comida ainda está sendo entregue/finalizada. Não muda
+     * status (continua PENDENTE/CONFIRMADO/EM_PREPARO), só seta pago=true.
+     */
+    @Transactional
+    public int marcarComandaPaga(Long restauranteId, Long mesaId) {
+        var mesa = mesaRepository.findById(mesaId)
+                .orElseThrow(() -> new RuntimeException("Mesa não encontrada"));
+        if (!mesa.getRestaurante().getId().equals(restauranteId)) {
+            throw new RuntimeException("Mesa de outro restaurante.");
+        }
+        var ativos = pedidoRepository.findComandaAtivaPorMesa(mesaId);
+        var agora = java.time.LocalDateTime.now();
+        int alterados = 0;
+        for (var p : ativos) {
+            if (Boolean.TRUE.equals(p.getPago())) continue; // já estava pago
+            p.setPago(true);
+            if (p.getPagoEm() == null) p.setPagoEm(agora);
+            alterados++;
+        }
+        if (alterados > 0) pedidoRepository.saveAll(ativos);
+        return alterados;
+    }
+
+    /**
      * Comanda ATIVA da mesa pra cliente acompanhar (público). Se nome informado,
      * filtra só os pedidos daquela pessoa — assim Maria não vê o que João pediu.
      * Se nome vazio, retorna todos os pedidos ativos (uso pela cozinha).

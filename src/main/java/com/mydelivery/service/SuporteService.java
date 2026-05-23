@@ -54,6 +54,7 @@ public class SuporteService {
 
     private final SuporteTicketRepository ticketRepository;
     private final SuporteAnexoRepository anexoRepository;
+    private final com.mydelivery.repository.SuporteMensagemRepository mensagemRepository;
     private final CloudinaryService cloudinaryService;
 
     /** Última mensagem enviada por restaurante — controle de throttle. */
@@ -138,24 +139,29 @@ public class SuporteService {
 
     private SuporteMensagem criarMensagemInterna(SuporteTicket ticket, SuporteMensagem.Autor autor,
                                                   String autorNome, String texto, MultipartFile[] arquivos) {
+        // Validação de anexos ANTES de persistir qualquer coisa — evita lixo no banco
+        // se o usuário mandar arquivo demais ou quantidade inválida.
+        if (arquivos != null && arquivos.length > maxAnexos) {
+            throw new RuntimeException("Máximo de " + maxAnexos + " anexos por mensagem.");
+        }
+
         SuporteMensagem msg = SuporteMensagem.builder()
                 .ticket(ticket)
                 .autor(autor)
                 .autorNome(autorNome)
                 .texto(texto)
                 .build();
+
+        // CRÍTICO: salvar DIRETO via mensagemRepository.saveAndFlush() em vez de
+        // cascade do ticket. O cascade via save() do parent faz merge() na nova msg,
+        // o que retorna uma NOVA instância managed — mas a variável local 'msg' fica
+        // transient. Aí anexoRepository.save() abaixo dispara
+        // TransientPropertyValueException porque ainda referencia a transient.
+        // Save direto: msg fica managed (mesma referência), anexo persiste sem erro.
+        msg = mensagemRepository.saveAndFlush(msg);
         ticket.getMensagens().add(msg);
 
-        // Persiste o ticket ANTES de criar anexos E força flush imediato.
-        // Sem saveAndFlush, o INSERT da mensagem pode ficar no batch do Hibernate
-        // e o anexoRepository.save() abaixo dispara TransientPropertyValueException
-        // porque a mensagem ainda não tem ID no banco.
-        ticketRepository.saveAndFlush(ticket);
-
         if (arquivos != null && arquivos.length > 0) {
-            if (arquivos.length > maxAnexos) {
-                throw new RuntimeException("Máximo de " + maxAnexos + " anexos por mensagem.");
-            }
             for (MultipartFile f : arquivos) {
                 if (f == null || f.isEmpty()) continue;
                 SuporteAnexo anexo = salvarAnexo(msg, ticket.getId(), f);

@@ -16,6 +16,7 @@ import org.springframework.transaction.annotation.Transactional;
 import com.mydelivery.model.Assinatura;
 import com.mydelivery.model.PagamentoMensalidade;
 import com.mydelivery.model.Plano;
+import com.mydelivery.model.PlanoCatalogo;
 import com.mydelivery.model.Restaurante;
 import com.mydelivery.repository.AssinaturaRepository;
 import com.mydelivery.repository.RestauranteRepository;
@@ -46,6 +47,7 @@ public class AssinaturaService {
 
     private final AssinaturaRepository assinaturaRepository;
     private final RestauranteRepository restauranteRepository;
+    private final PlanoCatalogoService planoCatalogoService;
 
     @Value("${app.assinatura.aviso-trial-dias:5}")
     private int avisoTrialDias;
@@ -292,7 +294,22 @@ public class AssinaturaService {
         return (int) Math.max(0, Math.ceil(h / 24.0));
     }
 
+    /**
+     * Lista planos disponíveis pro restaurante exibir.
+     *
+     * Fonte: tabela {@code planos_catalog} (editável pelo admin). Se a tabela
+     * estiver vazia por algum motivo extremo (seed não rodou), cai pro enum
+     * histórico — garante que nunca devolve lista vazia em produção.
+     */
     private List<Map<String, Object>> listarPlanos() {
+        List<PlanoCatalogo> ativos = planoCatalogoService.listarAtivos();
+        if (!ativos.isEmpty()) {
+            List<Map<String, Object>> lista = new ArrayList<>();
+            for (PlanoCatalogo p : ativos) lista.add(planoCatalogoService.toMapRestaurante(p));
+            return lista;
+        }
+        // Fallback de segurança — só roda se tabela ficou vazia (caso patológico)
+        log.warn("[Assinatura] planos_catalog vazio — usando fallback do enum legado");
         List<Map<String, Object>> lista = new ArrayList<>();
         for (Plano p : Plano.values()) {
             Map<String, Object> m = new LinkedHashMap<>();
@@ -307,8 +324,6 @@ public class AssinaturaService {
             m.put("aceitaCartao", p.isAceitaCartao());
             m.put("aceitaPix", p.isAceitaPix());
             m.put("recorrente", p == Plano.MENSAL);
-            // Tipo de onboarding entregue por este plano — frontend usa pra
-            // renderizar fluxo correspondente após ativação.
             m.put("onboardingTipo", p.getOnboardingTipo());
             lista.add(m);
         }

@@ -94,9 +94,13 @@ public class SuporteService {
     @Transactional
     public SuporteMensagem responder(SuporteTicket ticket, Restaurante r, String texto, MultipartFile[] anexos) {
         validarThrottle(r.getId());
-        if (texto == null || texto.isBlank()) {
+        boolean temAnexo = anexos != null && anexos.length > 0
+                && java.util.Arrays.stream(anexos).anyMatch(a -> a != null && !a.isEmpty());
+        if ((texto == null || texto.isBlank()) && !temAnexo) {
             throw new RuntimeException("Mensagem vazia");
         }
+        // Texto opcional quando tem anexo — guarda string vazia pra preservar a linha no banco.
+        if (texto == null) texto = "";
         // Reabrir se estava resolvido — restaurante mandando msg deixa em AGUARDANDO
         if (ticket.getStatus() == SuporteTicket.Status.RESOLVIDO
                 || ticket.getStatus() == SuporteTicket.Status.FECHADO) {

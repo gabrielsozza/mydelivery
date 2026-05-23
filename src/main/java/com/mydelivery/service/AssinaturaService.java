@@ -282,6 +282,119 @@ public class AssinaturaService {
     }
 
     /**
+     * Calcula crédito proporcional (pró-rata) do plano atual.
+     * Se restam X dias dos N totais, devolve (X/N) * valorPago.
+     * Zero se já vencido ou sem assinatura.
+     */
+    public java.math.BigDecimal calcularCreditoProRata(Restaurante r) {
+        Assinatura a = assinaturaRepository.findByRestauranteId(r.getId()).orElse(null);
+        if (a == null || a.getStatus() != Assinatura.Status.ATIVA
+                || a.getValidaAte() == null || a.getUltimaCobranca() == null) {
+            return java.math.BigDecimal.ZERO;
+        }
+        LocalDateTime agora = LocalDateTime.now();
+        if (a.getValidaAte().isBefore(agora)) return java.math.BigDecimal.ZERO;
+
+        long totalSegundos = java.time.Duration.between(a.getUltimaCobranca(), a.getValidaAte()).toSeconds();
+        long restanteSegundos = java.time.Duration.between(agora, a.getValidaAte()).toSeconds();
+        if (totalSegundos <= 0 || restanteSegundos <= 0) return java.math.BigDecimal.ZERO;
+
+        java.math.BigDecimal proporcao = new java.math.BigDecimal(restanteSegundos)
+                .divide(new java.math.BigDecimal(totalSegundos), 4, java.math.RoundingMode.HALF_UP);
+        return a.getValor().multiply(proporcao).setScale(2, java.math.RoundingMode.HALF_UP);
+    }
+
+    /**
+     * Troca de plano: UPGRADE ou DOWNGRADE.
+     *
+     * - UPGRADE (novo > atual): aplica crédito pró-rata do plano atual e cobra
+     *   a diferença AGORA. Vigência do novo plano começa imediato.
+     * - DOWNGRADE (novo < atual): mantém plano atual ativo até validaAte, e
+     *   marca novo plano como PROGRAMADO. Quando vencer, novo plano entra.
+     *
+     * Retorna info com {tipoOperacao, creditoAplicado, valorACobrar, mensagem}
+     * pra frontend decidir se redireciona pra pagamento.
+     */
+    @Transactional
+    public Map<String, Object> trocarPlano(Restaurante r, Plano novoPlano) {
+        Assinatura a = assinaturaRepository.findByRestauranteId(r.getId())
+                .orElseThrow(() -> new RuntimeException("Sem assinatura ativa pra trocar"));
+        Plano atual = a.getPlano();
+        if (atual == null) throw new RuntimeException("Assinatura sem plano definido");
+        if (atual == novoPlano) throw new RuntimeException("Você já está nesse plano");
+
+        boolean isUpgrade = novoPlano.getValor().compareTo(atual.getValor()) > 0;
+        Map<String, Object> out = new java.util.LinkedHashMap<>();
+
+        if (isUpgrade) {
+            java.math.BigDecimal credito = calcularCreditoProRata(r);
+            java.math.BigDecimal valorACobrar = novoPlano.getValor().subtract(credito);
+            if (valorACobrar.signum() < 0) valorACobrar = java.math.BigDecimal.ZERO;
+
+            out.put("tipoOperacao", "UPGRADE");
+            out.put("planoAtual", atual.name());
+            out.put("novoPlano", novoPlano.name());
+            out.put("valorIntegralNovo", novoPlano.getValor());
+            out.put("creditoAplicado", credito);
+            out.put("valorACobrar", valorACobrar);
+            out.put("mensagem", "Upgrade aprovado. Aplicamos R$ " + credito + " de crédito proporcional. "
+                    + "Você pagará R$ " + valorACobrar + " pra ativar o novo plano agora.");
+            // Caller (controller) decide se chama o fluxo de cobrança imediata com esse valor.
+            return out;
+        }
+
+        // DOWNGRADE — agenda pra quando o atual vencer
+        a.setPlano(novoPlano); // marca o novo
+        a.setValor(novoPlano.getValor());
+        // proximaCobranca continua = validaAte (já estava agendado)
+        // status fica ATIVA até validaAte chegar (cobrança automática faz transição)
+        assinaturaRepository.save(a);
+
+        out.put("tipoOperacao", "DOWNGRADE");
+        out.put("planoAtual", atual.name());
+        out.put("novoPlano", novoPlano.name());
+        out.put("entraEmVigorEm", a.getValidaAte() != null ? a.getValidaAte().toString() : null);
+        out.put("mensagem", "Downgrade agendado. Seu plano " + atual.getNomeExibicao()
+                + " continua até " + a.getValidaAte() + ". A partir daí entra o "
+                + novoPlano.getNomeExibicao() + ".");
+        log.info("📉 Downgrade restaurante={}: {}→{} (em vigor: {})",
+                r.getId(), atual, novoPlano, a.getValidaAte());
+        return out;
+    }
+
+    /** Troca apenas o método de pagamento (PIX↔CARTAO). Não cobra nada. */
+    @Transactional
+    public Assinatura trocarMetodo(Restaurante r, String novoMetodo) {
+        Assinatura a = assinaturaRepository.findByRestauranteId(r.getId())
+                .orElseThrow(() -> new RuntimeException("Sem assinatura"));
+        String m = novoMetodo == null ? "" : novoMetodo.toUpperCase();
+        if (!"PIX".equals(m) && !"CARTAO".equals(m)) {
+            throw new RuntimeException("Método inválido. Use PIX ou CARTAO");
+        }
+        if ("PIX".equals(m) && a.getPlano() != null && a.getPlano().getDuracaoMeses() <= 1) {
+            throw new RuntimeException("PIX disponível apenas para plano Semestral ou Anual");
+        }
+        a.setMetodoPagamento(m);
+        log.info("Método pagamento trocado pra {} no restaurante #{}", m, r.getId());
+        return assinaturaRepository.save(a);
+    }
+
+    /** Helper pra controllers acessarem a Assinatura atual. */
+    public java.util.Optional<Assinatura> obterAssinatura(Restaurante r) {
+        return assinaturaRepository.findByRestauranteId(r.getId());
+    }
+
+    /** Atualiza a referência de cartão salvo após Brick re-tokenizar. */
+    @Transactional
+    public Assinatura atualizarReferenciaCartao(Restaurante r, String novaReferencia) {
+        Assinatura a = assinaturaRepository.findByRestauranteId(r.getId())
+                .orElseThrow(() -> new RuntimeException("Sem assinatura"));
+        a.setReferenciaGateway(novaReferencia);
+        a.setMetodoPagamento("CARTAO");
+        return assinaturaRepository.save(a);
+    }
+
+    /**
      * Cancela a assinatura. Mantém o acesso até o fim do período já pago
      * (validaAte) — é o padrão SaaS: você cancelou em 10/05 mas o plano vai
      * até 31/05 mesmo. Só interrompe renovação automática.

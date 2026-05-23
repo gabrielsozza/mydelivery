@@ -331,6 +331,107 @@ public class AssinaturaPagamentoService {
         }
     }
 
+    /**
+     * Cobra um cartão JÁ salvo (Customer + Card no MP) — usado pelo job de
+     * cobrança automática quando o trial expira ou na renovação mensal.
+     *
+     * @param referenciaGateway formato "trial-card:CUSTOMER:CARD" salvo na Assinatura
+     * @return mesmo formato de pagarCartao(): { paymentId, status, aprovado, valor }
+     */
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> cobrarCartaoSalvo(Restaurante r, Plano plano, String referenciaGateway) {
+        exigirCredenciais();
+        if (referenciaGateway == null || !referenciaGateway.startsWith("trial-card:")) {
+            throw new RuntimeException("Referência de cartão inválida: " + referenciaGateway);
+        }
+        String[] parts = referenciaGateway.split(":");
+        if (parts.length != 3) throw new RuntimeException("Formato esperado: trial-card:CUSTOMER:CARD");
+        String customerId = parts[1];
+        String cardId = parts[2];
+
+        // Pra usar customer+card num Payment, precisamos gerar um TOKEN do card.
+        // POST /v1/card_tokens com {card_id} usando autenticação do customer.
+        Map<String, Object> tokenBody = Map.of("card_id", cardId);
+        Map<String, Object> tokenResp;
+        try {
+            tokenResp = checkoutClient.post()
+                    .uri("/v1/card_tokens?public_key={pk}", adminPublicKey)
+                    .body(Map.of("card_id", cardId, "customer_id", customerId))
+                    .retrieve().body(Map.class);
+        } catch (RestClientResponseException e) {
+            log.error("[AssPag][CARTAO-SAVED] card_tokens falhou: {}", e.getResponseBodyAsString());
+            throw new RuntimeException("Falha ao gerar token do cartão salvo: " + truncate(e.getResponseBodyAsString(), 200));
+        }
+        String token = String.valueOf(tokenResp.get("id"));
+
+        String idempotencyKey = "mydelivery-renov-" + r.getId() + "-" + plano.name() + "-"
+                + System.currentTimeMillis();
+
+        MpPayer payer = MpPayer.builder()
+                .email(adminPayerEmail)
+                .firstName(safeFirst(r.getNome()))
+                .lastName("MyDelivery")
+                .build();
+
+        MpPaymentRequest body = MpPaymentRequest.builder()
+                .transactionAmount(plano.getValor())
+                .token(token)
+                .installments(1)
+                .description("MyDelivery — Renovação " + plano.getNomeExibicao() + " (Restaurante #" + r.getId() + ")")
+                .externalReference("renov-" + r.getId() + "-" + plano.name() + "-" + System.currentTimeMillis())
+                .notificationUrl(publicBaseUrl + "/api/webhooks/mercadopago")
+                .payer(payer)
+                .build();
+
+        log.info("[AssPag][CARTAO-SAVED] cobrando — restaurante={}, plano={}, customer={}, card={}",
+                r.getId(), plano, customerId, cardId);
+        MpPaymentResponse resp = mpClient.criarPagamento(adminAccessToken, idempotencyKey, body);
+
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("paymentId", resp.getId());
+        out.put("status", resp.getStatus());
+        out.put("statusDetail", resp.getStatusDetail());
+        out.put("aprovado", "approved".equals(resp.getStatus()));
+        out.put("valor", plano.getValor());
+        return out;
+    }
+
+    /**
+     * Substitui o cartão salvo. Remove o anterior, adiciona o novo.
+     * Retorna nova referenciaGateway (trial-card:CUSTOMER:NEW_CARD).
+     */
+    @SuppressWarnings("unchecked")
+    public String atualizarCartao(Restaurante r, String referenciaGatewayAtual, Map<String, Object> formData) {
+        exigirCredenciais();
+        String token = (String) formData.get("token");
+        if (token == null) throw new RuntimeException("Token do cartão ausente.");
+
+        // Se já existia customer, reusa; senão cria novo
+        String customerId;
+        if (referenciaGatewayAtual != null && referenciaGatewayAtual.startsWith("trial-card:")) {
+            customerId = referenciaGatewayAtual.split(":")[1];
+        } else {
+            Map<String, Object> payerRaw = (Map<String, Object>) formData.getOrDefault("payer", Map.of());
+            String email = (String) payerRaw.getOrDefault("email", adminPayerEmail);
+            Map<String, Object> customer = checkoutClient.post().uri("/v1/customers")
+                    .headers(h -> h.setBearerAuth(adminAccessToken))
+                    .body(Map.of("email", email, "first_name", safeFirst(r.getNome()), "last_name", "MyDelivery"))
+                    .retrieve().body(Map.class);
+            customerId = String.valueOf(customer.get("id"));
+        }
+
+        // Adiciona o novo cartão
+        Map<String, Object> card = checkoutClient.post().uri("/v1/customers/{cid}/cards", customerId)
+                .headers(h -> h.setBearerAuth(adminAccessToken))
+                .body(Map.of("token", token))
+                .retrieve().body(Map.class);
+        String newCardId = String.valueOf(card.get("id"));
+
+        log.info("[AssPag][CARTAO-UPDATE] cartão atualizado — restaurante={}, customer={}, novoCard={}",
+                r.getId(), customerId, newCardId);
+        return "trial-card:" + customerId + ":" + newCardId;
+    }
+
     // ─── HELPERS ──────────────────────────────────────────────────────────
 
     private void exigirCredenciais() {

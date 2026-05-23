@@ -189,4 +189,69 @@ public class AssinaturaController {
                 "mensagem", "Plano cancelado. Você ainda tem acesso até " + a.getValidaAte() + "."
         ));
     }
+
+    /**
+     * Troca de plano (upgrade ou downgrade).
+     * Body: { plano: "MENSAL"|"SEMESTRAL"|"ANUAL" }
+     *
+     * UPGRADE: calcula crédito proporcional do plano atual e cobra a diferença
+     *          (frontend redireciona pro Brick com valorACobrar).
+     * DOWNGRADE: agenda — plano atual continua até validaAte, depois entra o novo.
+     */
+    @PostMapping("/trocar-plano")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Map<String, Object>> trocarPlano(
+            @AuthenticationPrincipal String email,
+            @RequestBody Map<String, String> body) {
+        Restaurante r = restauranteRepository.findByUsuarioEmail(email).orElseThrow();
+        Plano novo;
+        try { novo = Plano.valueOf(body.getOrDefault("plano", "").toUpperCase()); }
+        catch (Exception e) { throw new RuntimeException("Plano inválido"); }
+        return ResponseEntity.ok(assinaturaService.trocarPlano(r, novo));
+    }
+
+    /**
+     * Troca o método de pagamento (PIX↔CARTAO). Não cobra nada.
+     * Se for trocar pra CARTAO sem cartão salvo, frontend deve chamar
+     * /pagar-cartao ou /atualizar-cartao em seguida.
+     * Body: { metodo: "PIX"|"CARTAO" }
+     */
+    @PostMapping("/trocar-metodo")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Map<String, Object>> trocarMetodo(
+            @AuthenticationPrincipal String email,
+            @RequestBody Map<String, String> body) {
+        Restaurante r = restauranteRepository.findByUsuarioEmail(email).orElseThrow();
+        Assinatura a = assinaturaService.trocarMetodo(r, body.get("metodo"));
+        return ResponseEntity.ok(Map.of(
+                "metodoPagamento", a.getMetodoPagamento(),
+                "mensagem", "Método de pagamento atualizado pra " + a.getMetodoPagamento()
+        ));
+    }
+
+    /**
+     * Substitui o cartão salvo. Frontend gera token novo via Brick e envia aqui.
+     * Body: { formData: { token, payer:{...} } }
+     */
+    @PostMapping("/atualizar-cartao")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    @SuppressWarnings("unchecked")
+    public ResponseEntity<Map<String, Object>> atualizarCartao(
+            @AuthenticationPrincipal String email,
+            @RequestBody Map<String, Object> body) {
+        Restaurante r = restauranteRepository.findByUsuarioEmail(email).orElseThrow();
+        Map<String, Object> formData = (Map<String, Object>) body.getOrDefault("formData", Map.of());
+
+        // Pega referência atual (se houver) pra reusar customer
+        Assinatura aAtual = restauranteRepository.findById(r.getId())
+                .flatMap(rr -> assinaturaService.obterAssinatura(rr)).orElse(null);
+        String refAtual = aAtual != null ? aAtual.getReferenciaGateway() : null;
+
+        String novaRef = pagamentoService.atualizarCartao(r, refAtual, formData);
+        Assinatura a = assinaturaService.atualizarReferenciaCartao(r, novaRef);
+        return ResponseEntity.ok(Map.of(
+                "metodoPagamento", a.getMetodoPagamento(),
+                "mensagem", "Cartão atualizado com sucesso."
+        ));
+    }
 }

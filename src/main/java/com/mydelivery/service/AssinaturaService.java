@@ -245,6 +245,43 @@ public class AssinaturaService {
     }
 
     /**
+     * Programa um plano pra ser cobrado AO FINAL DO TRIAL.
+     * O cartão já foi salvo no MP (Customer + Card) — esta função apenas
+     * marca a assinatura como PROGRAMADA com a referência do gateway.
+     *
+     * Restaurante CONTINUA em TRIAL (não é promovido pra ATIVO ainda).
+     * Um job futuro detecta {@code proximaCobranca <= agora} + status PROGRAMADA
+     * e dispara a cobrança real via MP usando customer+card salvos.
+     */
+    @Transactional
+    public Assinatura programarPlanoTrialCartao(Restaurante r, Plano plano, String referenciaGateway) {
+        Assinatura a = assinaturaRepository.findByRestauranteId(r.getId())
+                .orElseGet(() -> Assinatura.builder()
+                        .restaurante(r)
+                        .valor(plano.getValor())
+                        .build());
+
+        LocalDateTime agora = LocalDateTime.now();
+        LocalDateTime trialFim = r.getTrialExpiraEm() != null ? r.getTrialExpiraEm() : agora.plusDays(7);
+        // Vigência futura = começa quando trial acaba e dura plano.duracaoMeses
+        LocalDateTime novoFim = trialFim.plusMonths(plano.getDuracaoMeses());
+
+        a.setStatus(Assinatura.Status.PENDENTE); // PENDENTE = cartão validado, aguardando trial expirar
+        a.setPlano(plano);
+        a.setValor(plano.getValor());
+        a.setMetodoPagamento("CARTAO");
+        a.setReferenciaGateway(referenciaGateway);
+        a.setValidaAte(novoFim);
+        a.setProximaCobranca(trialFim); // job de cobrança usa isso
+        // ultimaCobranca fica null até a cobrança real acontecer
+
+        Assinatura salva = assinaturaRepository.save(a);
+        log.info("📅 Plano {} programado para restaurante #{} — cobrança em {} (ref={})",
+                plano, r.getId(), trialFim, referenciaGateway);
+        return salva;
+    }
+
+    /**
      * Cancela a assinatura. Mantém o acesso até o fim do período já pago
      * (validaAte) — é o padrão SaaS: você cancelou em 10/05 mas o plano vai
      * até 31/05 mesmo. Só interrompe renovação automática.

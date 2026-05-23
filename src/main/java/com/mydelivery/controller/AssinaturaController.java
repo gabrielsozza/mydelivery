@@ -145,8 +145,27 @@ public class AssinaturaController {
         try { plano = Plano.valueOf(String.valueOf(body.getOrDefault("plano", "")).toUpperCase()); }
         catch (Exception e) { throw new RuntimeException("Plano inválido"); }
         Map<String, Object> formData = (Map<String, Object>) body.getOrDefault("formData", Map.of());
+
+        // ── Regra de negócio: se o restaurante AINDA está em TRIAL,
+        // NÃO cobra agora. Salva o cartão no MP (Customer + Card) e marca
+        // assinatura como PROGRAMADA pra cobrar quando trial expirar.
+        boolean emTrial = r.getStatus() == Restaurante.Status.TRIAL
+                && r.getTrialExpiraEm() != null
+                && r.getTrialExpiraEm().isAfter(java.time.LocalDateTime.now());
+
+        if (emTrial) {
+            Map<String, Object> resp = pagamentoService.salvarCartaoParaTrial(r, plano, formData);
+            // Assinatura fica como PROGRAMADA — restaurante continua usando TRIAL até a data.
+            Assinatura a = assinaturaService.programarPlanoTrialCartao(r, plano,
+                    (String) resp.get("referenciaGateway"));
+            resp.put("validaAte", a.getValidaAte().toString());
+            resp.put("cobrarEm", r.getTrialExpiraEm().toString());
+            resp.put("mensagem", "Cartão validado! A primeira cobrança será automática ao fim do período de avaliação.");
+            return ResponseEntity.ok(resp);
+        }
+
+        // Sem trial → cobrança imediata (fluxo padrão)
         Map<String, Object> resp = pagamentoService.pagarCartao(r, plano, formData);
-        // Se aprovado: ativa imediatamente (webhook também ativa, mas garante UX rápida)
         if (Boolean.TRUE.equals(resp.get("aprovado"))) {
             Assinatura a = assinaturaService.ativarPlano(r, plano, "CARTAO",
                     resp.get("paymentId") == null ? null : String.valueOf(resp.get("paymentId")));

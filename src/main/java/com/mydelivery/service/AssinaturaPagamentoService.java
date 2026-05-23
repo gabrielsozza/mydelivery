@@ -75,6 +75,82 @@ public class AssinaturaPagamentoService {
     }
 
     /**
+     * Salva o cartão no MP (Customer + Card) SEM cobrar — usado quando o
+     * restaurante ainda está em TRIAL. A cobrança real será disparada por job
+     * quando trialExpiraEm chegar, usando o card_id permanente do MP.
+     *
+     * Retorna: { tipo: "AGENDADO", customerId, cardId, cobrarEm }
+     */
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> salvarCartaoParaTrial(Restaurante r, Plano plano, Map<String, Object> formData) {
+        exigirCredenciais();
+        String token = (String) formData.get("token");
+        if (token == null || token.isBlank()) throw new RuntimeException("Token do cartão ausente.");
+
+        Map<String, Object> payerRaw = (Map<String, Object>) formData.getOrDefault("payer", Map.of());
+        String email = (String) payerRaw.getOrDefault("email", adminPayerEmail);
+
+        // 1) Cria Customer no MP (idempotente: se já existir com esse email, MP devolve o existente)
+        Map<String, Object> customerBody = new LinkedHashMap<>();
+        customerBody.put("email", email);
+        customerBody.put("first_name", safeFirst(r.getNome()));
+        customerBody.put("last_name", "MyDelivery");
+        customerBody.put("description", "Restaurante #" + r.getId() + " — " + r.getNome());
+
+        Map<String, Object> customer;
+        try {
+            customer = checkoutClient.post().uri("/v1/customers")
+                    .headers(h -> h.setBearerAuth(adminAccessToken))
+                    .body(customerBody)
+                    .retrieve().body(Map.class);
+        } catch (RestClientResponseException e) {
+            // Se for "already exists", busca o existente
+            String body = e.getResponseBodyAsString();
+            if (body != null && body.contains("already exist")) {
+                Map<String, Object> search = checkoutClient.get()
+                        .uri("/v1/customers/search?email={email}", email)
+                        .headers(h -> h.setBearerAuth(adminAccessToken))
+                        .retrieve().body(Map.class);
+                List<Map<String, Object>> results = (List<Map<String, Object>>)
+                        (search == null ? List.of() : search.getOrDefault("results", List.of()));
+                if (results.isEmpty()) throw new RuntimeException("MP customer já existe mas search falhou");
+                customer = results.get(0);
+            } else {
+                throw new RuntimeException("Falha ao criar customer no MP: " + truncate(body, 200));
+            }
+        }
+        String customerId = String.valueOf(customer.get("id"));
+
+        // 2) Adiciona o cartão ao Customer (usando o token do Brick)
+        Map<String, Object> cardBody = Map.of("token", token);
+        Map<String, Object> card;
+        try {
+            card = checkoutClient.post().uri("/v1/customers/{cid}/cards", customerId)
+                    .headers(h -> h.setBearerAuth(adminAccessToken))
+                    .body(cardBody)
+                    .retrieve().body(Map.class);
+        } catch (RestClientResponseException e) {
+            throw new RuntimeException("Falha ao salvar cartão no MP: "
+                    + truncate(e.getResponseBodyAsString(), 200));
+        }
+        String cardId = String.valueOf(card.get("id"));
+
+        // Data prevista da cobrança = quando trial expira (cliente do restaurante decide).
+        // Aqui retornamos a referência composta pro Service registrar na Assinatura.
+        String refGateway = "trial-card:" + customerId + ":" + cardId;
+        log.info("[AssPag][CARTAO][TRIAL] cartão salvo — restaurante={}, customer={}, card={}",
+                r.getId(), customerId, cardId);
+
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("tipo", "AGENDADO");
+        out.put("mpCustomerId", customerId);
+        out.put("mpCardId", cardId);
+        out.put("referenciaGateway", refGateway);
+        out.put("aprovado", true); // cartão validado (token aceito pelo MP)
+        return out;
+    }
+
+    /**
      * Processa pagamento por cartão usando o TOKEN gerado pelo Card Payment Brick.
      * O cartão real NUNCA passa pelo backend — só o token (PCI compliant).
      */

@@ -104,10 +104,13 @@ public class SuporteController {
 
     @PostMapping(value = "/tickets", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @org.springframework.transaction.annotation.Transactional
     public ResponseEntity<Map<String, Object>> criar(@AuthenticationPrincipal String email,
                                                       @RequestParam("texto") String texto,
                                                       @RequestParam(value = "assunto", required = false) String assunto,
                                                       @RequestParam(value = "anexos", required = false) MultipartFile[] anexos) {
+        // @Transactional aberto pro serializarTicket() conseguir resolver
+        // mensagens+anexos lazy logo após o service criar o ticket.
         Restaurante r = restauranteRepository.findByUsuarioEmail(email).orElseThrow();
         SuporteTicket t = suporteService.criarTicket(r, assunto, texto, anexos);
         return ResponseEntity.ok(serializarTicket(t));
@@ -153,15 +156,16 @@ public class SuporteController {
 
     @PostMapping(value = "/tickets/{id}/mensagens", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @org.springframework.transaction.annotation.Transactional
     public ResponseEntity<Map<String, Object>> enviarMensagem(@AuthenticationPrincipal String email,
                                                                 @PathVariable Long id,
                                                                 @RequestParam("texto") String texto,
                                                                 @RequestParam(value = "anexos", required = false) MultipartFile[] anexos) {
+        // @Transactional aberto pra serializarTicket() depois do responder().
         Restaurante r = restauranteRepository.findByUsuarioEmail(email).orElseThrow();
         SuporteTicket t = ticketRepository.findByIdAndRestauranteId(id, r.getId())
                 .orElseThrow(() -> new RuntimeException("Ticket não encontrado"));
         suporteService.responder(t, r, texto, anexos);
-        // Recarrega pra retornar com a mensagem nova
         SuporteTicket recarregado = ticketRepository.findById(t.getId()).orElseThrow();
         return ResponseEntity.ok(serializarTicket(recarregado));
     }

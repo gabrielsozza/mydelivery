@@ -117,6 +117,45 @@ public class AssinaturaController {
     }
 
     /**
+     * Public Key MP — frontend usa pra inicializar o Card Payment Brick.
+     * Não é secret: pode ir pro front com segurança. Backend só expõe pra
+     * evitar hardcode no frontend.
+     */
+    @GetMapping("/mp-public-key")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Map<String, Object>> mpPublicKey() {
+        return ResponseEntity.ok(pagamentoService.publicKeyInfo());
+    }
+
+    /**
+     * Processa pagamento por cartão via TOKEN do Card Payment Brick.
+     * Body: { plano, formData: { token, installments, payment_method_id, payer: {...} } }
+     *
+     * O cartão real é tokenizado no front (SDK MP) — backend só recebe o token,
+     * sem PAN/CVV. PCI compliant.
+     */
+    @PostMapping("/pagar-cartao")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    @SuppressWarnings("unchecked")
+    public ResponseEntity<Map<String, Object>> pagarCartao(
+            @AuthenticationPrincipal String email,
+            @RequestBody Map<String, Object> body) {
+        Restaurante r = restauranteRepository.findByUsuarioEmail(email).orElseThrow();
+        Plano plano;
+        try { plano = Plano.valueOf(String.valueOf(body.getOrDefault("plano", "")).toUpperCase()); }
+        catch (Exception e) { throw new RuntimeException("Plano inválido"); }
+        Map<String, Object> formData = (Map<String, Object>) body.getOrDefault("formData", Map.of());
+        Map<String, Object> resp = pagamentoService.pagarCartao(r, plano, formData);
+        // Se aprovado: ativa imediatamente (webhook também ativa, mas garante UX rápida)
+        if (Boolean.TRUE.equals(resp.get("aprovado"))) {
+            Assinatura a = assinaturaService.ativarPlano(r, plano, "CARTAO",
+                    resp.get("paymentId") == null ? null : String.valueOf(resp.get("paymentId")));
+            resp.put("validaAte", a.getValidaAte().toString());
+        }
+        return ResponseEntity.ok(resp);
+    }
+
+    /**
      * Cancela o plano vigente. Acesso mantido até o fim do período pago
      * (validaAte) — após isso entra em RESTRICAO/BLOQUEIO conforme regras.
      */

@@ -43,16 +43,19 @@ public class AssinaturaPagamentoService {
     private final MercadoPagoClient mpClient;
     private final RestClient checkoutClient;
     private final String adminAccessToken;
+    private final String adminPublicKey;
     private final String adminPayerEmail;
     private final String publicBaseUrl;
 
     public AssinaturaPagamentoService(
             MercadoPagoClient mpClient,
             @Value("${mydelivery.mercadopago.admin-access-token:${ADMIN_MP_ACCESS_TOKEN:}}") String adminAccessToken,
+            @Value("${mydelivery.mercadopago.admin-public-key:${ADMIN_MP_PUBLIC_KEY:}}") String adminPublicKey,
             @Value("${mydelivery.mercadopago.admin-payer-email:${ADMIN_MP_PAYER_EMAIL:billing@mydeliveryfood.com.br}}") String adminPayerEmail,
             @Value("${mydelivery.mercadopago.public-base-url:${MP_WEBHOOK_URL:https://api.mydeliveryfood.com.br}}") String publicBaseUrl) {
         this.mpClient = mpClient;
         this.adminAccessToken = adminAccessToken;
+        this.adminPublicKey = adminPublicKey;
         this.adminPayerEmail = adminPayerEmail;
         this.publicBaseUrl = publicBaseUrl;
         this.checkoutClient = RestClient.builder()
@@ -60,6 +63,79 @@ public class AssinaturaPagamentoService {
                 .defaultHeader(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE)
                 .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
                 .build();
+    }
+
+    /** Public Key MP — exposta pro frontend pra renderizar Card Payment Brick. */
+    public Map<String, Object> publicKeyInfo() {
+        boolean sandbox = adminAccessToken != null && adminAccessToken.startsWith("TEST-");
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("publicKey", adminPublicKey);
+        out.put("ambiente", sandbox ? "TEST" : "PROD");
+        return out;
+    }
+
+    /**
+     * Processa pagamento por cartão usando o TOKEN gerado pelo Card Payment Brick.
+     * O cartão real NUNCA passa pelo backend — só o token (PCI compliant).
+     */
+    public Map<String, Object> pagarCartao(Restaurante r, Plano plano, Map<String, Object> formData) {
+        exigirCredenciais();
+        String token = (String) formData.get("token");
+        if (token == null || token.isBlank()) {
+            throw new RuntimeException("Token do cartão ausente.");
+        }
+        Object installmentsRaw = formData.getOrDefault("installments", 1);
+        int installments = installmentsRaw instanceof Number ? ((Number) installmentsRaw).intValue()
+                : Integer.parseInt(String.valueOf(installmentsRaw));
+        String paymentMethodId = (String) formData.getOrDefault("payment_method_id", null);
+
+        // Payer info — vindo do Brick (email + identificação)
+        @SuppressWarnings("unchecked")
+        Map<String, Object> payerRaw = (Map<String, Object>) formData.getOrDefault("payer", Map.of());
+        String email = (String) payerRaw.getOrDefault("email", adminPayerEmail);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> idRaw = (Map<String, Object>) payerRaw.getOrDefault("identification", Map.of());
+        String docType = (String) idRaw.getOrDefault("type", "CPF");
+        String docNumber = idRaw.get("number") == null ? null
+                : String.valueOf(idRaw.get("number")).replaceAll("\\D", "");
+
+        String idempotencyKey = "mydelivery-assinatura-" + r.getId() + "-" + plano.name()
+                + "-cartao-" + System.currentTimeMillis();
+
+        MpPayer payer = MpPayer.builder()
+                .email(email)
+                .firstName(safeFirst(r.getNome()))
+                .lastName("MyDelivery")
+                .identification(MpPayer.Identification.builder()
+                        .type(docType)
+                        .number(docNumber)
+                        .build())
+                .build();
+
+        MpPaymentRequest body = MpPaymentRequest.builder()
+                .transactionAmount(plano.getValor())
+                .token(token)
+                .installments(installments)
+                .paymentMethodId(paymentMethodId)
+                .description("MyDelivery — Assinatura " + plano.getNomeExibicao() + " (Restaurante #" + r.getId() + ")")
+                .externalReference("assinatura-" + r.getId() + "-" + plano.name() + "-" + System.currentTimeMillis())
+                .notificationUrl(publicBaseUrl + "/api/webhooks/mercadopago")
+                .payer(payer)
+                .build();
+
+        log.info("[AssPag][CARTAO] processando — restaurante={}, plano={}, parcelas={}, idem={}",
+                r.getId(), plano, installments, idempotencyKey);
+        MpPaymentResponse resp = mpClient.criarPagamento(adminAccessToken, idempotencyKey, body);
+
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("paymentId", resp.getId());
+        out.put("status", resp.getStatus());
+        out.put("statusDetail", resp.getStatusDetail());
+        out.put("aprovado", "approved".equals(resp.getStatus()));
+        out.put("valor", plano.getValor());
+        log.info("[AssPag][CARTAO] MP respondeu — paymentId={}, status={}, detail={}",
+                resp.getId(), resp.getStatus(), resp.getStatusDetail());
+        return out;
     }
 
     /**

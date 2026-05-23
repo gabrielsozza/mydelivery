@@ -146,10 +146,11 @@ public class SuporteService {
                 .build();
         ticket.getMensagens().add(msg);
 
-        // Persiste o ticket ANTES de tentar criar anexos. Cascade.ALL faz a mensagem
-        // virar managed com ID — sem isso, anexoRepository.save() abaixo dispara
-        // TransientPropertyValueException porque a mensagem referenciada ainda é transient.
-        ticketRepository.save(ticket);
+        // Persiste o ticket ANTES de criar anexos E força flush imediato.
+        // Sem saveAndFlush, o INSERT da mensagem pode ficar no batch do Hibernate
+        // e o anexoRepository.save() abaixo dispara TransientPropertyValueException
+        // porque a mensagem ainda não tem ID no banco.
+        ticketRepository.saveAndFlush(ticket);
 
         if (arquivos != null && arquivos.length > 0) {
             if (arquivos.length > maxAnexos) {

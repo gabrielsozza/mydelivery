@@ -63,8 +63,17 @@ public class AssinaturaController {
         } catch (Exception e) {
             throw new RuntimeException("Plano inválido");
         }
-        String metodo = body.getOrDefault("metodoPagamento", "PIX");
+        // Aceita os 2 nomes pra compatibilidade com chamadas antigas
+        String metodo = body.getOrDefault("metodo", body.getOrDefault("metodoPagamento", "CARTAO"));
+        metodo = metodo == null ? "CARTAO" : metodo.toUpperCase();
         String refGateway = body.getOrDefault("referenciaGateway", null);
+
+        // Regra de negócio: PIX só pra planos > 1 mês.
+        // Mensal só aceita cartão (cobrança recorrente).
+        if ("PIX".equals(metodo) && plano.getDuracaoMeses() <= 1) {
+            throw new RuntimeException("PIX disponível apenas para planos Semestral ou Anual. "
+                    + "O plano Mensal aceita apenas cartão de crédito.");
+        }
 
         Assinatura a = assinaturaService.ativarPlano(r, plano, metodo, refGateway);
         return ResponseEntity.ok(Map.of(

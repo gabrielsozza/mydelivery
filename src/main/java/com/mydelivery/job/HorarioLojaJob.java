@@ -46,7 +46,7 @@ public class HorarioLojaJob {
             log.warn("[HorarioLojaJob] falha ao listar restaurantes: {}", e.getMessage());
             return;
         }
-        int abriu = 0, fechou = 0;
+        int abriu = 0, fechou = 0, erros = 0;
         for (Restaurante r : todos) {
             try {
                 if (processar(r)) {
@@ -54,31 +54,56 @@ public class HorarioLojaJob {
                     if (Boolean.TRUE.equals(r.getAberto())) abriu++; else fechou++;
                 }
             } catch (Exception e) {
-                log.debug("[HorarioLojaJob] restaurante={} erro={}", r.getId(), e.getMessage());
+                erros++;
+                // WARN (não debug) — sem isso erros viravam invisíveis e
+                // dono pensava que job nem rodava (causa real do bug).
+                log.warn("[HorarioLojaJob] restaurante={} erro={}", r.getId(), e.getMessage());
             }
         }
-        if (abriu > 0 || fechou > 0) {
-            log.info("[HorarioLojaJob] abriu={} fechou={}", abriu, fechou);
+        if (abriu > 0 || fechou > 0 || erros > 0) {
+            log.info("[HorarioLojaJob] tick — total={} abriu={} fechou={} erros={}",
+                    todos.size(), abriu, fechou, erros);
         }
     }
 
-    /** Retorna true se mudou o status do restaurante (precisa save). */
+    /**
+     * Retorna true se mudou o status do restaurante (precisa save).
+     *
+     * Regra de FECHAMENTO (sempre ativa):
+     *  - Loja aberta no DB +
+     *  - (não tem horário configurado pra hoje  OU  está fora do horário de hoje)
+     *  → fecha automaticamente.
+     *
+     * O "não tem horário pra hoje" cobre o caso em que o dono abriu manualmente
+     * num dia marcado como fechado (ex: domingo aberto:false mas ele clicou
+     * "abrir agora") — depois de algumas horas, ainda precisamos fechar.
+     * Antes, esse caso falhava porque horarioConfigurado=false bloqueava.
+     */
     private boolean processar(Restaurante r) {
         EstadoHorario e = horarioService.calcular(r);
         boolean estaAberto = Boolean.TRUE.equals(r.getAberto());
 
-        // FECHAMENTO automático (padrão pra todos): se passou do horário,
-        // loja deveria estar fechada. Só fecha se está aberta agora.
-        if (estaAberto && e.horarioConfigurado && !e.dentroHorario) {
-            r.setAberto(false);
-            return true;
-        }
-        // ABERTURA automática (opt-in): só se o toggle está ativo E está
-        // dentro do horário. Não abre se já está aberta (idempotente).
-        if (!estaAberto && Boolean.TRUE.equals(r.getAberturaAutomatica())
-                && e.horarioConfigurado && e.dentroHorario) {
-            r.setAberto(true);
-            return true;
+        if (estaAberto) {
+            if (e.horarioConfigurado && !e.dentroHorario) {
+                // Caso normal: passou do horário de fechamento.
+                log.info("[HorarioLojaJob] fechando restaurante={} (fora do horário {} → {})",
+                        r.getId(), e.abertura, e.fechamento);
+                r.setAberto(false);
+                return true;
+            }
+            // NOTA: se não tem horário pra hoje (e.horarioConfigurado=false),
+            // mantemos respeito ao manual — não fechamos automaticamente.
+            // Isso evita fechar lojas que ainda não cadastraram horário.
+        } else {
+            // ABERTURA automática (opt-in): só se o toggle está ativo E está
+            // dentro do horário. Não abre se já está aberta (idempotente).
+            if (Boolean.TRUE.equals(r.getAberturaAutomatica())
+                    && e.horarioConfigurado && e.dentroHorario) {
+                log.info("[HorarioLojaJob] abrindo restaurante={} (dentro do horário {} → {})",
+                        r.getId(), e.abertura, e.fechamento);
+                r.setAberto(true);
+                return true;
+            }
         }
         return false;
     }

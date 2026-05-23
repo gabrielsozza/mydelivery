@@ -139,12 +139,21 @@ public class WhatsappBotService {
         if (contemAlguma(t, "cardapio", "menu", "produtos", "comprar", "pedir",
                 "fazer pedido", "fazer um pedido")) {
             String link = montarLinkCardapio(r);
+            // Se loja fechada: envia link MAS sem incentivar compra
+            if (!Boolean.TRUE.equals(r.getAberto())) {
+                return "A loja está *fechada* no momento 😅\n\n"
+                        + "Mas você ainda pode dar uma olhada no cardápio 👉 " + link
+                        + "\n\n" + montarLinhaHorarioHoje(r);
+            }
             return "Aqui está nosso cardápio 👉 " + link + "\n\nÉ só escolher os itens e finalizar pelo site. 🍽️";
         }
 
-        // 7. Horário / aberto
-        if (contemAlguma(t, "horario", "que horas", "abre", "aberto", "ta aberto",
-                "estao abertos", "funcionamento", "fechado")) {
+        // 7. Horário / aberto / fechado / funcionando — cobre variações masculino/feminino/plural
+        if (contemAlguma(t, "horario", "horário", "que horas", "abre", "aberto", "aberta",
+                "abertos", "abertas", "ta aberto", "ta aberta", "esta aberto", "esta aberta",
+                "estao abertos", "estao abertas", "funcionamento", "funcionando", "funciona",
+                "atendendo", "ainda atende", "ta atendendo", "fechado", "fechada", "fechados",
+                "ta funcionando", "esta funcionando", "vcs estao", "voces estao")) {
             return montarRespostaHorario(r);
         }
 
@@ -189,10 +198,21 @@ public class WhatsappBotService {
 
     private String montarApresentacao(Restaurante r) {
         String link = montarLinkCardapio(r);
+        boolean aberto = Boolean.TRUE.equals(r.getAberto());
+
         StringBuilder sb = new StringBuilder();
         sb.append("Olá! 👋 Aqui é da *").append(r.getNome()).append("*.\n\n");
-        sb.append("Como posso te ajudar hoje?\n\n");
-        sb.append("Você pode me perguntar sobre:\n");
+
+        // Se loja fechada, sinaliza ANTES do menu — não induz compra.
+        if (!aberto) {
+            sb.append("⚠️ No momento estamos *fechados*.\n");
+            String linhaH = montarLinhaHorarioHoje(r);
+            if (notBlank(linhaH)) sb.append(linhaH).append("\n");
+            sb.append("\nVocê ainda pode tirar dúvidas comigo ou dar uma olhada no cardápio:\n");
+        } else {
+            sb.append("Como posso te ajudar hoje?\n\n");
+        }
+
         sb.append("• 🍽️ *Cardápio*\n");
         sb.append("• 🛵 *Taxa de entrega*\n");
         sb.append("• 📍 *Endereço da loja* / *Regiões atendidas*\n");
@@ -201,7 +221,12 @@ public class WhatsappBotService {
         sb.append("• 💰 *Pedido mínimo*\n");
         sb.append("• 🕒 *Horário de funcionamento*\n");
         sb.append("• 👤 *Falar com atendente*\n\n");
-        sb.append("Ou já faça seu pedido pelo cardápio 👉 ").append(link);
+
+        if (aberto) {
+            sb.append("Ou já faça seu pedido pelo cardápio 👉 ").append(link);
+        } else {
+            sb.append("Cardápio para visualização: ").append(link);
+        }
         return sb.toString();
     }
 
@@ -210,16 +235,20 @@ public class WhatsappBotService {
      * Lista as opções principais — sempre cordial, nunca culpa o cliente.
      */
     private String montarMenuCurto(Restaurante r) {
-        return "Desculpe, não consegui entender. 😅\n\n"
-                + "Posso te ajudar com:\n"
-                + "• 🍽️ *Cardápio*\n"
-                + "• 🕒 *Horário* de funcionamento\n"
-                + "• 📍 *Endereço* da loja\n"
-                + "• 🛵 *Taxa de entrega*\n"
-                + "• ⏱️ *Tempo* de entrega\n"
-                + "• 💰 *Pedido mínimo*\n"
-                + "• 👤 *Falar com atendente*\n\n"
-                + "Cardápio: " + montarLinkCardapio(r);
+        boolean aberto = Boolean.TRUE.equals(r.getAberto());
+        StringBuilder sb = new StringBuilder("Desculpe, não consegui entender. 😅\n\n");
+        if (!aberto) sb.append("⚠️ Aviso: estamos *fechados* no momento.\n\n");
+        sb.append("Posso te ajudar com:\n")
+          .append("• 🍽️ *Cardápio*\n")
+          .append("• 🕒 *Horário* de funcionamento\n")
+          .append("• 📍 *Endereço* da loja\n")
+          .append("• 🛵 *Taxa de entrega*\n")
+          .append("• ⏱️ *Tempo* de entrega\n")
+          .append("• 💰 *Pedido mínimo*\n")
+          .append("• 👤 *Falar com atendente*\n\n")
+          .append(aberto ? "Cardápio: " : "Cardápio (visualização): ")
+          .append(montarLinkCardapio(r));
+        return sb.toString();
     }
 
     private String montarLinkCardapio(Restaurante r) {

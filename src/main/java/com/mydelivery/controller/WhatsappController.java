@@ -108,6 +108,19 @@ public class WhatsappController {
     }
 
     /**
+     * Reinicia a sessão WhatsApp SEM logout/QR novo. Útil pra "destravar" quando
+     * o robô parece dormir (shadow-ban silencioso do WhatsApp).
+     * Roda automaticamente a cada 18h via WhatsappReconnectJob também.
+     */
+    @PostMapping("/restart")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Map<String, Object>> restart(@AuthenticationPrincipal String email) {
+        Restaurante r = restauranteRepository.findByUsuarioEmail(email).orElseThrow();
+        whatsappService.restart(r);
+        return ResponseEntity.ok(Map.of("ok", true, "mensagem", "Sessão reiniciada"));
+    }
+
+    /**
      * RESET FORÇADO — apaga a instância na Evolution e localmente. Use quando
      * a instância está em "estado zumbi" (Evolution reporta open mas mensagens
      * não chegam — shadow-ban do WhatsApp). Próximo /conectar cria nova do zero.

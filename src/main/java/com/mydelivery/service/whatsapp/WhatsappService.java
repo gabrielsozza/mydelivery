@@ -119,6 +119,26 @@ public class WhatsappService {
     }
 
     /**
+     * Reinicia a sessão WebSocket da instância (NÃO precisa de QR novo). Refresca
+     * o Baileys do lado da Evolution — útil pra mitigar shadow-ban silencioso do
+     * WhatsApp, que para de entregar mensagens depois de horas mesmo com a sessão
+     * aparentemente "open".
+     *
+     * Idempotente: se a instância não estava conectada, Evolution ignora.
+     */
+    public void restart(Restaurante restaurante) {
+        repo.findByRestauranteId(restaurante.getId()).ifPresent(inst -> {
+            try {
+                evolutionClient.restart(inst.getInstanceName());
+                log.info("[WhatsApp] restart manual ok — instância={}", inst.getInstanceName());
+            } catch (RuntimeException e) {
+                log.warn("[WhatsApp] restart falhou pra {}: {}", inst.getInstanceName(), e.getMessage());
+                throw new RuntimeException("Não consegui reiniciar a sessão. Tente reconectar manualmente.");
+            }
+        });
+    }
+
+    /**
      * Reset COMPLETO da instância: tenta logout + delete na Evolution e apaga o registro local.
      * Próximo /conectar cria instância nova do zero. Use quando a instância está em estado zumbi
      * (Evolution reporta "open" mas WhatsApp não entrega mensagens — shadow-ban).

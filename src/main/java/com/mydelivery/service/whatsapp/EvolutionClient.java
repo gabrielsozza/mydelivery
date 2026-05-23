@@ -124,6 +124,16 @@ public class EvolutionClient {
         return executar("DELETE", "/instance/logout/" + instanceName, apiKeyGlobal(), null, Map.class);
     }
 
+    /**
+     * Reinicia a sessão WebSocket da instância SEM precisar de novo QR.
+     * Útil pra evitar shadow-ban silencioso do WhatsApp — refresca a sessão
+     * Baileys mantendo o pareamento ativo.
+     */
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> restart(String instanceName) {
+        return executar("POST", "/instance/restart/" + instanceName, apiKeyGlobal(), null, Map.class);
+    }
+
     /** Apaga a instância da Evolution (uso administrativo, raramente chamado). */
     @SuppressWarnings("unchecked")
     public Map<String, Object> deletar(String instanceName) {

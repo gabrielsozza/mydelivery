@@ -15,6 +15,7 @@ import com.mydelivery.model.Assinatura;
 import com.mydelivery.model.Plano;
 import com.mydelivery.model.Restaurante;
 import com.mydelivery.repository.RestauranteRepository;
+import com.mydelivery.service.AssinaturaPagamentoService;
 import com.mydelivery.service.AssinaturaService;
 
 import lombok.RequiredArgsConstructor;
@@ -35,6 +36,7 @@ import lombok.RequiredArgsConstructor;
 public class AssinaturaController {
 
     private final AssinaturaService assinaturaService;
+    private final AssinaturaPagamentoService pagamentoService;
     private final RestauranteRepository restauranteRepository;
 
     @GetMapping("/status")
@@ -82,6 +84,36 @@ public class AssinaturaController {
                 "validaAte", a.getValidaAte().toString(),
                 "mensagem", "Bem-vindo ao plano " + plano.getNomeExibicao() + "! 🎉"
         ));
+    }
+
+    /**
+     * Inicia cobrança real no Mercado Pago.
+     * Body: { plano, metodo: "PIX"|"CARTAO", returnBaseUrl? }
+     *
+     * Resposta PIX: { tipo:"PIX", paymentId, qrCode, qrCodeBase64, expiraEm }
+     * Resposta CARTÃO: { tipo:"CHECKOUT_URL", checkoutUrl } (frontend redireciona)
+     */
+    @PostMapping("/iniciar-pagamento")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Map<String, Object>> iniciarPagamento(
+            @AuthenticationPrincipal String email,
+            @RequestBody Map<String, String> body) {
+        Restaurante r = restauranteRepository.findByUsuarioEmail(email).orElseThrow();
+        Plano plano;
+        try { plano = Plano.valueOf(body.getOrDefault("plano", "").toUpperCase()); }
+        catch (Exception e) { throw new RuntimeException("Plano inválido"); }
+
+        String metodo = body.getOrDefault("metodo", "CARTAO").toUpperCase();
+        // Regra: PIX só pra planos > 1 mês
+        if ("PIX".equals(metodo) && plano.getDuracaoMeses() <= 1) {
+            throw new RuntimeException("PIX disponível apenas para planos Semestral ou Anual.");
+        }
+
+        if ("PIX".equals(metodo)) {
+            return ResponseEntity.ok(pagamentoService.criarPix(r, plano));
+        }
+        String returnBase = body.getOrDefault("returnBaseUrl", "https://mydeliveryfood.com.br");
+        return ResponseEntity.ok(pagamentoService.criarCheckoutCartao(r, plano, returnBase));
     }
 
     /**

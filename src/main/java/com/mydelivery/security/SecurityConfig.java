@@ -67,6 +67,8 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.POST, "/api/webhooks/mercadopago").permitAll()
                 // Webhook da Evolution API (WhatsApp) — público, validação pelo nome da instância no path
                 .requestMatchers(HttpMethod.POST, "/api/webhooks/whatsapp/**").permitAll()
+                // Endpoint interno chamado pelo admin-mydelivery-api — autenticado via X-Admin-Secret
+                .requestMatchers(HttpMethod.POST, "/api/restaurante/assinatura/conceder-meses-gratis-admin").permitAll()
                 .requestMatchers("/api/admin/**").hasRole("ADMIN")
                 .requestMatchers("/api/restaurante/**").hasAnyRole("RESTAURANTE", "ADMIN")
                 .anyRequest().authenticated()

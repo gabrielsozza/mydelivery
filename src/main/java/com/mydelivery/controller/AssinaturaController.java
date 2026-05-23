@@ -165,11 +165,29 @@ public class AssinaturaController {
         }
 
         // Sem trial → cobrança imediata (fluxo padrão)
-        Map<String, Object> resp = pagamentoService.pagarCartao(r, plano, formData);
+        Map<String, Object> resp;
+        try {
+            resp = pagamentoService.pagarCartao(r, plano, formData);
+        } catch (RuntimeException ex) {
+            // Erro interno/gateway → registra falha pra admin ver
+            assinaturaService.registrarFalhaPagamento(r, plano, "CARTAO", null, null,
+                    ex.getMessage(), com.mydelivery.model.PagamentoMensalidade.CategoriaErro.SISTEMA);
+            throw ex;
+        }
         if (Boolean.TRUE.equals(resp.get("aprovado"))) {
             Assinatura a = assinaturaService.ativarPlano(r, plano, "CARTAO",
                     resp.get("paymentId") == null ? null : String.valueOf(resp.get("paymentId")));
+            // Registra pagamento bem-sucedido
+            assinaturaService.registrarPagamentoOk(r, plano, "CARTAO",
+                    resp.get("paymentId") != null ? Long.valueOf(String.valueOf(resp.get("paymentId"))) : null);
             resp.put("validaAte", a.getValidaAte().toString());
+        } else {
+            // Cartão recusado pelo MP → falha do CLIENTE
+            assinaturaService.registrarFalhaPagamento(r, plano, "CARTAO",
+                    resp.get("paymentId") != null ? Long.valueOf(String.valueOf(resp.get("paymentId"))) : null,
+                    String.valueOf(resp.get("statusDetail")),
+                    "Pagamento " + resp.get("status") + " — " + resp.get("statusDetail"),
+                    com.mydelivery.model.PagamentoMensalidade.CategoriaErro.CLIENTE);
         }
         return ResponseEntity.ok(resp);
     }
@@ -226,6 +244,35 @@ public class AssinaturaController {
         return ResponseEntity.ok(Map.of(
                 "metodoPagamento", a.getMetodoPagamento(),
                 "mensagem", "Método de pagamento atualizado pra " + a.getMetodoPagamento()
+        ));
+    }
+
+    /**
+     * USO INTERNO ADMIN — concede meses grátis pra um restaurante.
+     * Não exige role RESTAURANTE: protegido por header X-Admin-Secret.
+     * Body: { restauranteId, meses, motivo? }
+     */
+    @PostMapping("/conceder-meses-gratis-admin")
+    public ResponseEntity<Map<String, Object>> concederMesesGratisAdmin(
+            @org.springframework.web.bind.annotation.RequestHeader(value = "X-Admin-Secret", required = false) String secret,
+            @RequestBody Map<String, Object> body,
+            @org.springframework.beans.factory.annotation.Value("${mydelivery.admin.internal-secret:}") String esperado) {
+        if (esperado == null || esperado.isBlank() || !esperado.equals(secret)) {
+            return ResponseEntity.status(org.springframework.http.HttpStatus.FORBIDDEN)
+                    .body(Map.of("erro", "Secret inválido"));
+        }
+        Long restauranteId = Long.valueOf(String.valueOf(body.get("restauranteId")));
+        int meses = Integer.parseInt(String.valueOf(body.getOrDefault("meses", 1)));
+        String motivo = (String) body.getOrDefault("motivo", "Concedido pela equipe MyDelivery");
+
+        Restaurante r = restauranteRepository.findById(restauranteId)
+                .orElseThrow(() -> new RuntimeException("Restaurante não encontrado"));
+        Assinatura a = assinaturaService.concederMesesGratis(r, meses, motivo);
+        return ResponseEntity.ok(Map.of(
+                "ok", true,
+                "novoValidaAte", a.getValidaAte() != null ? a.getValidaAte().toString() : "",
+                "proximaCobranca", a.getProximaCobranca() != null ? a.getProximaCobranca().toString() : "",
+                "mensagem", meses + " mês(es) concedido(s)."
         ));
     }
 

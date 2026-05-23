@@ -48,6 +48,8 @@ public class AssinaturaService {
     private final AssinaturaRepository assinaturaRepository;
     private final RestauranteRepository restauranteRepository;
     private final PlanoCatalogoService planoCatalogoService;
+    private final com.mydelivery.repository.PagamentoMensalidadeRepository pagamentoMensalidadeRepository;
+    private final EmailService emailService;
 
     @Value("${app.assinatura.aviso-trial-dias:5}")
     private int avisoTrialDias;
@@ -241,6 +243,14 @@ public class AssinaturaService {
         restauranteRepository.save(r);
 
         log.info("✅ Plano {} ativado para restaurante #{} até {}", plano, r.getId(), novoFim);
+
+        // Email de pagamento aprovado (assíncrono, não falha se SMTP cair)
+        try {
+            String emailDono = r.getUsuario() != null ? r.getUsuario().getEmail() : null;
+            emailService.pagamentoAprovado(emailDono, r.getNome(), plano.getNomeExibicao(),
+                    plano.getValor(), novoFim);
+        } catch (Exception e) { log.warn("[Email] falha enviar aprovado: {}", e.getMessage()); }
+
         return salva;
     }
 
@@ -384,6 +394,137 @@ public class AssinaturaService {
         return assinaturaRepository.findByRestauranteId(r.getId());
     }
 
+    /**
+     * Registra uma tentativa de pagamento OK. Cria linha em pagamentos_mensalidade.
+     * Admin lista esses registros pra ter histórico de cobranças.
+     */
+    @Transactional
+    public void registrarPagamentoOk(Restaurante r, Plano plano, String metodo, Long mpPaymentId) {
+        try {
+            com.mydelivery.model.PagamentoMensalidade p = com.mydelivery.model.PagamentoMensalidade.builder()
+                    .restaurante(r)
+                    .valor(plano.getValor())
+                    .status(com.mydelivery.model.PagamentoMensalidade.Status.PAGO)
+                    .metodoPagamento(metodo)
+                    .plano(plano)
+                    .pagoEm(LocalDateTime.now())
+                    .mpPaymentId(mpPaymentId)
+                    .build();
+            pagamentoMensalidadeRepository.save(p);
+        } catch (Exception e) {
+            log.warn("[Pagamento] falha ao registrar PAGO: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Registra falha de pagamento — admin vê isso na aba de monitoramento.
+     *
+     * @param categoria CLIENTE (cartão recusado), GATEWAY (MP fora), SISTEMA (bug interno)
+     */
+    @Transactional
+    public void registrarFalhaPagamento(Restaurante r, Plano plano, String metodo,
+                                        Long mpPaymentId, String mpStatusDetail,
+                                        String motivo,
+                                        com.mydelivery.model.PagamentoMensalidade.CategoriaErro categoria) {
+        try {
+            com.mydelivery.model.PagamentoMensalidade p = com.mydelivery.model.PagamentoMensalidade.builder()
+                    .restaurante(r)
+                    .valor(plano != null ? plano.getValor() : java.math.BigDecimal.ZERO)
+                    .status(com.mydelivery.model.PagamentoMensalidade.Status.REJEITADO)
+                    .metodoPagamento(metodo)
+                    .plano(plano)
+                    .mpPaymentId(mpPaymentId)
+                    .mpStatusDetail(mpStatusDetail)
+                    .categoriaErro(categoria)
+                    .motivoErro(motivo == null ? null
+                            : (motivo.length() > 1000 ? motivo.substring(0, 1000) : motivo))
+                    .build();
+            pagamentoMensalidadeRepository.save(p);
+            log.warn("❌ Falha pagamento registrada — restaurante={}, plano={}, categoria={}, motivo={}",
+                    r.getId(), plano, categoria, motivo);
+            // Email pro dono se for problema do cliente
+            if (categoria == com.mydelivery.model.PagamentoMensalidade.CategoriaErro.CLIENTE) {
+                String emailDono = r.getUsuario() != null ? r.getUsuario().getEmail() : null;
+                emailService.pagamentoRecusado(emailDono, r.getNome(),
+                        plano != null ? plano.getNomeExibicao() : "—",
+                        plano != null ? plano.getValor() : java.math.BigDecimal.ZERO,
+                        motivo);
+            }
+        } catch (Exception e) {
+            log.warn("[Pagamento] falha ao registrar falha: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Concede meses grátis ao restaurante (admin manual).
+     *
+     * Regra: adiciona N meses ao {@code validaAte} atual E adia a próxima
+     * cobrança no mesmo offset. Funciona tanto pra TRIAL (estende trialFim)
+     * quanto pra ATIVA/PENDENTE (estende vigência paga).
+     *
+     * Pra MENSAL com vencimento dia 10 + 1 mês grátis → próxima cobrança dia 10
+     * do mês seguinte. Pra ANUAL terminando dezembro + 1 mês → janeiro+1.
+     */
+    @Transactional
+    public Assinatura concederMesesGratis(Restaurante r, int meses, String motivo) {
+        if (meses <= 0) throw new RuntimeException("Quantidade de meses deve ser >= 1");
+        if (meses > 24) throw new RuntimeException("Limite máximo: 24 meses por vez");
+
+        Assinatura a = assinaturaRepository.findByRestauranteId(r.getId())
+                .orElseGet(() -> Assinatura.builder()
+                        .restaurante(r)
+                        .valor(java.math.BigDecimal.ZERO)
+                        .status(Assinatura.Status.TRIAL)
+                        .build());
+
+        LocalDateTime agora = LocalDateTime.now();
+        // Base = validaAte atual OU agora se já vencido
+        LocalDateTime base = a.getValidaAte() != null && a.getValidaAte().isAfter(agora)
+                ? a.getValidaAte() : agora;
+        LocalDateTime novoFim = base.plusMonths(meses);
+        a.setValidaAte(novoFim);
+
+        // proximaCobranca acompanha
+        if (a.getProximaCobranca() != null) {
+            LocalDateTime proxBase = a.getProximaCobranca().isAfter(agora)
+                    ? a.getProximaCobranca() : agora;
+            a.setProximaCobranca(proxBase.plusMonths(meses));
+        } else {
+            a.setProximaCobranca(novoFim);
+        }
+        // Se estava INADIMPLENTE ou pendente, libera de novo
+        if (a.getStatus() == Assinatura.Status.INADIMPLENTE) {
+            a.setStatus(Assinatura.Status.ATIVA);
+        }
+
+        // Sincroniza trialFim/trialExpiraEm se estiver em TRIAL
+        if (a.getStatus() == Assinatura.Status.TRIAL) {
+            a.setTrialFim(novoFim);
+            r.setTrialExpiraEm(novoFim);
+        }
+
+        // Libera restaurante se estava bloqueado
+        if (r.getStatus() == Restaurante.Status.BLOQUEADO) {
+            r.setStatus(a.getStatus() == Assinatura.Status.TRIAL
+                    ? Restaurante.Status.TRIAL : Restaurante.Status.ATIVO);
+            r.setBloqueadoEm(null);
+            r.setMotivoBloqueio(null);
+            restauranteRepository.save(r);
+        }
+        Assinatura salva = assinaturaRepository.save(a);
+
+        log.info("🎁 Mês grátis concedido — restaurante={}, meses={}, motivo={}, novoFim={}",
+                r.getId(), meses, motivo, novoFim);
+
+        try {
+            String emailDono = r.getUsuario() != null ? r.getUsuario().getEmail() : null;
+            emailService.mesGratisConcedido(emailDono, r.getNome(),
+                    a.getProximaCobranca() != null ? a.getProximaCobranca() : novoFim);
+        } catch (Exception e) { log.warn("[Email] falha enviar mes grátis: {}", e.getMessage()); }
+
+        return salva;
+    }
+
     /** Atualiza a referência de cartão salvo após Brick re-tokenizar. */
     @Transactional
     public Assinatura atualizarReferenciaCartao(Restaurante r, String novaReferencia) {
@@ -412,6 +553,12 @@ public class AssinaturaService {
         Assinatura salva = assinaturaRepository.save(a);
         log.info("Plano cancelado para restaurante #{}. Acesso mantido até {}",
                 r.getId(), a.getValidaAte());
+
+        try {
+            String emailDono = r.getUsuario() != null ? r.getUsuario().getEmail() : null;
+            emailService.canceladoPeloCliente(emailDono, r.getNome(), a.getValidaAte());
+        } catch (Exception e) { log.warn("[Email] falha enviar cancelado: {}", e.getMessage()); }
+
         return salva;
     }
 

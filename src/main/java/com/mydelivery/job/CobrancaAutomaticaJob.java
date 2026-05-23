@@ -69,9 +69,10 @@ public class CobrancaAutomaticaJob {
                 var resp = pagamentoService.cobrarCartaoSalvo(
                         a.getRestaurante(), a.getPlano(), a.getReferenciaGateway());
                 if (Boolean.TRUE.equals(resp.get("aprovado"))) {
-                    // Ativa o plano (extende validaAte + duracaoMeses, atualiza ultimaCobranca)
                     assinaturaService.ativarPlano(a.getRestaurante(), a.getPlano(), "CARTAO",
                             resp.get("paymentId") == null ? null : String.valueOf(resp.get("paymentId")));
+                    assinaturaService.registrarPagamentoOk(a.getRestaurante(), a.getPlano(), "CARTAO",
+                            resp.get("paymentId") != null ? Long.valueOf(String.valueOf(resp.get("paymentId"))) : null);
                     ok++;
                     log.info("[CobrancaAuto] ✅ cobrança ok — restaurante={}, plano={}, paymentId={}",
                             a.getRestaurante().getId(), a.getPlano(), resp.get("paymentId"));
@@ -80,14 +81,24 @@ public class CobrancaAutomaticaJob {
                     log.warn("[CobrancaAuto] ❌ cobrança reprovada — restaurante={}, plano={}, status={}, detail={}",
                             a.getRestaurante().getId(), a.getPlano(),
                             resp.get("status"), resp.get("statusDetail"));
-                    // Mantém PENDENTE pra retry no próximo tick (24h).
-                    // Após N falhas, status seria mudado pra FALHA_PAGAMENTO + alerta admin — TODO V2.
+                    // Cartão recusado = falha do CLIENTE — registra + email
+                    assinaturaService.registrarFalhaPagamento(a.getRestaurante(), a.getPlano(), "CARTAO",
+                            resp.get("paymentId") != null ? Long.valueOf(String.valueOf(resp.get("paymentId"))) : null,
+                            String.valueOf(resp.get("statusDetail")),
+                            "Cobrança automática reprovada: " + resp.get("status") + " — " + resp.get("statusDetail"),
+                            com.mydelivery.model.PagamentoMensalidade.CategoriaErro.CLIENTE);
                 }
             } catch (Exception e) {
                 falha++;
                 log.error("[CobrancaAuto] erro processando assinatura {} (restaurante={}): {}",
                         a.getId(), a.getRestaurante() != null ? a.getRestaurante().getId() : null,
                         e.getMessage());
+                // Erro ao chamar MP = falha de GATEWAY/SISTEMA
+                try {
+                    assinaturaService.registrarFalhaPagamento(a.getRestaurante(), a.getPlano(), "CARTAO",
+                            null, null, "Erro processamento: " + e.getMessage(),
+                            com.mydelivery.model.PagamentoMensalidade.CategoriaErro.GATEWAY);
+                } catch (Exception ignore) {}
             }
         }
         log.info("[CobrancaAuto] tick concluído — total={} aprovadas={} falhas={}",

@@ -59,7 +59,19 @@ public class Assinatura {
     private LocalDateTime ultimaCobranca;
     private LocalDateTime canceladoEm;
 
+    /** PIX ou CARTAO — método escolhido na hora da assinatura. */
+    @Column(name = "metodo_pagamento", length = 20)
+    private String metodoPagamento;
+
+    /**
+     * Referência do gateway (MP) — pra renovação automática.
+     * Formato cartão salvo: "trial-card:CUSTOMER_ID:CARD_ID".
+     * Formato livre pra outros gateways no futuro.
+     */
+    @Column(name = "referencia_gateway", length = 200)
+    private String referenciaGateway;
+
     public enum Status {
-        TRIAL, ATIVA, INADIMPLENTE, CANCELADA
+        TRIAL, ATIVA, PENDENTE, INADIMPLENTE, CANCELADA
     }
 }

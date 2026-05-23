@@ -119,6 +119,14 @@
             <artifactId>cloudinary-http44</artifactId>
             <version>1.39.0</version>
         </dependency>
+
+        <!-- Jsoup: parsing leve de HTML/JSON-LD/Next.js __NEXT_DATA__ pra importação de cardápio por link.
+             Sem JS execution, sem headless browser. ~1MB. -->
+        <dependency>
+            <groupId>org.jsoup</groupId>
+            <artifactId>jsoup</artifactId>
+            <version>1.18.1</version>
+        </dependency>
     </dependencies>
 
     <build>

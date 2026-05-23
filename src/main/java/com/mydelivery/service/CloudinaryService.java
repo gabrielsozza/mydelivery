@@ -61,6 +61,41 @@ public class CloudinaryService {
     }
 
     /**
+     * Upload direto de bytes (sem MultipartFile) — usado pela importação de
+     * cardápio, que baixa a imagem da URL origem e re-hospeda no Cloudinary.
+     * Não valida extensão por nome de arquivo (a URL fonte pode não ter).
+     * resource_type=auto deixa o Cloudinary detectar pelo content-type.
+     */
+    public String uploadBytes(byte[] bytes, String subfolder) {
+        if (!config.isConfigured()) {
+            log.warn("[Cloudinary] uploadBytes: credenciais não configuradas — devolvendo null");
+            return null;
+        }
+        if (bytes == null || bytes.length == 0) return null;
+        if (bytes.length > 8L * 1024 * 1024) {
+            log.warn("[Cloudinary] uploadBytes: imagem >8MB descartada");
+            return null;
+        }
+        String pasta = folder + (subfolder != null && !subfolder.isBlank() ? "/" + subfolder : "");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> opts = ObjectUtils.asMap(
+                "folder", pasta,
+                "resource_type", "image",
+                "quality", "auto:good",
+                "fetch_format", "auto",
+                "unique_filename", true);
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> resultado = cloudinary.uploader().upload(bytes, opts);
+            Object url = resultado.get("secure_url");
+            return url == null ? null : url.toString();
+        } catch (Exception e) {
+            log.warn("[Cloudinary] uploadBytes falhou: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /**
      * Implementação interna comum. resource_type=auto permite Cloudinary
      * detectar imagem/PDF/etc. automaticamente — usamos isso pra suportar
      * documentos sem precisar de endpoint separado.

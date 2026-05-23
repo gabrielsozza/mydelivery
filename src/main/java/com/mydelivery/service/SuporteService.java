@@ -146,6 +146,11 @@ public class SuporteService {
                 .build();
         ticket.getMensagens().add(msg);
 
+        // Persiste o ticket ANTES de tentar criar anexos. Cascade.ALL faz a mensagem
+        // virar managed com ID — sem isso, anexoRepository.save() abaixo dispara
+        // TransientPropertyValueException porque a mensagem referenciada ainda é transient.
+        ticketRepository.save(ticket);
+
         if (arquivos != null && arquivos.length > 0) {
             if (arquivos.length > maxAnexos) {
                 throw new RuntimeException("Máximo de " + maxAnexos + " anexos por mensagem.");
@@ -156,7 +161,6 @@ public class SuporteService {
                 msg.getAnexos().add(anexo);
             }
         }
-        ticketRepository.save(ticket);
         return msg;
     }
 

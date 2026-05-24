@@ -278,17 +278,18 @@ public class ImportacaoCardapioService {
 
     // Stopwords usadas pra inferir o "nome dominante" do cardápio.
     // Excluímos artigos, preposições, palavras de UI, slogans e unidades.
-    private static final java.util.Set<String> STOPWORDS_NOMES = java.util.Set.of(
+    // Set.copyOf(List.of(...)) tolera duplicatas (que Set.of() rejeita).
+    private static final java.util.Set<String> STOPWORDS_NOMES = java.util.Set.copyOf(java.util.List.of(
         "de","do","da","dos","das","a","o","as","os","e","ou","um","uma","uns","umas",
         "com","sem","para","por","que","se","no","na","nos","nas","ao","aos",
         "este","esta","esse","essa","isto","isso","aqui","ali","la","ja",
         "mais","menos","muito","muita","muitos","muitas","todo","toda","todos","todas",
         "ser","estar","ter","fazer","ir","ver","dar","saber","poder","querer","incluir",
-        "inclui","tem","contem","contendo","acompanha","contendo",
+        "inclui","tem","contem","contendo","acompanha",
         "delivery","taxa","entrega","frete","monte","jeito","escolha","aproveite","melhor",
         "seu","sua","seus","suas","meu","minha","gostoso","saboroso","delicioso",
-        "carinho","qualidade","qualidad","ingredientes","cremoso","sabor","sabores","gostosa",
-        "terapia","roxa","gente","ama","amamos","adoramos","amem","amam","amem",
+        "carinho","qualidade","ingredientes","cremoso","sabor","sabores","gostosa",
+        "terapia","roxa","gente","ama","amamos","adoramos","amem","amam",
         "novo","nova","novos","novas","abertura","aberto","fechado","fechada",
         "horario","horarios","telefone","whatsapp","instagram","facebook","tiktok",
         "endereco","enderecos","rua","avenida","numero","cep","bairro","cidade",
@@ -297,9 +298,8 @@ public class ImportacaoCardapioService {
         "ml","g","kg","gr","cl","cm","mm","un","unid","unidade","unidades",
         "complemento","complementos","cobertura","coberturas","adicional","adicionais",
         "opcional","opcionais","extra","extras","grande","medio","pequeno",
-        "sim","nao","talvez","quem","quando","onde","como","porque",
-        "muito","pouco","mais","menos"
-    );
+        "sim","nao","talvez","quem","quando","onde","como","porque","pouco"
+    ));
 
     // Palavras-chave que indicam que a linha NÃO é produto (taxa, contato, etc).
     private static final String[] LIXO_NOME = {

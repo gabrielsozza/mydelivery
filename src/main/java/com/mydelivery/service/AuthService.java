@@ -53,11 +53,13 @@ public class AuthService {
         // Gera slug único para o restaurante
         String slug = gerarSlug(request.getNomeRestaurante());
 
-        // Cria o restaurante
+        // Cria o restaurante já com telefone do dono pré-preenchido
+        // (evita o cliente ter que digitar de novo em "Configurações > Perfil")
         Restaurante restaurante = Restaurante.builder()
                 .usuario(usuario)
                 .nome(request.getNomeRestaurante())
                 .slug(slug)
+                .telefone(request.getTelefone()) // ← prefill do cadastro
                 .status(Restaurante.Status.TRIAL)
                 .trialExpiraEm(LocalDateTime.now().plusDays(trialDias))
                 .build();

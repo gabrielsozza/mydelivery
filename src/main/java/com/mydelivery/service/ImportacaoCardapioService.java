@@ -4,10 +4,18 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpRequest.BodyPublishers;
+import java.net.http.HttpResponse;
+import java.net.http.HttpResponse.BodyHandlers;
 import java.nio.charset.StandardCharsets;
 import java.text.Normalizer;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -21,10 +29,13 @@ import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.ss.usermodel.Workbook;
 import org.apache.poi.ss.usermodel.WorkbookFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mydelivery.dto.cardapio.ImportacaoConfirmRequest;
 import com.mydelivery.dto.cardapio.ImportacaoPreviewDTO;
 import com.mydelivery.model.Categoria;
@@ -38,17 +49,25 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * Importador de cardápio via CSV/XLSX.
+ * Importador de cardápio — CSV/XLSX/PDF/IMAGEM (JPG, PNG, WEBP).
  *
  * Fluxo:
  *  1. Cliente envia arquivo → analisar() retorna preview editável
  *  2. Cliente revisa e confirma → confirmar() salva no banco
  *
- * Recursos:
- *  - Auto-detecção de plataforma de origem (Anotaaí, Olaclick, etc.) pelos headers
- *  - Auto-mapping heurístico de colunas em PT + EN
- *  - Parser tolerante a preços em formatos variados (R$ 10,50 / 10.50 / 1050)
- *  - Detecção automática de delimitador CSV (vírgula, ponto-e-vírgula, tab)
+ * Estratégia por formato:
+ *  - CSV/XLSX → parser tabular com fuzzy match agressivo de colunas (sinônimos +
+ *    Levenshtein como fallback)
+ *  - PDF → PDFBox extrai texto, parser de texto livre infere produtos/preços/categorias
+ *  - Imagem → OCR.space API (gratuito) extrai texto, reusa o parser de texto livre
+ *
+ * Resiliência:
+ *  - Aliases ricos em PT/EN cobrindo formatos de Anotaaí, Olaclick, iFood, Goomer,
+ *    99Food, Keeta, Anota.ai, planilhas genéricas e variações como "vlr_unit"
+ *  - Fuzzy match com distância de edição (até 2 chars) pra pegar typos
+ *  - Parser de preço aceita R$, vírgula, ponto, com/sem milhar
+ *  - Heurísticas pra detectar categoria (TODO MAIÚSCULO, palavras-chave, ":")
+ *  - Mesmo se OCR/parsing falhar parcialmente, retorna o que conseguir + avisos
  */
 @Slf4j
 @Service
@@ -58,38 +77,70 @@ public class ImportacaoCardapioService {
     private final CategoriaRepository categoriaRepository;
     private final ProdutoRepository produtoRepository;
     private final RestauranteRepository restauranteRepository;
-    private final CardapioService cardapioService; // pra reusar prepararProdutoParaExclusao
+    private final CardapioService cardapioService;
 
-    // ── Sinônimos pra detecção automática de coluna ──────────────────────────
-    // Cada array é "essa coluna pode se chamar qualquer um destes" (lowercased + sem acento)
+    @Value("${mydelivery.ocr.api-key:helloworld}")
+    private String ocrApiKey;
+
+    @Value("${mydelivery.ocr.timeout-ms:60000}")
+    private int ocrTimeoutMs;
+
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final HttpClient HTTP = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(15))
+            .build();
+
+    // ── Sinônimos pra detecção automática de coluna (PT + EN + variações) ─────
+    // Todos LOWERCASE SEM ACENTO. O matching faz contains + Levenshtein.
     private static final String[] COL_NOME = {
-        "nome", "name", "produto", "product", "item", "titulo", "title", "descricao do produto"
+        "nome", "name", "produto", "product", "item", "titulo", "title",
+        "descricao do produto", "produto nome", "nm produto", "nome produto",
+        "item nome", "nome do item", "produto descricao", "denominacao"
     };
     private static final String[] COL_DESC = {
-        "descricao", "description", "detalhes", "details", "obs", "observacao", "ingredientes", "sobre"
+        "descricao", "description", "detalhes", "details", "obs", "observacao",
+        "ingredientes", "sobre", "comentario", "comentarios", "info",
+        "informacoes", "resumo", "sumario", "longa", "longa descricao",
+        "descricao longa", "descricao completa"
     };
     private static final String[] COL_PRECO = {
-        "preco", "price", "valor", "valor unitario", "preco unitario", "custo", "amount"
+        "preco", "price", "valor", "valor unitario", "preco unitario", "custo",
+        "amount", "valor produto", "preco produto", "vlr", "vlr unit",
+        "vlr unitario", "vl unit", "vl unitario", "preco venda", "valor venda",
+        "venda", "preco final", "valor final", "v. unit", "v unitario",
+        "preco r$", "valor r$", "rs", "r$"
     };
     private static final String[] COL_CATEGORIA = {
-        "categoria", "category", "grupo", "group", "secao", "section", "menu"
+        "categoria", "category", "grupo", "group", "secao", "section", "menu",
+        "tipo", "type", "departamento", "familia", "classe", "classificacao",
+        "categoria nome", "nome categoria", "grupo produto", "secao menu",
+        "categoria produto"
     };
     private static final String[] COL_IMAGEM = {
-        "imagem", "image", "foto", "photo", "img", "imagem url", "url imagem", "image url", "picture"
+        "imagem", "image", "foto", "photo", "img", "imagem url", "url imagem",
+        "image url", "picture", "pic", "thumbnail", "thumb", "url foto",
+        "link imagem", "link foto", "imgsrc", "imagem produto"
     };
+
+    // Distância de Levenshtein máxima pra considerar "match aproximado" do header
+    private static final int FUZZY_MAX_DIST = 2;
+
+    // Regex de preço reutilizado por PDF e OCR de imagem
+    private static final java.util.regex.Pattern PRECO_RE = java.util.regex.Pattern.compile(
+            "(?:R\\$\\s*)?([0-9]{1,4}(?:[.,][0-9]{3})*[.,][0-9]{2})|(?:R\\$\\s*)([0-9]{1,4})\\b"
+    );
 
     // ── ANÁLISE (preview) ────────────────────────────────────────────────────
 
-    /**
-     * Lê o arquivo, detecta tudo, retorna preview pra cliente editar.
-     * Não toca no banco.
-     */
     public ImportacaoPreviewDTO analisar(MultipartFile arquivo) {
         if (arquivo == null || arquivo.isEmpty())
             throw new RuntimeException("Arquivo vazio");
 
         String filename = arquivo.getOriginalFilename() != null
                 ? arquivo.getOriginalFilename().toLowerCase()
+                : "";
+        String contentType = arquivo.getContentType() != null
+                ? arquivo.getContentType().toLowerCase()
                 : "";
 
         try {
@@ -98,72 +149,160 @@ public class ImportacaoCardapioService {
                 linhas = lerExcel(arquivo);
             } else if (filename.endsWith(".pdf")) {
                 linhas = lerPdf(arquivo);
-            } else if (filename.endsWith(".csv") || filename.endsWith(".txt")) {
+            } else if (ehImagem(filename, contentType)) {
+                linhas = lerImagem(arquivo);
+            } else if (filename.endsWith(".csv") || filename.endsWith(".txt")
+                    || contentType.contains("csv") || contentType.contains("text/plain")) {
                 linhas = lerCsv(arquivo);
             } else {
-                // Tenta CSV por default se a extensão não bater
+                // Fallback: tenta CSV (maioria dos casos sem extensão)
                 linhas = lerCsv(arquivo);
             }
             return montarPreview(linhas);
+        } catch (RuntimeException re) {
+            throw re;
         } catch (Exception e) {
             log.error("Erro ao analisar arquivo de importação", e);
             throw new RuntimeException("Não foi possível ler o arquivo: " + e.getMessage());
         }
     }
 
-    // ── LEITURA DE PDF ───────────────────────────────────────────────────────
+    private boolean ehImagem(String filename, String contentType) {
+        return filename.endsWith(".jpg") || filename.endsWith(".jpeg")
+            || filename.endsWith(".png") || filename.endsWith(".webp")
+            || filename.endsWith(".bmp") || filename.endsWith(".gif")
+            || filename.endsWith(".tiff") || filename.endsWith(".tif")
+            || contentType.startsWith("image/");
+    }
+
+    // ── LEITURA DE IMAGEM (OCR.space) ───────────────────────────────────────
 
     /**
-     * Extrai cardápio de um PDF (texto) via heurística.
-     *
-     * Estratégia:
-     *  1. Extrai texto puro do PDF com PDFBox
-     *  2. Quebra em linhas
-     *  3. Regex pra detectar linhas com preço (ex: "R$ 12,50", "12.50")
-     *  4. Linhas com preço → vira produto. O nome é a parte antes do preço.
-     *  5. Linhas SEM preço, antes de um bloco de produtos → categoria
-     *  6. Retorna estrutura tabular [Categoria, Nome, Descrição, Preço] que o resto do fluxo já entende
-     *
-     * Limitações: funciona em PDFs com texto extraível. Não funciona em PDFs
-     * escaneados (imagens) sem OCR. Layouts em múltiplas colunas podem confundir.
+     * OCR via OCR.space API gratuita. Limite: 1MB por arquivo na chave pública
+     * "helloworld". Pra arquivos maiores configure {@code mydelivery.ocr.api-key}
+     * com uma chave pessoal (gratuita, 25k req/mês em https://ocr.space/ocrapi).
      */
+    private List<List<String>> lerImagem(MultipartFile arquivo) throws IOException, InterruptedException {
+        byte[] bytes = arquivo.getBytes();
+        if (bytes.length > 1024 * 1024 && "helloworld".equals(ocrApiKey)) {
+            throw new RuntimeException(
+                "Imagem maior que 1MB exige chave OCR personalizada. " +
+                "Comprima a imagem ou configure mydelivery.ocr.api-key. " +
+                "Alternativa: tire foto em menor resolução ou use PDF/CSV.");
+        }
+
+        String mime = arquivo.getContentType() != null ? arquivo.getContentType() : "image/jpeg";
+        if (mime.equalsIgnoreCase("application/octet-stream")) mime = "image/jpeg";
+
+        // OCR.space aceita base64 image data via form field "base64Image"
+        String base64 = Base64.getEncoder().encodeToString(bytes);
+        String dataUrl = "data:" + mime + ";base64," + base64;
+
+        // Form encoding
+        StringBuilder form = new StringBuilder();
+        form.append("apikey=").append(java.net.URLEncoder.encode(ocrApiKey, StandardCharsets.UTF_8));
+        form.append("&language=por");
+        form.append("&isOverlayRequired=false");
+        form.append("&detectOrientation=true");
+        form.append("&scale=true");
+        // OCR Engine 2 = mais novo, melhor em layouts complexos (cardápios)
+        form.append("&OCREngine=2");
+        form.append("&base64Image=").append(java.net.URLEncoder.encode(dataUrl, StandardCharsets.UTF_8));
+
+        HttpRequest req = HttpRequest.newBuilder()
+                .uri(URI.create("https://api.ocr.space/parse/image"))
+                .timeout(Duration.ofMillis(ocrTimeoutMs))
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .POST(BodyPublishers.ofString(form.toString()))
+                .build();
+
+        HttpResponse<String> res = HTTP.send(req, BodyHandlers.ofString(StandardCharsets.UTF_8));
+        if (res.statusCode() != 200) {
+            log.warn("[OCR] status={} body={}", res.statusCode(),
+                    res.body() != null ? res.body().substring(0, Math.min(300, res.body().length())) : "");
+            throw new RuntimeException(
+                "Serviço de OCR indisponível (status " + res.statusCode() + "). " +
+                "Tente novamente em alguns minutos ou use CSV/Excel/PDF.");
+        }
+
+        JsonNode root;
+        try {
+            root = MAPPER.readTree(res.body());
+        } catch (Exception e) {
+            throw new RuntimeException("Resposta inválida do OCR. Tente novamente.");
+        }
+
+        if (root.path("IsErroredOnProcessing").asBoolean(false)) {
+            String erro = root.path("ErrorMessage").isArray() && root.path("ErrorMessage").size() > 0
+                    ? root.path("ErrorMessage").get(0).asText()
+                    : root.path("ErrorMessage").asText("Erro desconhecido no OCR");
+            throw new RuntimeException("OCR falhou: " + erro);
+        }
+
+        StringBuilder texto = new StringBuilder();
+        JsonNode results = root.path("ParsedResults");
+        if (results.isArray()) {
+            for (JsonNode pr : results) {
+                String t = pr.path("ParsedText").asText("");
+                if (!t.isBlank()) texto.append(t).append("\n");
+            }
+        }
+
+        String textoFinal = texto.toString().trim();
+        if (textoFinal.isEmpty()) {
+            throw new RuntimeException(
+                "OCR não conseguiu extrair texto da imagem. Verifique se: " +
+                "(1) o texto está nítido e em foco; (2) há contraste suficiente; " +
+                "(3) imagem não está rotacionada. Dica: tire foto bem na frente do cardápio, com boa luz.");
+        }
+
+        log.info("[OCR] imagem={} bytes, texto extraído={} chars", bytes.length, textoFinal.length());
+        return parsearTextoLivre(textoFinal);
+    }
+
+    // ── LEITURA DE PDF ───────────────────────────────────────────────────────
+
     private List<List<String>> lerPdf(MultipartFile arquivo) throws IOException {
         String texto;
         try (PDDocument doc = Loader.loadPDF(arquivo.getBytes())) {
             PDFTextStripper stripper = new PDFTextStripper();
-            // Preserva quebras de linha do layout original quando possível
             stripper.setSortByPosition(true);
             texto = stripper.getText(doc);
         }
 
         if (texto == null || texto.isBlank())
-            throw new RuntimeException("PDF parece estar vazio ou ser uma imagem escaneada (sem texto extraível).");
+            throw new RuntimeException("PDF parece estar vazio ou ser uma imagem escaneada (sem texto extraível). Tente subir como imagem (.jpg/.png) — usamos OCR pra ler.");
 
-        // Regex de preço: R$ 12, R$ 12,50, R$ 12.50, 12,50 (com R$ opcional)
-        java.util.regex.Pattern PRECO = java.util.regex.Pattern.compile(
-                "(R\\$\\s*)?([0-9]{1,4}(?:[.,][0-9]{3})*[.,][0-9]{2})|(R\\$\\s*)([0-9]+)\\b"
-        );
+        return parsearTextoLivre(texto);
+    }
 
+    /**
+     * Parser de texto livre (PDF/OCR) → estrutura tabular [Categoria, Nome, Descrição, Preço].
+     * Heurísticas:
+     *  - Linha com preço (R$ ou número.NN) → produto
+     *  - Linha curta TODA EM MAIÚSCULAS ou com palavra-chave conhecida → categoria
+     *  - Linha sem preço logo antes de uma com preço → nome do produto (linhaPendente)
+     */
+    private List<List<String>> parsearTextoLivre(String texto) {
         List<List<String>> linhas = new ArrayList<>();
-        // Header fixo — o resto do código já espera esse formato
         linhas.add(Arrays.asList("Categoria", "Nome", "Descrição", "Preço"));
 
         String categoriaAtual = "Geral";
-        // Bufferiza pra suportar nome em uma linha + preço na próxima
         String linhaPendente = null;
 
         for (String rawLine : texto.split("\\r?\\n")) {
             String linha = rawLine.trim();
             if (linha.isEmpty()) { linhaPendente = null; continue; }
 
-            java.util.regex.Matcher m = PRECO.matcher(linha);
+            // Remove caracteres comuns de "lixo OCR" no final (ruído)
+            linha = linha.replaceAll("\\s+", " ");
+
+            java.util.regex.Matcher m = PRECO_RE.matcher(linha);
             if (m.find()) {
-                // Tem preço — é um produto
                 String precoStr = m.group();
                 String antes = linha.substring(0, m.start()).trim();
                 String depois = linha.substring(m.end()).trim();
 
-                // Limpa pontuação esquerda do preço (R$, ponto, traço, ...)
                 antes = antes.replaceAll("[.\\-–·•\\s]+$", "").trim();
 
                 String nome;
@@ -172,30 +311,29 @@ public class ImportacaoCardapioService {
                     nome = antes;
                     if (!depois.isEmpty()) descricao = depois;
                 } else if (linhaPendente != null && linhaPendente.length() >= 2) {
-                    // Nome na linha de cima, preço na de baixo (layout comum em alguns cardápios)
                     nome = linhaPendente;
                     if (!depois.isEmpty()) descricao = depois;
                 } else {
-                    // Preço sem nome — ignora
                     linhaPendente = null;
                     continue;
                 }
 
-                // Nome muito longo? geralmente é descrição que veio antes do preço
                 if (nome.length() > 80 && nome.contains(" - ")) {
                     int idx = nome.indexOf(" - ");
                     descricao = (descricao.isEmpty() ? "" : descricao + " — ") + nome.substring(idx + 3).trim();
                     nome = nome.substring(0, idx).trim();
                 }
 
+                // Limpa lixo no início do nome
+                nome = nome.replaceAll("^[\\d\\W_]+(?=\\p{L})", "").trim();
+                if (nome.length() < 2) { linhaPendente = null; continue; }
+
                 linhas.add(Arrays.asList(categoriaAtual, nome, descricao, precoStr));
                 linhaPendente = null;
             } else {
-                // Sem preço — pode ser categoria OU nome de produto cujo preço está na próxima linha
-                // Heurística: linha curta (até 50 chars) e com pelo menos 1 letra alfabética
-                if (linha.length() <= 50 && linha.matches(".*[A-Za-zÀ-ÿ].*")) {
-                    // Se for TODA em maiúsculas OU termina sem pontuação curta → provavelmente categoria
-                    boolean maiusculas = linha.equals(linha.toUpperCase()) && linha.length() >= 3;
+                if (linha.length() <= 60 && linha.matches(".*[A-Za-zÀ-ÿ].*")) {
+                    boolean maiusculas = linha.equals(linha.toUpperCase()) && linha.length() >= 3
+                            && linha.matches(".*[A-ZÀ-Ý]{2,}.*");
                     boolean ehCategoria = maiusculas || linha.endsWith(":") || ehTituloCategoria(linha);
                     if (ehCategoria) {
                         categoriaAtual = linha.replaceAll("[:]+$", "").trim();
@@ -203,18 +341,19 @@ public class ImportacaoCardapioService {
                         continue;
                     }
                 }
-                // Senão, guarda como possível nome do produto cujo preço vem na próxima
                 linhaPendente = linha;
             }
         }
 
         if (linhas.size() == 1) {
-            throw new RuntimeException("Não consegui identificar nenhum produto no PDF. Verifique se ele contém texto (não é só imagem) e se os preços estão visíveis. Tente CSV/Excel ou nosso template.");
+            throw new RuntimeException(
+                "Não consegui identificar nenhum produto. Dicas: (a) verifique se o texto está nítido " +
+                "(b) preços precisam estar visíveis (R$ 10,00 / 10,00) (c) tente reformatar como CSV " +
+                "usando nosso template.");
         }
         return linhas;
     }
 
-    /** Heurística complementar: detecta títulos de categoria comuns em cardápios. */
     private boolean ehTituloCategoria(String linha) {
         String norm = normalizar(linha);
         String[] gatilhos = {
@@ -222,12 +361,16 @@ public class ImportacaoCardapioService {
                 "bebida", "bebidas", "drink", "drinks", "sobremesa", "sobremesas",
                 "lanche", "lanches", "hamburguer", "hamburgueres", "burger", "burgers",
                 "pizza", "pizzas", "massa", "massas", "executivo", "executivos",
-                "prato", "pratos", "porção", "porcoes", "saladas", "salada",
-                "menu", "cardapio", "promocao", "promocoes", "combo", "combos"
+                "prato", "pratos", "porcao", "porcoes", "salada", "saladas",
+                "menu", "cardapio", "promocao", "promocoes", "combo", "combos",
+                "acai", "acais", "sorvete", "sorvetes", "doce", "doces",
+                "salgado", "salgados", "pastel", "pasteis", "esfiha", "esfihas",
+                "sushi", "japonesa", "japones", "wrap", "wraps", "tapioca", "tapiocas",
+                "milkshake", "milkshakes", "shake", "shakes", "cafe", "cafes"
         };
         for (String g : gatilhos) {
-            // Linha curta começando com a palavra
-            if (norm.equals(g) || norm.startsWith(g + " ") || norm.startsWith(g + "s ")) return true;
+            if (norm.equals(g) || norm.startsWith(g + " ") || norm.startsWith(g + "s ")
+                    || norm.endsWith(" " + g) || norm.endsWith(" " + g + "s")) return true;
         }
         return false;
     }
@@ -245,23 +388,18 @@ public class ImportacaoCardapioService {
         boolean substituir = "substituir".equalsIgnoreCase(req.getModo());
 
         if (substituir) {
-            // Deleta produtos e categorias atuais do restaurante (limpa tudo)
             var categoriasAntigas = categoriaRepository.findByRestauranteIdOrderByOrdemAsc(r.getId());
             for (Categoria c : categoriasAntigas) {
                 var produtos = produtoRepository.findByCategoriaId(c.getId());
-                // Mesmo cleanup robusto (ficha técnica + snapshot em pedidos antigos)
                 for (var p : produtos) cardapioService.prepararProdutoParaExclusao(p);
                 produtoRepository.deleteAll(produtos);
             }
             categoriaRepository.deleteAll(categoriasAntigas);
         }
 
-        // Reusa categorias existentes (busca por nome) ou cria novas
         Map<String, Categoria> categoriasMap = new HashMap<>();
         var existentes = categoriaRepository.findByRestauranteIdOrderByOrdemAsc(r.getId());
-        for (Categoria c : existentes) {
-            categoriasMap.put(normalizar(c.getNome()), c);
-        }
+        for (Categoria c : existentes) categoriasMap.put(normalizar(c.getNome()), c);
 
         int totalCategorias = 0;
         int totalProdutos = 0;
@@ -281,7 +419,7 @@ public class ImportacaoCardapioService {
 
             if (cat.getProdutos() == null) continue;
             for (var p : cat.getProdutos()) {
-                if (Boolean.FALSE.equals(p.getImportar())) continue; // cliente desmarcou
+                if (Boolean.FALSE.equals(p.getImportar())) continue;
                 if (p.getNome() == null || p.getNome().isBlank()) continue;
                 if (p.getPreco() == null) continue;
 
@@ -307,23 +445,19 @@ public class ImportacaoCardapioService {
         return resultado;
     }
 
-    // ── PARSING ──────────────────────────────────────────────────────────────
+    // ── PARSING CSV/XLSX ─────────────────────────────────────────────────────
 
-    /** Lê CSV detectando delimitador automaticamente (, ; \t). */
     private List<List<String>> lerCsv(MultipartFile arquivo) throws IOException {
         byte[] bytes = arquivo.getBytes();
         String conteudo = new String(bytes, StandardCharsets.UTF_8);
-        // Se o UTF-8 deu problema (caracteres estranhos), tenta latin-1
         if (conteudo.contains("�")) {
             conteudo = new String(bytes, StandardCharsets.ISO_8859_1);
         }
-        // Remove BOM se houver
         if (conteudo.startsWith("﻿")) conteudo = conteudo.substring(1);
 
         String[] linhasRaw = conteudo.split("\\r?\\n");
         if (linhasRaw.length == 0) return new ArrayList<>();
 
-        // Detecta delimitador: conta ocorrências de cada um na 1ª linha
         char delim = detectarDelimitador(linhasRaw[0]);
 
         List<List<String>> linhas = new ArrayList<>();
@@ -338,12 +472,15 @@ public class ImportacaoCardapioService {
         int virgulas = (int) linha.chars().filter(c -> c == ',').count();
         int pontoVirgulas = (int) linha.chars().filter(c -> c == ';').count();
         int tabs = (int) linha.chars().filter(c -> c == '\t').count();
-        if (tabs >= virgulas && tabs >= pontoVirgulas) return '\t';
-        if (pontoVirgulas > virgulas) return ';';
+        int pipes = (int) linha.chars().filter(c -> c == '|').count();
+        int max = Math.max(Math.max(virgulas, pontoVirgulas), Math.max(tabs, pipes));
+        if (max == 0) return ',';
+        if (tabs == max) return '\t';
+        if (pipes == max) return '|';
+        if (pontoVirgulas == max) return ';';
         return ',';
     }
 
-    /** Parser CSV simples com suporte a aspas (campo entre " " pode conter delimitador). */
     private List<String> parseLinhaCsv(String linha, char delim) {
         List<String> campos = new ArrayList<>();
         StringBuilder atual = new StringBuilder();
@@ -351,7 +488,6 @@ public class ImportacaoCardapioService {
         for (int i = 0; i < linha.length(); i++) {
             char c = linha.charAt(i);
             if (c == '"') {
-                // "" dentro de campo aspeado = aspas literal
                 if (dentroAspas && i + 1 < linha.length() && linha.charAt(i + 1) == '"') {
                     atual.append('"'); i++;
                 } else {
@@ -368,7 +504,6 @@ public class ImportacaoCardapioService {
         return campos;
     }
 
-    /** Lê XLSX usando Apache POI. */
     private List<List<String>> lerExcel(MultipartFile arquivo) throws IOException {
         List<List<String>> linhas = new ArrayList<>();
         try (InputStream is = arquivo.getInputStream(); Workbook wb = WorkbookFactory.create(is)) {
@@ -380,7 +515,6 @@ public class ImportacaoCardapioService {
                     Cell cell = row.getCell(c, Row.MissingCellPolicy.CREATE_NULL_AS_BLANK);
                     linha.add(valorCell(cell));
                 }
-                // Linha completamente vazia → ignora
                 if (linha.stream().allMatch(s -> s == null || s.isBlank())) continue;
                 linhas.add(linha);
             }
@@ -394,7 +528,6 @@ public class ImportacaoCardapioService {
             case STRING -> cell.getStringCellValue().trim();
             case NUMERIC -> {
                 double v = cell.getNumericCellValue();
-                // Inteiro? sem casas decimais inúteis
                 if (v == Math.floor(v) && !Double.isInfinite(v) && Math.abs(v) < 1e15) {
                     yield String.valueOf((long) v);
                 }
@@ -420,17 +553,32 @@ public class ImportacaoCardapioService {
 
         List<String> headers = linhas.get(0);
         Map<String, Integer> mapping = mapearColunas(headers);
+        List<String> avisos = new ArrayList<>();
 
         if (mapping.get("nome") == null)
-            throw new RuntimeException("Não encontrei coluna com nome de produto. Renomeie a coluna para 'Nome' ou 'Produto'.");
+            throw new RuntimeException(
+                "Não encontrei a coluna do nome do produto. Renomeie pra 'Nome', 'Produto' " +
+                "ou similar. Colunas detectadas: " + headers);
         if (mapping.get("preco") == null)
-            throw new RuntimeException("Não encontrei coluna de preço. Renomeie para 'Preço' ou 'Valor'.");
+            throw new RuntimeException(
+                "Não encontrei a coluna do preço. Renomeie pra 'Preço', 'Valor' ou similar. " +
+                "Colunas detectadas: " + headers);
+
+        // Aviso sobre matches aproximados (transparência)
+        for (var e : mapping.entrySet()) {
+            if (e.getValue() == null) continue;
+            String header = headers.get(e.getValue());
+            String esperado = e.getKey();
+            String norm = normalizar(header);
+            boolean exato = Arrays.stream(sinonimosDe(esperado)).anyMatch(s -> norm.equals(s) || norm.contains(s));
+            if (!exato) {
+                avisos.add("Coluna \"" + header + "\" interpretada como " + esperado + " (fuzzy match — confirme nos itens).");
+            }
+        }
 
         String plataforma = detectarPlataforma(headers);
 
-        // Agrupa por categoria mantendo ordem de inserção
         Map<String, List<ImportacaoPreviewDTO.ProdutoImport>> porCategoria = new LinkedHashMap<>();
-        List<String> avisos = new ArrayList<>();
         int invalidas = 0;
 
         for (int i = 1; i < linhas.size(); i++) {
@@ -484,69 +632,113 @@ public class ImportacaoCardapioService {
                 .build();
     }
 
+    private String[] sinonimosDe(String tipo) {
+        return switch (tipo) {
+            case "nome" -> COL_NOME;
+            case "descricao" -> COL_DESC;
+            case "preco" -> COL_PRECO;
+            case "categoria" -> COL_CATEGORIA;
+            case "imagem" -> COL_IMAGEM;
+            default -> new String[0];
+        };
+    }
+
     /**
-     * Mapeia índice de cada coluna conhecida (nome, preco, etc.) usando heurísticas.
-     * Retorna Map<tipo, indice> — valor null se não encontrou.
+     * Mapeia colunas com 3 níveis de fallback:
+     *  1) match exato (igual a um sinônimo)
+     *  2) contains (header inclui o sinônimo OU vice-versa)
+     *  3) fuzzy (Levenshtein <= FUZZY_MAX_DIST)
      */
     private Map<String, Integer> mapearColunas(List<String> headers) {
         Map<String, Integer> map = new HashMap<>();
-        map.put("nome", buscarColuna(headers, COL_NOME));
-        map.put("descricao", buscarColuna(headers, COL_DESC));
-        map.put("preco", buscarColuna(headers, COL_PRECO));
-        map.put("categoria", buscarColuna(headers, COL_CATEGORIA));
-        map.put("imagem", buscarColuna(headers, COL_IMAGEM));
+        String[] tipos = {"nome", "descricao", "preco", "categoria", "imagem"};
+        for (String tipo : tipos) {
+            map.put(tipo, buscarColuna(headers, sinonimosDe(tipo)));
+        }
         return map;
     }
 
     private Integer buscarColuna(List<String> headers, String[] sinonimos) {
+        // Nível 1+2: exato e contains
         for (int i = 0; i < headers.size(); i++) {
             String h = normalizar(headers.get(i));
+            if (h.isBlank()) continue;
             for (String sin : sinonimos) {
-                if (h.equals(sin) || h.contains(sin)) return i;
+                if (h.equals(sin)) return i;
+            }
+            for (String sin : sinonimos) {
+                // Se header CONTÉM sinônimo OU sinônimo CONTÉM header (header curto tipo "preco")
+                if (h.contains(sin) || (sin.length() >= 4 && sin.contains(h))) return i;
             }
         }
-        return null;
+        // Nível 3: fuzzy
+        int melhorIdx = -1;
+        int melhorDist = FUZZY_MAX_DIST + 1;
+        for (int i = 0; i < headers.size(); i++) {
+            String h = normalizar(headers.get(i));
+            if (h.isBlank() || h.length() < 3) continue;
+            for (String sin : sinonimos) {
+                if (Math.abs(h.length() - sin.length()) > FUZZY_MAX_DIST) continue;
+                int d = levenshtein(h, sin);
+                if (d < melhorDist) { melhorDist = d; melhorIdx = i; }
+            }
+        }
+        return melhorIdx >= 0 ? melhorIdx : null;
+    }
+
+    /** Distância de edição (Levenshtein) clássica — usa só pra strings curtas. */
+    private int levenshtein(String a, String b) {
+        int[] prev = new int[b.length() + 1];
+        int[] curr = new int[b.length() + 1];
+        for (int j = 0; j <= b.length(); j++) prev[j] = j;
+        for (int i = 1; i <= a.length(); i++) {
+            curr[0] = i;
+            for (int j = 1; j <= b.length(); j++) {
+                int cost = a.charAt(i - 1) == b.charAt(j - 1) ? 0 : 1;
+                curr[j] = Math.min(Math.min(curr[j - 1] + 1, prev[j] + 1), prev[j - 1] + cost);
+            }
+            int[] tmp = prev; prev = curr; curr = tmp;
+        }
+        return prev[b.length()];
     }
 
     private String detectarPlataforma(List<String> headers) {
         String joined = headers.stream()
                 .map(this::normalizar)
                 .reduce("", (a, b) -> a + "|" + b);
-        // Heurísticas — cada plataforma exporta com palavras-chave próprias
         if (joined.contains("anotaai") || (joined.contains("complementos") && joined.contains("preco")))
             return "Anotaaí";
         if (joined.contains("olaclick") || (joined.contains("description") && joined.contains("category")))
             return "Olaclick";
         if (joined.contains("ifood")) return "iFood";
         if (joined.contains("goomer")) return "Goomer";
+        if (joined.contains("99food") || joined.contains("99 food")) return "99Food";
+        if (joined.contains("keeta")) return "Keeta";
         return "Genérico";
     }
 
-    /**
-     * Parser tolerante de preço:
-     *  "R$ 10,50" → 10.50
-     *  "10,50"    → 10.50
-     *  "10.50"    → 10.50
-     *  "1.250,00" → 1250.00 (formato pt-BR)
-     *  "1,250.00" → 1250.00 (formato en-US)
-     */
     private BigDecimal parsearPreco(String s) {
         if (s == null) return null;
-        String limpo = s.trim().replaceAll("[Rr]\\$|\\s|[A-Za-z]", "");
+        // Limpa tudo que não é dígito, vírgula ou ponto
+        String limpo = s.trim()
+                .replaceAll("(?i)r\\$", "")
+                .replaceAll("[^0-9.,]", "")
+                .trim();
         if (limpo.isEmpty()) return null;
-        // Detecta formato pelo último separador (decimal)
+
         int virgula = limpo.lastIndexOf(',');
         int ponto = limpo.lastIndexOf('.');
         try {
             if (virgula > ponto) {
-                // pt-BR: ponto é milhar, vírgula é decimal
                 limpo = limpo.replace(".", "").replace(",", ".");
             } else if (ponto > virgula) {
-                // en-US: vírgula é milhar, ponto é decimal
                 limpo = limpo.replace(",", "");
             }
-            // Se só tem 1 separador e está no fim, é decimal — já tratado acima
-            return new BigDecimal(limpo).setScale(2, RoundingMode.HALF_UP);
+            BigDecimal preco = new BigDecimal(limpo).setScale(2, RoundingMode.HALF_UP);
+            // Sanidade: preço entre R$ 0,01 e R$ 100.000
+            if (preco.compareTo(BigDecimal.ZERO) <= 0) return null;
+            if (preco.compareTo(new BigDecimal("100000")) > 0) return null;
+            return preco;
         } catch (Exception e) {
             return null;
         }
@@ -558,11 +750,12 @@ public class ImportacaoCardapioService {
         return (v == null || v.isBlank()) ? null : v.trim();
     }
 
-    /** Normaliza string: lowercase + sem acento + sem espaços nas pontas. */
     private String normalizar(String s) {
         if (s == null) return "";
         return Normalizer.normalize(s.toLowerCase(), Normalizer.Form.NFD)
                 .replaceAll("[\\p{InCombiningDiacriticalMarks}]", "")
+                .replaceAll("[_\\-./]+", " ")
+                .replaceAll("\\s+", " ")
                 .trim();
     }
 }

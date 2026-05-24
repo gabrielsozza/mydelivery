@@ -276,73 +276,168 @@ public class ImportacaoCardapioService {
         return parsearTextoLivre(texto);
     }
 
+    // Stopwords usadas pra inferir o "nome dominante" do cardápio.
+    // Excluímos artigos, preposições, palavras de UI, slogans e unidades.
+    private static final java.util.Set<String> STOPWORDS_NOMES = java.util.Set.of(
+        "de","do","da","dos","das","a","o","as","os","e","ou","um","uma","uns","umas",
+        "com","sem","para","por","que","se","no","na","nos","nas","ao","aos",
+        "este","esta","esse","essa","isto","isso","aqui","ali","la","ja",
+        "mais","menos","muito","muita","muitos","muitas","todo","toda","todos","todas",
+        "ser","estar","ter","fazer","ir","ver","dar","saber","poder","querer","incluir",
+        "inclui","tem","contem","contendo","acompanha","contendo",
+        "delivery","taxa","entrega","frete","monte","jeito","escolha","aproveite","melhor",
+        "seu","sua","seus","suas","meu","minha","gostoso","saboroso","delicioso",
+        "carinho","qualidade","qualidad","ingredientes","cremoso","sabor","sabores","gostosa",
+        "terapia","roxa","gente","ama","amamos","adoramos","amem","amam","amem",
+        "novo","nova","novos","novas","abertura","aberto","fechado","fechada",
+        "horario","horarios","telefone","whatsapp","instagram","facebook","tiktok",
+        "endereco","enderecos","rua","avenida","numero","cep","bairro","cidade",
+        "produto","produtos","item","itens","cardapio","menu","cardapios",
+        "preco","precos","valor","valores","real","reais","rs",
+        "ml","g","kg","gr","cl","cm","mm","un","unid","unidade","unidades",
+        "complemento","complementos","cobertura","coberturas","adicional","adicionais",
+        "opcional","opcionais","extra","extras","grande","medio","pequeno",
+        "sim","nao","talvez","quem","quando","onde","como","porque",
+        "muito","pouco","mais","menos"
+    );
+
+    // Palavras-chave que indicam que a linha NÃO é produto (taxa, contato, etc).
+    private static final String[] LIXO_NOME = {
+        "taxa entrega", "taxa de entrega", "taxa", "frete", "entrega gratis", "entrega gratuita",
+        "abertura", "abrimos", "fechamos", "horario", "horarios",
+        "telefone", "whatsapp", "instagram", "facebook", "endereco", "endereço",
+        "monte do seu jeito", "monte seu", "escolha seus", "aproveite",
+        "terapia roxa", "que a gente ama", "muito carinho", "ingredientes de qualidade",
+        "cardapio", "menu", "siga nos", "siga-nos"
+    };
+
+    // Detecta "300ml", "500g", "1L", "2 litros" etc — variantes que precisam de prefixo.
+    private static final java.util.regex.Pattern VARIANTE_RE = java.util.regex.Pattern.compile(
+        "^\\s*\\d+\\s*(ml|g|kg|gr|cl|l|litros?|cm|mm|un|unid|unidades?|pessoas?|fatias?|pe[cç]as?)\\s*$",
+        java.util.regex.Pattern.CASE_INSENSITIVE);
+
+    // Só unidade isolada, sem número (caso do OCR ter cortado o "300" e sobrado só "ml")
+    private static final java.util.regex.Pattern UNIDADE_SOLO_RE = java.util.regex.Pattern.compile(
+        "^\\s*(ml|g|kg|gr|cl|l|cm|mm|un|unid)\\s*$",
+        java.util.regex.Pattern.CASE_INSENSITIVE);
+
     /**
      * Parser de texto livre (PDF/OCR) → estrutura tabular [Categoria, Nome, Descrição, Preço].
-     * Heurísticas:
-     *  - Linha com preço (R$ ou número.NN) → produto
-     *  - Linha curta TODA EM MAIÚSCULAS ou com palavra-chave conhecida → categoria
-     *  - Linha sem preço logo antes de uma com preço → nome do produto (linhaPendente)
+     *
+     * Estratégia inteligente:
+     *  1. PRÉ-PASSO: infere o "nome dominante" do cardápio (palavra mais frequente
+     *     não-stopword) — usado pra prefixar variantes soltas (ex: "300ml" → "Açaí 300ml")
+     *     e pra renomear a categoria "Geral" quando todos os produtos pertencem ao mesmo tema.
+     *  2. PARSE: percorre linhas mantendo um buffer de contexto (últimas 4 linhas)
+     *     pra recuperar nome quando o OCR fragmenta texto.
+     *  3. FILTROS: rejeita linhas-lixo (taxa, frete, slogans) e nomes inválidos.
+     *  4. PÓS-PROCESSAMENTO: agrupa categoria única, absorve "Inclui:..." em descrição,
+     *     deduplica e limpa.
      */
     private List<List<String>> parsearTextoLivre(String texto) {
         List<List<String>> linhas = new ArrayList<>();
         linhas.add(Arrays.asList("Categoria", "Nome", "Descrição", "Preço"));
 
+        // Pré-passo: nome dominante (Açaí, Pizza, Hambúrguer...)
+        String nomeDominante = inferirNomeDominante(texto);
+        log.debug("[Import] nomeDominante detectado: {}", nomeDominante);
+
         String categoriaAtual = "Geral";
-        String linhaPendente = null;
+        java.util.LinkedList<String> contexto = new java.util.LinkedList<>();
+        final int CTX_MAX = 4;
+
+        // Lista intermediária pra permitir pós-processamento (linhas "Inclui:..." → descrição)
+        List<String[]> produtos = new ArrayList<>();
 
         for (String rawLine : texto.split("\\r?\\n")) {
-            String linha = rawLine.trim();
-            if (linha.isEmpty()) { linhaPendente = null; continue; }
-
-            // Remove caracteres comuns de "lixo OCR" no final (ruído)
-            linha = linha.replaceAll("\\s+", " ");
+            String linha = rawLine.trim().replaceAll("\\s+", " ");
+            if (linha.isEmpty()) {
+                if (!contexto.isEmpty()) contexto.clear();
+                continue;
+            }
 
             java.util.regex.Matcher m = PRECO_RE.matcher(linha);
             if (m.find()) {
                 String precoStr = m.group();
-                String antes = linha.substring(0, m.start()).trim();
+                String antes = linha.substring(0, m.start()).trim()
+                                .replaceAll("[.\\-–·•\\s]+$", "").trim();
                 String depois = linha.substring(m.end()).trim();
 
-                antes = antes.replaceAll("[.\\-–·•\\s]+$", "").trim();
+                // Tenta achar nome em ordem: antes-do-preço > contexto > nada
+                String nome = pickNomeProduto(antes, contexto);
+                String descricao = depois;
 
-                String nome;
-                String descricao = "";
-                if (antes.length() >= 2) {
-                    nome = antes;
-                    if (!depois.isEmpty()) descricao = depois;
-                } else if (linhaPendente != null && linhaPendente.length() >= 2) {
-                    nome = linhaPendente;
-                    if (!depois.isEmpty()) descricao = depois;
-                } else {
-                    linhaPendente = null;
-                    continue;
-                }
-
-                if (nome.length() > 80 && nome.contains(" - ")) {
+                // Nome > 80 chars com " - " no meio → racha em nome + descrição
+                if (nome != null && nome.length() > 80 && nome.contains(" - ")) {
                     int idx = nome.indexOf(" - ");
                     descricao = (descricao.isEmpty() ? "" : descricao + " — ") + nome.substring(idx + 3).trim();
                     nome = nome.substring(0, idx).trim();
                 }
 
-                // Limpa lixo no início do nome
-                nome = nome.replaceAll("^[\\d\\W_]+(?=\\p{L})", "").trim();
-                if (nome.length() < 2) { linhaPendente = null; continue; }
+                // Limpa lixo no início do nome (ex: bullets, pontuação, números soltos)
+                if (nome != null) nome = nome.replaceAll("^[\\d\\W_]+(?=\\p{L})", "").trim();
 
-                linhas.add(Arrays.asList(categoriaAtual, nome, descricao, precoStr));
-                linhaPendente = null;
+                // Se o nome é só uma variante (300ml / ml solto) prefixa com nome dominante
+                if (nome != null && nomeDominante != null
+                        && (VARIANTE_RE.matcher(nome).matches() || UNIDADE_SOLO_RE.matcher(nome).matches())) {
+                    nome = capitalize(nomeDominante) + " " + nome.toLowerCase();
+                }
+
+                // Linha-lixo (taxa de entrega, slogan, etc) → pula produto
+                if (nome == null || nome.length() < 2 || ehLixo(nome)) {
+                    contexto.clear();
+                    continue;
+                }
+
+                produtos.add(new String[]{categoriaAtual, nome, descricao, precoStr});
+                contexto.clear();
             } else {
+                // Sem preço — pode ser categoria, descrição contextual ou nome pendente
                 if (linha.length() <= 60 && linha.matches(".*[A-Za-zÀ-ÿ].*")) {
-                    boolean maiusculas = linha.equals(linha.toUpperCase()) && linha.length() >= 3
-                            && linha.matches(".*[A-ZÀ-Ý]{2,}.*");
-                    boolean ehCategoria = maiusculas || linha.endsWith(":") || ehTituloCategoria(linha);
+                    boolean maiusculas = linha.equals(linha.toUpperCase()) && linha.length() >= 4
+                            && linha.matches(".*[A-ZÀ-Ý]{3,}.*")
+                            && !VARIANTE_RE.matcher(linha).matches();
+                    boolean ehCategoria = (maiusculas || linha.endsWith(":") || ehTituloCategoria(linha))
+                            && !ehLixo(linha);
                     if (ehCategoria) {
                         categoriaAtual = linha.replaceAll("[:]+$", "").trim();
-                        linhaPendente = null;
+                        contexto.clear();
                         continue;
                     }
                 }
-                linhaPendente = linha;
+
+                // "Inclui: 4 complementos + 1 cobertura" — guarda como descrição do último produto
+                if (linha.toLowerCase().matches("^(inclui|acompanha|contem|vem com|com|com:)[\\s:].*")) {
+                    if (!produtos.isEmpty()) {
+                        String[] ult = produtos.get(produtos.size() - 1);
+                        ult[2] = (ult[2] == null || ult[2].isBlank()) ? linha : ult[2] + " · " + linha;
+                    }
+                    continue;
+                }
+
+                // Senão, guarda como contexto pra próxima linha com preço
+                contexto.addFirst(linha);
+                while (contexto.size() > CTX_MAX) contexto.removeLast();
             }
+        }
+
+        // PÓS-PROCESSAMENTO ──────────────────────────────────────────
+        // (1) Se categoria == "Geral" em TODOS e há nome dominante, usa nome dominante como categoria
+        if (nomeDominante != null && !produtos.isEmpty()) {
+            boolean todosGeral = produtos.stream().allMatch(p -> "Geral".equals(p[0]));
+            if (todosGeral) {
+                String catFinal = capitalize(nomeDominante);
+                produtos.forEach(p -> p[0] = catFinal);
+            }
+        }
+
+        // (2) Deduplica produtos exatamente iguais (nome + preço idêntico)
+        java.util.Set<String> vistos = new java.util.HashSet<>();
+        for (String[] p : produtos) {
+            String chave = normalizar(p[1]) + "|" + p[3];
+            if (vistos.contains(chave)) continue;
+            vistos.add(chave);
+            linhas.add(Arrays.asList(p));
         }
 
         if (linhas.size() == 1) {
@@ -352,6 +447,64 @@ public class ImportacaoCardapioService {
                 "usando nosso template.");
         }
         return linhas;
+    }
+
+    /**
+     * Escolhe o melhor candidato a nome do produto baseado em:
+     *  - parte da linha antes do preço (se ≥3 chars e não-lixo)
+     *  - linhas do buffer de contexto (mais recente primeiro)
+     *  - última opção: a parte antes do preço mesmo se curta (pra prefixar com dominante)
+     */
+    private String pickNomeProduto(String antesDoPreco, java.util.LinkedList<String> contexto) {
+        if (antesDoPreco != null && antesDoPreco.length() >= 3 && !ehLixo(antesDoPreco)) {
+            return antesDoPreco;
+        }
+        for (String c : contexto) {
+            if (c == null || c.length() < 2) continue;
+            if (ehLixo(c)) continue;
+            // Combina contexto + variante (ex: "Açaí" em cima + "300ml" no preço)
+            if (antesDoPreco != null && !antesDoPreco.isBlank()
+                    && (VARIANTE_RE.matcher(antesDoPreco).matches() || UNIDADE_SOLO_RE.matcher(antesDoPreco).matches())) {
+                return c + " " + antesDoPreco;
+            }
+            return c;
+        }
+        return (antesDoPreco != null && antesDoPreco.length() >= 2) ? antesDoPreco : null;
+    }
+
+    /** Detecta o "termo dominante" no texto — palavra significativa mais repetida. */
+    private String inferirNomeDominante(String texto) {
+        Map<String, Integer> freq = new LinkedHashMap<>();
+        String norm = Normalizer.normalize(texto.toLowerCase(), Normalizer.Form.NFD)
+                .replaceAll("[\\p{InCombiningDiacriticalMarks}]", "");
+        // Token = sequência de letras (sem números, sem pontuação)
+        for (String token : norm.split("[^a-z']+")) {
+            if (token.length() < 3 || token.length() > 25) continue;
+            if (STOPWORDS_NOMES.contains(token)) continue;
+            freq.merge(token, 1, Integer::sum);
+        }
+        return freq.entrySet().stream()
+                .filter(e -> e.getValue() >= 2)
+                .max(Map.Entry.comparingByValue())
+                .map(Map.Entry::getKey)
+                .orElse(null);
+    }
+
+    /** Verifica se a string parece ser linha de UI/lixo (taxa de entrega, slogan, contato). */
+    private boolean ehLixo(String s) {
+        if (s == null) return true;
+        String norm = normalizar(s);
+        if (norm.length() < 2) return true;
+        for (String l : LIXO_NOME) {
+            if (norm.contains(l)) return true;
+        }
+        return false;
+    }
+
+    /** "açaí" → "Açaí" — primeira letra maiúscula. */
+    private String capitalize(String s) {
+        if (s == null || s.isEmpty()) return s;
+        return Character.toUpperCase(s.charAt(0)) + s.substring(1).toLowerCase();
     }
 
     private boolean ehTituloCategoria(String linha) {

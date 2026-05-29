@@ -44,6 +44,7 @@ public class SecurityConfig {
                 .requestMatchers("/public/**").permitAll()
                 .requestMatchers("/api/auth/**").permitAll()
                 .requestMatchers("/api/cardapio/**").permitAll()
+                .requestMatchers(HttpMethod.GET, "/api/cardapio/*/banners").permitAll()
                 .requestMatchers("/api/pedidos/novo").permitAll()
                 .requestMatchers("/api/pedidos/*/acompanhar").permitAll()
                 .requestMatchers("/api/restaurante/publico/**").permitAll()

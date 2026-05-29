@@ -29,6 +29,7 @@ public class CardapioService {
     private final RestauranteRepository restauranteRepository;
     private final FichaTecnicaItemRepository fichaTecnicaItemRepository;
     private final PedidoItemRepository pedidoItemRepository;
+    private final com.mydelivery.repository.BannerRepository bannerRepository;
 
     // ─── CARDÁPIO PÚBLICO ────────────────────────────────────────────────
 
@@ -139,6 +140,8 @@ public class CardapioService {
             }
             pedidoItemRepository.saveAll(pedidoItens);
         }
+        // 3) Banners promocionais — desvincula produto (banner continua existindo sem destino)
+        bannerRepository.desvincularProduto(produto.getId());
     }
 
     // ─── PRODUTOS ────────────────────────────────────────────────────────

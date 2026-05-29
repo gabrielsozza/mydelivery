@@ -71,6 +71,7 @@ public class SecurityConfig {
                 // Endpoint interno chamado pelo admin-mydelivery-api — autenticado via X-Admin-Secret
                 .requestMatchers(HttpMethod.POST, "/api/restaurante/assinatura/conceder-meses-gratis-admin").permitAll()
                 .requestMatchers(HttpMethod.POST, "/api/restaurante/assinatura/impersonar-admin").permitAll()
+                .requestMatchers(HttpMethod.POST, "/api/restaurante/assinatura/replicar-cardapio-admin").permitAll()
                 .requestMatchers("/api/admin/**").hasRole("ADMIN")
                 .requestMatchers("/api/restaurante/**").hasAnyRole("RESTAURANTE", "ADMIN")
                 .anyRequest().authenticated()

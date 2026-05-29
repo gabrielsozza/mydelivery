@@ -40,6 +40,7 @@ public class AssinaturaController {
     private final AssinaturaPagamentoService pagamentoService;
     private final RestauranteRepository restauranteRepository;
     private final com.mydelivery.security.JwtUtil jwtUtil;
+    private final com.mydelivery.service.CardapioReplicaService cardapioReplicaService;
 
     @GetMapping("/status")
     @PreAuthorize("hasRole('RESTAURANTE')")
@@ -319,6 +320,47 @@ public class AssinaturaController {
             "role", usuario.getRole().name(),
             "expiresIn", 15 * 60 * 1000
         ));
+    }
+
+    /**
+     * USO INTERNO ADMIN — replica o cardápio da origem pra UMA loja destino.
+     * Protegido por X-Admin-Secret.
+     *
+     * Body: { origemId, destinoId, modo? ("ACRESCENTAR" default | "SUBSTITUIR") }
+     * Retorna: { ok, destinoNome, categorias, produtos, grupos, itens, banners, modo }
+     */
+    @PostMapping("/replicar-cardapio-admin")
+    public ResponseEntity<Map<String, Object>> replicarCardapioAdmin(
+            @org.springframework.web.bind.annotation.RequestHeader(value = "X-Admin-Secret", required = false) String secret,
+            @RequestBody Map<String, Object> body,
+            @org.springframework.beans.factory.annotation.Value("${mydelivery.admin.internal-secret:}") String esperado) {
+        if (esperado == null || esperado.isBlank() || !esperado.equals(secret)) {
+            return ResponseEntity.status(org.springframework.http.HttpStatus.FORBIDDEN)
+                    .body(Map.of("erro", "Secret inválido"));
+        }
+        try {
+            Long origemId = Long.valueOf(String.valueOf(body.get("origemId")));
+            Long destinoId = Long.valueOf(String.valueOf(body.get("destinoId")));
+            String modo = (String) body.getOrDefault("modo", "ACRESCENTAR");
+
+            var r = cardapioReplicaService.replicar(origemId, destinoId, modo);
+            return ResponseEntity.ok(Map.of(
+                "ok", true,
+                "destinoId", r.destinoId(),
+                "destinoNome", r.destinoNome() != null ? r.destinoNome() : "",
+                "categorias", r.categorias(),
+                "produtos", r.produtos(),
+                "grupos", r.grupos(),
+                "itens", r.itens(),
+                "banners", r.banners(),
+                "modo", r.modo()
+            ));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("erro", e.getMessage()));
+        } catch (Exception e) {
+            log.error("[Replica] erro: {}", e.getMessage(), e);
+            return ResponseEntity.status(500).body(Map.of("erro", e.getMessage()));
+        }
     }
 
     /**

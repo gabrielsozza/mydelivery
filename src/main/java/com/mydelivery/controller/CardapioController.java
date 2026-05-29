@@ -34,6 +34,7 @@ public class CardapioController {
 
     private final CardapioService cardapioService;
     private final RestauranteRepository restauranteRepository;
+    private final com.mydelivery.repository.CategoriaRepository categoriaRepository;
 
     // ─── PÚBLICO ──────────────────────────────────────────────────────────
     @GetMapping("/api/cardapio/{slug}")
@@ -78,6 +79,28 @@ public class CardapioController {
             @Valid @RequestBody CategoriaRequest request) {
         Long restauranteId = getRestauranteId(email);
         return ResponseEntity.ok(cardapioService.criarCategoria(restauranteId, request));
+    }
+
+    /** Body: [id1, id2, id3, ...] na nova ordem. Multi-tenant (filtra por restaurante do email). */
+    @PutMapping("/api/restaurante/{slug}/categorias/reordenar")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    @org.springframework.transaction.annotation.Transactional
+    public ResponseEntity<java.util.Map<String, Object>> reordenarCategorias(
+            @PathVariable String slug,
+            @AuthenticationPrincipal String email,
+            @RequestBody java.util.List<Long> idsNaOrdem) {
+        Long restauranteId = getRestauranteId(email);
+        var existentes = categoriaRepository.findByRestauranteIdOrderByOrdemAsc(restauranteId);
+        var porId = new java.util.HashMap<Long, com.mydelivery.model.Categoria>();
+        for (var c : existentes) porId.put(c.getId(), c);
+        int ord = 0;
+        for (Long id : idsNaOrdem) {
+            var c = porId.get(id);
+            if (c == null) continue; // ignora IDs estranhos (multi-tenant safe)
+            c.setOrdem(ord++);
+        }
+        categoriaRepository.saveAll(porId.values());
+        return ResponseEntity.ok(java.util.Map.of("ok", true));
     }
 
     @PutMapping("/api/restaurante/{slug}/categorias/{id}")

@@ -30,6 +30,7 @@ import lombok.RequiredArgsConstructor;
  * já implementado. Quando o pagamento é confirmado via webhook, este controller
  * é chamado pra promover Restaurante.status para ATIVO.
  */
+@lombok.extern.slf4j.Slf4j
 @RestController
 @RequestMapping("/api/restaurante/assinatura")
 @RequiredArgsConstructor
@@ -38,6 +39,7 @@ public class AssinaturaController {
     private final AssinaturaService assinaturaService;
     private final AssinaturaPagamentoService pagamentoService;
     private final RestauranteRepository restauranteRepository;
+    private final com.mydelivery.security.JwtUtil jwtUtil;
 
     @GetMapping("/status")
     @PreAuthorize("hasRole('RESTAURANTE')")
@@ -273,6 +275,49 @@ public class AssinaturaController {
                 "novoValidaAte", a.getValidaAte() != null ? a.getValidaAte().toString() : "",
                 "proximaCobranca", a.getProximaCobranca() != null ? a.getProximaCobranca().toString() : "",
                 "mensagem", meses + " mês(es) concedido(s)."
+        ));
+    }
+
+    /**
+     * USO INTERNO ADMIN — gera token JWT curto (15min) pro admin entrar como o dono
+     * do restaurante (suporte). Protegido por X-Admin-Secret.
+     *
+     * Body: { restauranteId, adminIdentificador }
+     * Retorna: { accessToken, restauranteSlug, nome, email, expiresIn }
+     */
+    @PostMapping("/impersonar-admin")
+    public ResponseEntity<Map<String, Object>> impersonarAdmin(
+            @org.springframework.web.bind.annotation.RequestHeader(value = "X-Admin-Secret", required = false) String secret,
+            @RequestBody Map<String, Object> body,
+            @org.springframework.beans.factory.annotation.Value("${mydelivery.admin.internal-secret:}") String esperado) {
+        if (esperado == null || esperado.isBlank() || !esperado.equals(secret)) {
+            return ResponseEntity.status(org.springframework.http.HttpStatus.FORBIDDEN)
+                    .body(Map.of("erro", "Secret inválido"));
+        }
+
+        Long restauranteId = Long.valueOf(String.valueOf(body.get("restauranteId")));
+        String adminId = String.valueOf(body.getOrDefault("adminIdentificador", "admin-desconhecido"));
+
+        Restaurante r = restauranteRepository.findById(restauranteId)
+                .orElseThrow(() -> new RuntimeException("Restaurante não encontrado"));
+        var usuario = r.getUsuario();
+        if (usuario == null) {
+            return ResponseEntity.badRequest().body(Map.of("erro", "Restaurante sem usuário vinculado"));
+        }
+
+        String token = jwtUtil.gerarTokenImpersonacao(
+            usuario.getEmail(), usuario.getRole().name(), adminId);
+
+        log.warn("[Impersonation] adminId={} entrou como usuario={} restaurante={} ({})",
+                adminId, usuario.getEmail(), r.getId(), r.getNome());
+
+        return ResponseEntity.ok(Map.of(
+            "accessToken", token,
+            "restauranteSlug", r.getSlug() != null ? r.getSlug() : "",
+            "nome", usuario.getNome() != null ? usuario.getNome() : "",
+            "email", usuario.getEmail(),
+            "role", usuario.getRole().name(),
+            "expiresIn", 15 * 60 * 1000
         ));
     }
 

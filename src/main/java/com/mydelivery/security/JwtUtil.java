@@ -40,6 +40,22 @@ public class JwtUtil {
                 .compact();
     }
 
+    /**
+     * Gera token CURTO (15min) pra suporte/admin entrar como restaurante.
+     * Inclui claim {@code impersonatedBy} pra auditoria nos logs do main app.
+     */
+    public String gerarTokenImpersonacao(String email, String role, String adminIdentificador) {
+        long quinzeMinutos = 15L * 60L * 1000L;
+        return Jwts.builder()
+                .subject(email)
+                .claim("role", role)
+                .claim("impersonatedBy", adminIdentificador)
+                .issuedAt(new Date())
+                .expiration(new Date(System.currentTimeMillis() + quinzeMinutos))
+                .signWith(getSigningKey())
+                .compact();
+    }
+
     public String gerarRefreshToken(String email) {
         return Jwts.builder()
                 .subject(email)

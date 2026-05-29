@@ -181,12 +181,14 @@ public class PublicController {
             return ResponseEntity.ok(Map.of("atendido", false));
         }
 
-        String alvo = normalizar(bairro);
+        // Normalização avançada: romanos↔árabicos, sem acento, abreviações
+        // (sta→santa, dr→doutor, etc). Garante que "Serra Dourada II" do
+        // cadastro casa com "serra dourada 2" digitado pelo cliente, e
+        // "Capão" casa com "capao".
         BairroEntrega match = r.getBairrosAtendidos() == null ? null
                 : r.getBairrosAtendidos().stream()
                     .filter(b -> b != null && b.getNome() != null)
-                    .filter(b -> normalizar(b.getNome()).contains(alvo)
-                              || alvo.contains(normalizar(b.getNome())))
+                    .filter(b -> com.mydelivery.util.BairroNormalizer.combina(b.getNome(), bairro))
                     .findFirst()
                     .orElse(null);
 

@@ -573,13 +573,11 @@ public class PedidoService {
      */
     private BigDecimal buscarTaxaPorBairro(Restaurante r, String bairroCliente) {
         if (r.getBairrosAtendidos() == null || r.getBairrosAtendidos().isEmpty()) return null;
-        String alvo = normalizarBairro(bairroCliente);
+        // Mesma normalização do endpoint de consulta (PublicController.consultarTaxaPorBairro):
+        // romanos↔árabicos, sem acento, abreviações comuns.
         return r.getBairrosAtendidos().stream()
                 .filter(b -> b != null && b.getNome() != null)
-                .filter(b -> {
-                    String n = normalizarBairro(b.getNome());
-                    return n.contains(alvo) || alvo.contains(n);
-                })
+                .filter(b -> com.mydelivery.util.BairroNormalizer.combina(b.getNome(), bairroCliente))
                 .findFirst()
                 .map(b -> b.getTaxa() != null ? b.getTaxa() : BigDecimal.ZERO)
                 .orElse(null);

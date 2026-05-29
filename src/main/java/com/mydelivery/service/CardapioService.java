@@ -30,6 +30,7 @@ public class CardapioService {
     private final FichaTecnicaItemRepository fichaTecnicaItemRepository;
     private final PedidoItemRepository pedidoItemRepository;
     private final com.mydelivery.repository.BannerRepository bannerRepository;
+    private final com.mydelivery.repository.ComplementoGrupoRepository complementoGrupoRepository;
 
     // ─── CARDÁPIO PÚBLICO ────────────────────────────────────────────────
 
@@ -142,6 +143,10 @@ public class CardapioService {
         }
         // 3) Banners promocionais — desvincula produto (banner continua existindo sem destino)
         bannerRepository.desvincularProduto(produto.getId());
+        // 4) Grupos de complementos — apaga (FK obriga a limpar antes de deletar produto).
+        //    cascade=ALL + orphanRemoval=true em ComplementoGrupo.itens arrasta os itens.
+        var grupos = complementoGrupoRepository.findByProdutoIdOrderByIdAsc(produto.getId());
+        if (!grupos.isEmpty()) complementoGrupoRepository.deleteAll(grupos);
     }
 
     // ─── PRODUTOS ────────────────────────────────────────────────────────

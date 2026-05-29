@@ -49,8 +49,13 @@ public class BannerController {
 
     @GetMapping("/api/restaurante/banners")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @Transactional(readOnly = true)
     public ResponseEntity<List<Map<String, Object>>> listar(@AuthenticationPrincipal String email) {
-        Restaurante r = restauranteRepo.findByUsuarioEmail(email).orElseThrow();
+        // @Transactional(readOnly=true) é OBRIGATÓRIO aqui — toDTO(b) acessa
+        // b.getProduto() (ManyToOne LAZY) e estoura LazyInitializationException
+        // sem sessão aberta, virando 400 no GlobalExceptionHandler.
+        Restaurante r = restauranteRepo.findByUsuarioEmail(email)
+            .orElseThrow(() -> new RuntimeException("Restaurante não encontrado para o usuário autenticado"));
         return ResponseEntity.ok(
             bannerRepo.findByRestauranteIdOrderByOrdemAsc(r.getId()).stream().map(this::toDTO).toList()
         );
@@ -174,7 +179,9 @@ public class BannerController {
     // ─── PÚBLICO (cardápio do cliente final) ──────────────────────────
 
     @GetMapping("/api/cardapio/{slug}/banners")
+    @Transactional(readOnly = true)
     public ResponseEntity<List<Map<String, Object>>> publicoBanners(@PathVariable String slug) {
+        // @Transactional(readOnly=true) — mesma razão do listar() (LazyInit em produto).
         Restaurante r = restauranteRepo.findBySlug(slug)
             .orElseThrow(() -> new RuntimeException("Restaurante não encontrado"));
         return ResponseEntity.ok(

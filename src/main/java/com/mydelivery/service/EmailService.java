@@ -1,14 +1,24 @@
 package com.mydelivery.service;
 
 import java.math.BigDecimal;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.List;
+import java.util.Map;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import jakarta.mail.internet.MimeMessage;
 import lombok.RequiredArgsConstructor;
@@ -30,15 +40,33 @@ public class EmailService {
     @Value("${app.url}")
     private String appUrl;
 
+    @Value("${mydelivery.resend.api-key:}")
+    private String resendApiKey;
+
+    private static final HttpClient HTTP = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(10))
+            .build();
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
     /**
-     * Envia email de recuperação de senha. Async + tolerante a falha pra:
-     *  1. Não bloquear a thread HTTP (resposta imediata ao usuário)
-     *  2. Não derrubar o fluxo se SMTP estiver fora (cliente pode tentar de novo)
-     *  3. Log detalhado pra diagnosticar problema de SMTP em produção
+     * Envia email de recuperação de senha.
+     * Tenta primeiro via Resend HTTP API (se RESEND_API_KEY setada) — Gmail SMTP
+     * é frequentemente bloqueado em IPs cloud, Resend não tem essa restrição.
+     * Cai pra SMTP se Resend não configurado.
      */
     @Async
     public void enviarRecuperacaoSenha(String destinatario, String nome, String token) {
         log.info("[Email] iniciando envio recuperação senha → {}", destinatario);
+        String link = appUrl + "/redefinir-senha.html?token=" + token;
+        String html = montarHtmlRecuperacao(nome, link);
+
+        // Caminho preferido: Resend HTTP API
+        if (resendApiKey != null && !resendApiKey.isBlank()) {
+            if (enviarViaResend(destinatario, "MyDelivery — Recuperação de senha", html)) return;
+            log.warn("[Email] Resend falhou, caindo pra SMTP como fallback");
+        }
+
+        // Fallback: SMTP (vidroforte usa)
         try {
             MimeMessage message = mailSender.createMimeMessage();
             MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
@@ -46,45 +74,74 @@ public class EmailService {
             helper.setFrom(remetente, nomeRemetente);
             helper.setTo(destinatario);
             helper.setSubject("MyDelivery — Recuperação de senha");
-
-            String link = appUrl + "/redefinir-senha.html?token=" + token;
-
-            String html = """
-                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-                    <h2 style="color: #e63946;">MyDelivery</h2>
-                    <p>Olá, <strong>%s</strong>!</p>
-                    <p>Recebemos uma solicitação para redefinir a senha da sua conta.</p>
-                    <p>Clique no botão abaixo para criar uma nova senha:</p>
-                    <a href="%s"
-                       style="display:inline-block; background:#e63946; color:#fff;
-                              padding:12px 24px; border-radius:6px; text-decoration:none;
-                              font-weight:bold; margin: 16px 0;">
-                        Redefinir minha senha
-                    </a>
-                    <p style="color:#666; font-size:13px;">
-                        Ou copie esse link: <br>
-                        <a href="%s" style="color:#e63946;word-break:break-all">%s</a>
-                    </p>
-                    <p style="color:#666; font-size:13px;">
-                        Este link expira em <strong>30 minutos</strong>.<br>
-                        Se você não solicitou isso, ignore este e-mail.
-                    </p>
-                    <p style="color:#999; font-size:11px; margin-top:24px; border-top:1px solid #eee; padding-top:12px;">
-                        Se você não recebeu este email no horário esperado, verifique a caixa de spam
-                        ou entre em contato com o suporte do MyDelivery.
-                    </p>
-                </div>
-            """.formatted(nome, link, link, link);
-
             helper.setText(html, true);
             mailSender.send(message);
-            log.info("[Email] ✅ recuperação senha enviada → {}", destinatario);
-
+            log.info("[Email] ✅ recuperação senha enviada via SMTP → {}", destinatario);
         } catch (Exception e) {
-            // NÃO propaga — log detalhado pra diagnóstico
-            log.error("[Email] ❌ FALHA ao enviar recuperação senha → {} | erro: {} ({})",
+            log.error("[Email] ❌ FALHA SMTP → {} | erro: {} ({})",
                     destinatario, e.getMessage(), e.getClass().getSimpleName(), e);
         }
+    }
+
+    /** Envia via Resend HTTP API. Retorna true se 2xx. */
+    private boolean enviarViaResend(String to, String subject, String html) {
+        try {
+            // Resend exige domínio verificado pra "from" próprio.
+            // Enquanto não verificar, usa "onboarding@resend.dev" (funciona out-of-the-box).
+            String from = nomeRemetente + " <onboarding@resend.dev>";
+            Map<String, Object> body = Map.of(
+                "from", from,
+                "to", List.of(to),
+                "subject", subject,
+                "html", html
+            );
+            String json = MAPPER.writeValueAsString(body);
+
+            HttpRequest req = HttpRequest.newBuilder()
+                .uri(URI.create("https://api.resend.com/emails"))
+                .header("Authorization", "Bearer " + resendApiKey)
+                .header("Content-Type", "application/json")
+                .timeout(Duration.ofSeconds(15))
+                .POST(HttpRequest.BodyPublishers.ofString(json, StandardCharsets.UTF_8))
+                .build();
+
+            HttpResponse<String> res = HTTP.send(req, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            if (res.statusCode() >= 200 && res.statusCode() < 300) {
+                log.info("[Email] ✅ enviado via Resend → {} (status {})", to, res.statusCode());
+                return true;
+            }
+            log.error("[Email] ❌ Resend retornou {}: {}", res.statusCode(), res.body());
+            return false;
+        } catch (Exception e) {
+            log.error("[Email] ❌ Resend HTTP erro: {} ({})", e.getMessage(), e.getClass().getSimpleName());
+            return false;
+        }
+    }
+
+    /** Template HTML do email de recuperação (compartilhado entre Resend e SMTP). */
+    private String montarHtmlRecuperacao(String nome, String link) {
+        return """
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                <h2 style="color: #FF6B00;">MyDelivery</h2>
+                <p>Olá, <strong>%s</strong>!</p>
+                <p>Recebemos uma solicitação para redefinir a senha da sua conta.</p>
+                <p>Clique no botão abaixo para criar uma nova senha:</p>
+                <a href="%s"
+                   style="display:inline-block; background:#FF6B00; color:#fff;
+                          padding:12px 24px; border-radius:6px; text-decoration:none;
+                          font-weight:bold; margin: 16px 0;">
+                    Redefinir minha senha
+                </a>
+                <p style="color:#666; font-size:13px;">
+                    Ou copie esse link:<br>
+                    <a href="%s" style="color:#FF6B00;word-break:break-all">%s</a>
+                </p>
+                <p style="color:#666; font-size:13px;">
+                    Este link expira em <strong>30 minutos</strong>.<br>
+                    Se você não solicitou isso, ignore este e-mail.
+                </p>
+            </div>
+        """.formatted(nome, link, link, link);
     }
 
     // ═════════════════════════════════════════════════════════════════════

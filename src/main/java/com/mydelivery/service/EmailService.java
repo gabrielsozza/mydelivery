@@ -30,20 +30,28 @@ public class EmailService {
     @Value("${app.url}")
     private String appUrl;
 
+    /**
+     * Envia email de recuperação de senha. Async + tolerante a falha pra:
+     *  1. Não bloquear a thread HTTP (resposta imediata ao usuário)
+     *  2. Não derrubar o fluxo se SMTP estiver fora (cliente pode tentar de novo)
+     *  3. Log detalhado pra diagnosticar problema de SMTP em produção
+     */
+    @Async
     public void enviarRecuperacaoSenha(String destinatario, String nome, String token) {
+        log.info("[Email] iniciando envio recuperação senha → {}", destinatario);
         try {
             MimeMessage message = mailSender.createMimeMessage();
             MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
 
             helper.setFrom(remetente, nomeRemetente);
             helper.setTo(destinatario);
-            helper.setSubject("myDelivery — Recuperação de senha");
+            helper.setSubject("MyDelivery — Recuperação de senha");
 
             String link = appUrl + "/redefinir-senha.html?token=" + token;
 
             String html = """
                 <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-                    <h2 style="color: #e63946;">myDelivery</h2>
+                    <h2 style="color: #e63946;">MyDelivery</h2>
                     <p>Olá, <strong>%s</strong>!</p>
                     <p>Recebemos uma solicitação para redefinir a senha da sua conta.</p>
                     <p>Clique no botão abaixo para criar uma nova senha:</p>
@@ -54,17 +62,28 @@ public class EmailService {
                         Redefinir minha senha
                     </a>
                     <p style="color:#666; font-size:13px;">
+                        Ou copie esse link: <br>
+                        <a href="%s" style="color:#e63946;word-break:break-all">%s</a>
+                    </p>
+                    <p style="color:#666; font-size:13px;">
                         Este link expira em <strong>30 minutos</strong>.<br>
                         Se você não solicitou isso, ignore este e-mail.
                     </p>
+                    <p style="color:#999; font-size:11px; margin-top:24px; border-top:1px solid #eee; padding-top:12px;">
+                        Se você não recebeu este email no horário esperado, verifique a caixa de spam
+                        ou entre em contato com o suporte do MyDelivery.
+                    </p>
                 </div>
-            """.formatted(nome, link);
+            """.formatted(nome, link, link, link);
 
             helper.setText(html, true);
             mailSender.send(message);
+            log.info("[Email] ✅ recuperação senha enviada → {}", destinatario);
 
         } catch (Exception e) {
-            throw new RuntimeException("Erro ao enviar e-mail: " + e.getMessage());
+            // NÃO propaga — log detalhado pra diagnóstico
+            log.error("[Email] ❌ FALHA ao enviar recuperação senha → {} | erro: {} ({})",
+                    destinatario, e.getMessage(), e.getClass().getSimpleName(), e);
         }
     }
 

@@ -188,6 +188,33 @@ public class AssinaturaPagamentoService {
                         .build())
                 .build();
 
+        // additional_info com items + payer — necessário pra elevar a pontuação
+        // de "Aprovação dos pagamentos" no MP (era a "Ação obrigatória — Descrição
+        // do item" + recomendadas no painel do MP). Aumenta também a taxa de
+        // aprovação porque o motor antifraude tem mais dados pra avaliar.
+        String descricaoPlano = "Assinatura MyDelivery " + plano.getNomeExibicao();
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("id", "plano-" + plano.name().toLowerCase());
+        item.put("title", descricaoPlano);
+        item.put("description", "Mensalidade do plano " + plano.getNomeExibicao() + " da plataforma MyDelivery");
+        item.put("category_id", "services");
+        item.put("quantity", 1);
+        item.put("unit_price", plano.getValor());
+        Map<String, Object> payerInfo = new LinkedHashMap<>();
+        payerInfo.put("first_name", safeFirst(r.getNome()));
+        payerInfo.put("last_name", "MyDelivery");
+        if (docNumber != null) {
+            Map<String, Object> idMap = new LinkedHashMap<>();
+            idMap.put("type", docType); idMap.put("number", docNumber);
+            payerInfo.put("identification", idMap);
+        }
+        Map<String, Object> additionalInfo = new LinkedHashMap<>();
+        additionalInfo.put("items", java.util.List.of(item));
+        additionalInfo.put("payer", payerInfo);
+
+        // deviceId (X-meli-session-id) vem do frontend via security.js do MP
+        String deviceId = (String) formData.get("deviceId");
+
         MpPaymentRequest body = MpPaymentRequest.builder()
                 .transactionAmount(plano.getValor())
                 .token(token)
@@ -197,11 +224,15 @@ public class AssinaturaPagamentoService {
                 .externalReference("assinatura-" + r.getId() + "-" + plano.name() + "-" + System.currentTimeMillis())
                 .notificationUrl(publicBaseUrl + "/api/webhooks/mercadopago")
                 .payer(payer)
+                .additionalInfo(additionalInfo)
+                .threeDSecureMode("optional")   // MP decide se desafia o cliente — aumenta aprovação
+                .statementDescriptor("MYDELIVERY") // máx 22 chars, aparece na fatura do cartão
+                .binaryMode(true)                  // resposta imediata aprovado/rejeitado (sem "in_process")
                 .build();
 
-        log.info("[AssPag][CARTAO] processando — restaurante={}, plano={}, parcelas={}, idem={}",
-                r.getId(), plano, installments, idempotencyKey);
-        MpPaymentResponse resp = mpClient.criarPagamento(adminAccessToken, idempotencyKey, body);
+        log.info("[AssPag][CARTAO] processando — restaurante={}, plano={}, parcelas={}, idem={}, deviceId={}",
+                r.getId(), plano, installments, idempotencyKey, deviceId != null ? "sim" : "ausente");
+        MpPaymentResponse resp = mpClient.criarPagamento(adminAccessToken, idempotencyKey, body, deviceId);
 
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("paymentId", resp.getId());

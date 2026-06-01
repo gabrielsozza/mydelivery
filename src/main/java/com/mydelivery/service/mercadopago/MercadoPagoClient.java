@@ -57,10 +57,26 @@ public class MercadoPagoClient {
      * @param body           request preparado pelo serviço chamador
      */
     public MpPaymentResponse criarPagamento(String accessToken, String idempotencyKey, MpPaymentRequest body) {
+        return criarPagamento(accessToken, idempotencyKey, body, null);
+    }
+
+    /**
+     * Overload com deviceId — header X-meli-session-id (fingerprint do dispositivo).
+     * MP avalia esse header no antifraude; sem ele a integração fica como
+     * "Ação obrigatória — Identificador do dispositivo" no painel do MP e
+     * reduz a taxa de aprovação. Frontend gera via script security.js do MP.
+     */
+    public MpPaymentResponse criarPagamento(String accessToken, String idempotencyKey, MpPaymentRequest body, String deviceId) {
         try {
             return restClient.post()
                     .uri("/v1/payments")
-                    .headers(authAndIdempotency(accessToken, idempotencyKey))
+                    .headers(h -> {
+                        h.setBearerAuth(accessToken);
+                        h.add("X-Idempotency-Key", idempotencyKey);
+                        if (deviceId != null && !deviceId.isBlank()) {
+                            h.add("X-meli-session-id", deviceId);
+                        }
+                    })
                     .body(body)
                     .retrieve()
                     .body(MpPaymentResponse.class);

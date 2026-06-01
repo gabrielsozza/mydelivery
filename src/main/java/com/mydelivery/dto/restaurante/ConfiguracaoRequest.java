@@ -37,6 +37,11 @@ public class ConfiguracaoRequest {
 
     private List<String> modos;
     private List<String> pagamentos;
+    /** Se true, cliente que escolher PIX recebe a chave e é orientado a pagar
+     *  antes e mandar comprovante no WhatsApp. Combina com "pix" em pagamentos. */
+    private Boolean exigirPixAntecipado;
+    /** Chave PIX (CPF/CNPJ/email/telefone/aleatória). Usada quando exigirPixAntecipado. */
+    private String chavePixAntecipado;
     /** Horários de funcionamento — { seg: {aberto,abertura,fechamento}, ... } */
     private Object horarios;
     /** Toggle: abre a loja automaticamente no horário cadastrado. */

@@ -25,6 +25,12 @@ public class RestaurantePublicResponse {
     private BigDecimal pedidoMinimo;
     private List<String> modos;
     private List<String> pagamentos;
+    /** Se true, cliente que escolher PIX deve receber a chave e mandar comprovante. */
+    private Boolean exigirPixAntecipado;
+    /** Chave PIX do restaurante exposta ao cliente final. Só preenchida se {@link #exigirPixAntecipado} = true. */
+    private String chavePixAntecipado;
+    /** Telefone do restaurante (usado pra link de WhatsApp do cliente). */
+    private String telefone;
     /**
      * Bairros atendidos com suas taxas. Cliente vê só os nomes no modal "Bairros
      * onde essa loja entrega"; a taxa é revelada no checkout ao informar o endereço.

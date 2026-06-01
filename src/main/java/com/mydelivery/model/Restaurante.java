@@ -115,6 +115,18 @@ public class Restaurante {
     @Builder.Default
     private List<String> pagamentos = List.of("pix", "credito", "debito", "dinheiro");
 
+    /** Se true, cliente que escolher PIX no checkout recebe a chave PIX do
+     *  restaurante e é orientado a pagar antes e mandar comprovante no WhatsApp.
+     *  Só faz sentido com "pix" em {@link #pagamentos}. */
+    @Builder.Default
+    @Column(name = "exigir_pix_antecipado")
+    private Boolean exigirPixAntecipado = false;
+
+    /** Chave PIX (CPF/CNPJ/email/telefone/aleatória) usada quando
+     *  {@link #exigirPixAntecipado} = true. */
+    @Column(name = "chave_pix_antecipado", length = 200)
+    private String chavePixAntecipado;
+
     // ── Mesas ──
     @Builder.Default
     private Integer qtdMesas = 0;

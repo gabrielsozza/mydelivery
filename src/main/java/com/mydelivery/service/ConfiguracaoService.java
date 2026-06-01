@@ -52,6 +52,12 @@ public class ConfiguracaoService {
         if (req.getQtdMesas() != null)     restaurante.setQtdMesas(req.getQtdMesas());
         if (req.getModos() != null)        restaurante.setModos(req.getModos());
         if (req.getPagamentos() != null)   restaurante.setPagamentos(req.getPagamentos());
+        // PIX antecipado — só persiste a chave se a flag estiver ativa, evita lixo
+        if (req.getExigirPixAntecipado() != null) restaurante.setExigirPixAntecipado(req.getExigirPixAntecipado());
+        if (req.getChavePixAntecipado() != null) {
+            String ch = req.getChavePixAntecipado().trim();
+            restaurante.setChavePixAntecipado(ch.isEmpty() ? null : ch);
+        }
         if (req.getBairrosAtendidos() != null) {
             // Filtra entradas inválidas (sem nome) e mapeia DTO → entidade
             restaurante.setBairrosAtendidos(req.getBairrosAtendidos().stream()

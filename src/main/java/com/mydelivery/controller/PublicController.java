@@ -73,6 +73,10 @@ public class PublicController {
                 .pedidoMinimo(r.getPedidoMinimo())
                 .modos(r.getModos())
                 .pagamentos(r.getPagamentos())
+                // PIX antecipado — só expõe a chave se a flag estiver ativa (evita vazar info sem motivo)
+                .exigirPixAntecipado(Boolean.TRUE.equals(r.getExigirPixAntecipado()))
+                .chavePixAntecipado(Boolean.TRUE.equals(r.getExigirPixAntecipado()) ? r.getChavePixAntecipado() : null)
+                .telefone(r.getTelefone())
                 .bairrosAtendidos(bairros)
                 .mpPublicKey(mpPublicKey)
                 .build();

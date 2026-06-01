@@ -196,6 +196,17 @@ public class WhatsappBotService {
 
     // ── builders de resposta ──
 
+    /** Se o restaurante tem logoUrl, prefixa com "IMG::<url>::" pra o
+     *  WhatsappService enviar como imagem com legenda em vez de texto puro.
+     *  Resolve o "quadrado preto" do preview do link no cliente WhatsApp. */
+    private String comLogoSeHouver(Restaurante r, String texto) {
+        String logo = r.getLogoUrl();
+        if (logo != null && !logo.isBlank()) {
+            return "IMG::" + logo + "::" + texto;
+        }
+        return texto;
+    }
+
     private String montarApresentacao(Restaurante r) {
         String link = montarLinkCardapio(r);
         boolean aberto = Boolean.TRUE.equals(r.getAberto());
@@ -227,7 +238,7 @@ public class WhatsappBotService {
         } else {
             sb.append("Cardápio para visualização: ").append(link);
         }
-        return sb.toString();
+        return comLogoSeHouver(r, sb.toString());
     }
 
     /**
@@ -248,7 +259,7 @@ public class WhatsappBotService {
           .append("• 👤 *Falar com atendente*\n\n")
           .append(aberto ? "Cardápio: " : "Cardápio (visualização): ")
           .append(montarLinkCardapio(r));
-        return sb.toString();
+        return comLogoSeHouver(r, sb.toString());
     }
 
     private String montarLinkCardapio(Restaurante r) {

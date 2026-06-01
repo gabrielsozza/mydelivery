@@ -179,12 +179,43 @@ public class WhatsappService {
             return;
         }
         try {
+            // Convenção interna: se a resposta do bot começa com "IMG::<url>::<caption>",
+            // envia imagem com legenda em vez de texto puro. Resolve o "quadrado preto"
+            // do preview do link na mensagem de cardápio — agora aparece a logo do
+            // restaurante. Detalhe: split com limit=2 pra a caption poder conter "::".
+            if (texto != null && texto.startsWith("IMG::")) {
+                String semPrefix = texto.substring(5);
+                int sep = semPrefix.indexOf("::");
+                if (sep > 0) {
+                    String url = semPrefix.substring(0, sep);
+                    String caption = semPrefix.substring(sep + 2);
+                    evolutionClient.enviarMidia(inst.getInstanceName(), inst.getInstanceToken(),
+                            numeroDestino, url, caption, delayMs);
+                    log.info("[WhatsApp] Mídia enviada — instância={}, para={}***", inst.getInstanceName(),
+                            numeroDestino.length() > 5 ? numeroDestino.substring(0, 5) : numeroDestino);
+                    return;
+                }
+            }
             evolutionClient.enviarTexto(inst.getInstanceName(), inst.getInstanceToken(),
                     numeroDestino, texto, delayMs);
             log.info("[WhatsApp] Mensagem enviada — instância={}, para={}***", inst.getInstanceName(),
                     numeroDestino.length() > 5 ? numeroDestino.substring(0, 5) : numeroDestino);
         } catch (RuntimeException e) {
             log.error("[WhatsApp] Falha ao enviar: {}", e.getMessage());
+            // Fallback: se enviar mídia falhou (URL inválida etc), manda só o caption como texto
+            if (texto != null && texto.startsWith("IMG::")) {
+                String semPrefix = texto.substring(5);
+                int sep = semPrefix.indexOf("::");
+                if (sep > 0) {
+                    String fallback = semPrefix.substring(sep + 2);
+                    try {
+                        evolutionClient.enviarTexto(inst.getInstanceName(), inst.getInstanceToken(),
+                                numeroDestino, fallback, delayMs);
+                    } catch (RuntimeException e2) {
+                        log.error("[WhatsApp] Fallback texto também falhou: {}", e2.getMessage());
+                    }
+                }
+            }
         }
     }
 

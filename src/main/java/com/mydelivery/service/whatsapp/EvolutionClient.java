@@ -164,6 +164,24 @@ public class EvolutionClient {
     }
 
     /**
+     * Envia uma imagem (URL pública) com legenda. Usado pelo bot pra mandar a
+     * logo do restaurante junto da resposta de cardápio (em vez de só o link,
+     * que gerava preview vazio "quadrado preto" no WhatsApp).
+     */
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> enviarMidia(String instanceName, String instanceToken, String number,
+                                            String mediaUrl, String caption, int delayMs) {
+        java.util.Map<String, Object> body = new java.util.HashMap<>();
+        body.put("number", number);
+        body.put("mediatype", "image");
+        body.put("media", mediaUrl);
+        if (caption != null && !caption.isEmpty()) body.put("caption", caption);
+        if (delayMs > 0) body.put("delay", delayMs);
+        String key = instanceToken != null && !instanceToken.isBlank() ? instanceToken : props.getApiKey();
+        return executar("POST", "/message/sendMedia/" + instanceName, key, body, Map.class);
+    }
+
+    /**
      * Devolve a configuração atual de webhook salva na Evolution pra essa instância.
      * Útil pra diagnosticar quando msgs não chegam no backend.
      * Resposta típica: { "enabled": true, "url": "https://.../api/webhooks/whatsapp/...", "events": [...] }

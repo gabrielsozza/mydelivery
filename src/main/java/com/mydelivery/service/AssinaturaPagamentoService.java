@@ -160,9 +160,10 @@ public class AssinaturaPagamentoService {
         if (token == null || token.isBlank()) {
             throw new RuntimeException("Token do cartão ausente.");
         }
-        Object installmentsRaw = formData.getOrDefault("installments", 1);
-        int installments = installmentsRaw instanceof Number ? ((Number) installmentsRaw).intValue()
-                : Integer.parseInt(String.valueOf(installmentsRaw));
+        // Assinatura mensal NÃO parcela — força 1 sempre, ignora o que veio do front.
+        // Antes, o Brick mostrava até 12x e o backend respeitava — semanticamente errado
+        // pra mensalidade (cada mês é uma cobrança separada).
+        int installments = 1;
         String paymentMethodId = (String) formData.getOrDefault("payment_method_id", null);
 
         // Payer info — vindo do Brick (email + identificação)

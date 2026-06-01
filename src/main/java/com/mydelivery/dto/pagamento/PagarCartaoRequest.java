@@ -47,4 +47,9 @@ public class PagarCartaoRequest {
     /** Apenas dígitos do documento. */
     @NotBlank
     private String payerDocNumero;
+
+    /** Fingerprint do dispositivo (window.MP_DEVICE_SESSION_ID gerado pelo
+     *  security.js do MP no browser). Eleva a aprovação no antifraude do MP
+     *  e atende a "Ação obrigatória: Identificador do dispositivo" do painel. */
+    private String deviceId;
 }

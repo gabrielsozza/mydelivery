@@ -277,7 +277,11 @@ public class PagamentoService {
                 .binaryMode(true)
                 .build();
 
-        MpPaymentResponse resp = mpClient.criarPagamento(cfg.getMpAccessToken(), idempotencyKey, body);
+        // deviceId (X-meli-session-id) vem do security.js do MP no browser.
+        // Sem ele o MP marca "Identificador do dispositivo" como pendente no
+        // painel e baixa a taxa de aprovação no antifraude.
+        MpPaymentResponse resp = mpClient.criarPagamento(cfg.getMpAccessToken(),
+                idempotencyKey, body, req.getDeviceId());
 
         Pagamento p = existente != null ? existente : Pagamento.builder()
                 .pedido(pedido)

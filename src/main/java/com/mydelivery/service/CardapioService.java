@@ -47,6 +47,11 @@ public class CardapioService {
                     .stream()
                     .filter(p -> p.getCategoria() != null &&
                                  p.getCategoria().getId().equals(cat.getId()))
+                    // Ordena por ordem (nulls last) — respeita reordenação do painel.
+                    // Tie-breaker pelo id pra ordem estável quando vários têm ordem=0.
+                    .sorted(java.util.Comparator
+                            .comparing((Produto p) -> p.getOrdem() == null ? Integer.MAX_VALUE : p.getOrdem())
+                            .thenComparing(Produto::getId))
                     .map(this::toProdutoResponse)
                     .toList();
 
@@ -173,6 +178,10 @@ public class CardapioService {
         produto.setNome(request.getNome());
         produto.setDescricao(request.getDescricao());
         produto.setPreco(request.getPreco());
+        // precoOriginal só faz sentido se for MAIOR que preco (promo válida).
+        // Front pode mandar 0/null pra "sem promo".
+        produto.setPrecoOriginal(promoValida(request.getPrecoOriginal(), request.getPreco())
+                ? request.getPrecoOriginal() : null);
         produto.setFotoUrl(request.getFotoUrl());
         produto.setDisponivel(request.getDisponivel());
         produto.setDestaque(request.getDestaque());
@@ -200,6 +209,12 @@ public class CardapioService {
         if (request.getNome() != null)         produto.setNome(request.getNome());
         if (request.getDescricao() != null)    produto.setDescricao(request.getDescricao());
         if (request.getPreco() != null)        produto.setPreco(request.getPreco());
+        // precoOriginal: 0/null = remove promo. Vem promo válida (>preco)? grava.
+        if (request.getPrecoOriginal() != null) {
+            java.math.BigDecimal po = request.getPrecoOriginal();
+            java.math.BigDecimal pp = request.getPreco() != null ? request.getPreco() : produto.getPreco();
+            produto.setPrecoOriginal(promoValida(po, pp) ? po : null);
+        }
         if (request.getFotoUrl() != null)      produto.setFotoUrl(request.getFotoUrl());
         if (request.getDisponivel() != null)   produto.setDisponivel(request.getDisponivel());
         if (request.getDestaque() != null)     produto.setDestaque(request.getDestaque());
@@ -238,11 +253,36 @@ public class CardapioService {
                 .nome(p.getNome())
                 .descricao(p.getDescricao())
                 .preco(p.getPreco())
+                .precoOriginal(p.getPrecoOriginal())
                 .fotoUrl(p.getFotoUrl())
                 .disponivel(p.getDisponivel())
                 .destaque(p.getDestaque())
                 .categoriaId(p.getCategoria() != null ? p.getCategoria().getId() : null)
                 .categoriaNome(p.getCategoria() != null ? p.getCategoria().getNome() : null)
+                .ordem(p.getOrdem())
                 .build();
+    }
+
+    /** Promo válida = original > preco (e ambos > 0). Evita guardar lixo no banco. */
+    private static boolean promoValida(java.math.BigDecimal precoOriginal, java.math.BigDecimal preco) {
+        if (precoOriginal == null || preco == null) return false;
+        return precoOriginal.compareTo(java.math.BigDecimal.ZERO) > 0
+            && precoOriginal.compareTo(preco) > 0;
+    }
+
+    /** Reordena os produtos da categoria conforme a lista de IDs. Multi-tenant safe. */
+    @Transactional
+    public void reordenarProdutosNaCategoria(Long restauranteId, Long categoriaId, java.util.List<Long> idsNaOrdem) {
+        if (idsNaOrdem == null || idsNaOrdem.isEmpty()) return;
+        var existentes = produtoRepository.findByCategoriaIdAndRestauranteIdOrderByOrdem(categoriaId, restauranteId);
+        var porId = new java.util.HashMap<Long, Produto>();
+        for (var p : existentes) porId.put(p.getId(), p);
+        int ord = 0;
+        for (Long id : idsNaOrdem) {
+            var p = porId.get(id);
+            if (p == null) continue; // ignora ids estranhos (multi-tenant safe)
+            p.setOrdem(ord++);
+        }
+        produtoRepository.saveAll(porId.values());
     }
 }

@@ -16,9 +16,13 @@ public class ProdutoResponse {
     private String nome;
     private String descricao;
     private BigDecimal preco;
+    /** Preço "de" (riscado no cliente). Null = sem promo. */
+    private BigDecimal precoOriginal;
     private String fotoUrl;
     private Boolean disponivel;
     private Boolean destaque;
     private Long categoriaId;
     private String categoriaNome;
+    /** Posição do produto dentro da categoria (menor = aparece primeiro). */
+    private Integer ordem;
 }

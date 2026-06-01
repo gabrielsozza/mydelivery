@@ -19,6 +19,10 @@ public class ProdutoRequest {
     @DecimalMin(value = "0.01", message = "Preço deve ser maior que zero")
     private BigDecimal preco;
 
+    /** Preço normal (sem desconto). Quando preenchido, indica que {@link #preco}
+     *  é o preço PROMOCIONAL e este é o "de" riscado pro cliente. Null = sem promo. */
+    private BigDecimal precoOriginal;
+
     private Long categoriaId;
     private String fotoUrl;
     private Boolean disponivel = true;

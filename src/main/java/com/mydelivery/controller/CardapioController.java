@@ -176,6 +176,19 @@ public class CardapioController {
         return ResponseEntity.noContent().build();
     }
 
+    /** Body: [id1, id2, ...] na nova ordem dos produtos da categoria. Multi-tenant safe. */
+    @PutMapping("/api/restaurante/{slug}/categorias/{categoriaId}/produtos/reordenar")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Map<String, Object>> reordenarProdutos(
+            @PathVariable String slug,
+            @AuthenticationPrincipal String email,
+            @PathVariable Long categoriaId,
+            @RequestBody List<Long> idsNaOrdem) {
+        Long restauranteId = getRestauranteId(email);
+        cardapioService.reordenarProdutosNaCategoria(restauranteId, categoriaId, idsNaOrdem);
+        return ResponseEntity.ok(Map.of("ok", true));
+    }
+
     // ─── Helper ───────────────────────────────────────────────────────────
     private Long getRestauranteId(String email) {
         return restauranteRepository

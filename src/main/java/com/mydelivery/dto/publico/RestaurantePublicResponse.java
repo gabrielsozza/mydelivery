@@ -29,6 +29,8 @@ public class RestaurantePublicResponse {
     private Boolean exigirPixAntecipado;
     /** Chave PIX do restaurante exposta ao cliente final. Só preenchida se {@link #exigirPixAntecipado} = true. */
     private String chavePixAntecipado;
+    /** Tipo da chave PIX (CPF/CNPJ/EMAIL/TELEFONE/ALEATORIA). Mostrado pro cliente. */
+    private String tipoChavePixAntecipado;
     /** Telefone do restaurante (usado pra link de WhatsApp do cliente). */
     private String telefone;
     /**

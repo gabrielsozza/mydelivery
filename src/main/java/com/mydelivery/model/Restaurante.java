@@ -127,6 +127,11 @@ public class Restaurante {
     @Column(name = "chave_pix_antecipado", length = 200)
     private String chavePixAntecipado;
 
+    /** Tipo da chave PIX — "CPF" | "CNPJ" | "EMAIL" | "TELEFONE" | "ALEATORIA".
+     *  Mostrado ao cliente final junto da chave pra evitar pagamento errado. */
+    @Column(name = "tipo_chave_pix_antecipado", length = 20)
+    private String tipoChavePixAntecipado;
+
     // ── Mesas ──
     @Builder.Default
     private Integer qtdMesas = 0;

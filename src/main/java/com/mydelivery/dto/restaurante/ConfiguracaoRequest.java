@@ -42,6 +42,8 @@ public class ConfiguracaoRequest {
     private Boolean exigirPixAntecipado;
     /** Chave PIX (CPF/CNPJ/email/telefone/aleatória). Usada quando exigirPixAntecipado. */
     private String chavePixAntecipado;
+    /** Tipo da chave PIX: "CPF" | "CNPJ" | "EMAIL" | "TELEFONE" | "ALEATORIA". */
+    private String tipoChavePixAntecipado;
     /** Horários de funcionamento — { seg: {aberto,abertura,fechamento}, ... } */
     private Object horarios;
     /** Toggle: abre a loja automaticamente no horário cadastrado. */

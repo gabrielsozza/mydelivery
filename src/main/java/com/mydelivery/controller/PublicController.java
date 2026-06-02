@@ -76,6 +76,7 @@ public class PublicController {
                 // PIX antecipado — só expõe a chave se a flag estiver ativa (evita vazar info sem motivo)
                 .exigirPixAntecipado(Boolean.TRUE.equals(r.getExigirPixAntecipado()))
                 .chavePixAntecipado(Boolean.TRUE.equals(r.getExigirPixAntecipado()) ? r.getChavePixAntecipado() : null)
+                .tipoChavePixAntecipado(Boolean.TRUE.equals(r.getExigirPixAntecipado()) ? r.getTipoChavePixAntecipado() : null)
                 .telefone(r.getTelefone())
                 .bairrosAtendidos(bairros)
                 .mpPublicKey(mpPublicKey)

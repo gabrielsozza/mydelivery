@@ -58,6 +58,10 @@ public class ConfiguracaoService {
             String ch = req.getChavePixAntecipado().trim();
             restaurante.setChavePixAntecipado(ch.isEmpty() ? null : ch);
         }
+        if (req.getTipoChavePixAntecipado() != null) {
+            String tp = req.getTipoChavePixAntecipado().trim().toUpperCase();
+            restaurante.setTipoChavePixAntecipado(tp.isEmpty() ? null : tp);
+        }
         if (req.getBairrosAtendidos() != null) {
             // Filtra entradas inválidas (sem nome) e mapeia DTO → entidade
             restaurante.setBairrosAtendidos(req.getBairrosAtendidos().stream()

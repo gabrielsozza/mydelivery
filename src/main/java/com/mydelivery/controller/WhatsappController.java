@@ -151,6 +151,18 @@ public class WhatsappController {
         return ResponseEntity.ok(whatsappService.resetWebhook(r));
     }
 
+    /**
+     * Diagnóstico cru pra quando o QR não aparece: consulta a Evolution agora
+     * e devolve estado da conexão, webhook salvo, e tentativa de gerar QR. Permite
+     * distinguir "Evolution travada" vs "WhatsApp baniu" vs "instância não existe".
+     */
+    @GetMapping("/diag/full")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Map<String, Object>> diagFull(@AuthenticationPrincipal String email) {
+        Restaurante r = restauranteRepository.findByUsuarioEmail(email).orElseThrow();
+        return ResponseEntity.ok(whatsappService.diagnostico(r));
+    }
+
     /** Serialização: NÃO devolve instanceToken (segredo). */
     private Map<String, Object> serializar(WhatsappInstance inst) {
         Map<String, Object> m = new HashMap<>();

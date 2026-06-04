@@ -105,7 +105,8 @@ public class WhatsappService {
         // instância recém-criada (webhook não chega, ou sessão fica em "connecting"
         // sem emitir QR). Se passamos do tempo de expiração esperado SEM QR válido,
         // re-disparamos /connect — Evolution gera QR novo e o webhook deve cuspir.
-        if (inst.getStatus() == WhatsappInstance.Status.AGUARDANDO_QR) {
+        if (inst.getStatus() == WhatsappInstance.Status.AGUARDANDO_QR
+                || inst.getStatus() == WhatsappInstance.Status.NOVA) {
             boolean qrAusente = inst.getQrCode() == null || inst.getQrCode().isBlank();
             boolean qrExpirado = inst.getQrExpiraEm() != null
                     && LocalDateTime.now().isAfter(inst.getQrExpiraEm());
@@ -119,16 +120,85 @@ public class WhatsappService {
                     if (qr != null) {
                         inst.setQrCode(qr);
                         inst.setQrExpiraEm(LocalDateTime.now().plusSeconds(60));
+                        inst.setStatus(WhatsappInstance.Status.AGUARDANDO_QR);
                         log.info("[WhatsApp] QR re-obtido sincronamente pra {}", inst.getInstanceName());
                     }
                 } catch (RuntimeException e) {
+                    String msg = e.getMessage() == null ? "" : e.getMessage().toLowerCase();
                     log.warn("[WhatsApp] re-tentativa /connect falhou pra {}: {}",
                             inst.getInstanceName(), e.getMessage());
+                    // Instância sumiu da Evolution (deletada manualmente, reset do servidor,
+                    // ou nunca foi criada com sucesso) — recria do zero. Sem isso o usuário
+                    // ficaria preso pra sempre com um registro local sem contrapartida.
+                    if (msg.contains("not found") || msg.contains("does not exist")
+                            || msg.contains("404")) {
+                        log.warn("[WhatsApp] instância {} sumiu da Evolution — recriando do zero",
+                                inst.getInstanceName());
+                        repo.delete(inst);
+                        repo.flush();
+                        return conectar(restaurante);
+                    }
                 }
             }
         }
 
         return repo.save(inst);
+    }
+
+    /**
+     * Diagnóstico cru: devolve tudo que a Evolution está dizendo sobre essa instância
+     * agora, sem cache nosso. Útil pra distinguir "Evolution travada" de "WhatsApp baniu"
+     * de "instância nunca foi criada de verdade".
+     */
+    @Transactional(readOnly = true)
+    public Map<String, Object> diagnostico(Restaurante restaurante) {
+        WhatsappInstance inst = repo.findByRestauranteId(restaurante.getId()).orElse(null);
+        Map<String, Object> out = new java.util.HashMap<>();
+        if (inst == null) {
+            out.put("local", "sem registro");
+            return out;
+        }
+        out.put("instanceName", inst.getInstanceName());
+        out.put("statusLocal", inst.getStatus() == null ? null : inst.getStatus().name());
+        out.put("temQrCodeLocal", inst.getQrCode() != null && !inst.getQrCode().isBlank());
+        out.put("qrExpiraEm", inst.getQrExpiraEm() == null ? null : inst.getQrExpiraEm().toString());
+        out.put("ultimaMsgRecebidaEm", inst.getUltimaMensagemRecebidaEm() == null ? null
+                : inst.getUltimaMensagemRecebidaEm().toString());
+
+        // 1. Estado conexão na Evolution
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> state = evolutionClient.consultarStatus(inst.getInstanceName());
+            out.put("evolutionConnectionState", state);
+        } catch (RuntimeException e) {
+            out.put("evolutionConnectionStateErro", e.getMessage());
+        }
+
+        // 2. Webhook configurado
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> wh = evolutionClient.consultarWebhook(inst.getInstanceName());
+            out.put("evolutionWebhook", wh);
+        } catch (RuntimeException e) {
+            out.put("evolutionWebhookErro", e.getMessage());
+        }
+
+        // 3. Tenta gerar QR agora
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> qr = evolutionClient.conectar(inst.getInstanceName());
+            Map<String, Object> resumo = new java.util.HashMap<>();
+            resumo.put("temBase64", extrairQrCode(qr) != null);
+            resumo.put("keys", qr == null ? null : qr.keySet());
+            out.put("evolutionConnectResumo", resumo);
+        } catch (RuntimeException e) {
+            out.put("evolutionConnectErro", e.getMessage());
+        }
+
+        out.put("webhookConfiguradoNoBackend",
+                props.getWebhookBaseUrl() + "/api/webhooks/whatsapp/" + inst.getInstanceName());
+
+        return out;
     }
 
     /** Logout (mantém a instância — pode reconectar gerando novo QR). */

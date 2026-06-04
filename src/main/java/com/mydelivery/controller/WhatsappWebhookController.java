@@ -35,6 +35,33 @@ public class WhatsappWebhookController {
     private final WhatsappService whatsappService;
     private final WhatsappBotService botService;
 
+    /** Buffer in-memory dos últimos N webhooks recebidos, por instância.
+     *  Serve pra diagnóstico ao vivo: "a Evolution está enviando mensagens
+     *  ou não?". É memória volátil — perde no restart, mas pra debug serve. */
+    private static final int BUFFER_TAM = 30;
+    private static final java.util.Map<String, java.util.Deque<java.util.Map<String, Object>>> ULTIMOS_EVENTOS
+            = new java.util.concurrent.ConcurrentHashMap<>();
+
+    public static java.util.List<java.util.Map<String, Object>> snapshotEventos(String instanceName) {
+        var dq = ULTIMOS_EVENTOS.get(instanceName);
+        if (dq == null) return java.util.List.of();
+        return new java.util.ArrayList<>(dq);
+    }
+
+    private static void registrarEvento(String instanceName, String event, java.util.Map<String, Object> payload) {
+        var dq = ULTIMOS_EVENTOS.computeIfAbsent(instanceName,
+                k -> new java.util.concurrent.ConcurrentLinkedDeque<>());
+        java.util.Map<String, Object> reg = new java.util.LinkedHashMap<>();
+        reg.put("em", java.time.LocalDateTime.now().toString());
+        reg.put("event", event);
+        Object data = payload == null ? null : payload.get("data");
+        if (data instanceof java.util.Map<?, ?> dm) {
+            reg.put("dataKeys", new java.util.ArrayList<>(dm.keySet()));
+        }
+        dq.addFirst(reg);
+        while (dq.size() > BUFFER_TAM) dq.pollLast();
+    }
+
     @PostMapping("/api/webhooks/whatsapp/{instanceName}")
     public ResponseEntity<Void> receber(
             @PathVariable String instanceName,
@@ -61,6 +88,7 @@ public class WhatsappWebhookController {
         Object dataDbg = payload.get("data");
         log.info("[WA-Webhook] {} evento={} data-keys={}", instanceName, event,
                 dataDbg instanceof Map<?, ?> mdbg ? mdbg.keySet() : (dataDbg == null ? "null" : dataDbg.getClass().getSimpleName()));
+        registrarEvento(instanceName, event, payload);
 
         try {
             switch (event == null ? "" : event) {
@@ -95,6 +123,11 @@ public class WhatsappWebhookController {
         }
         if (fromMe) return; // Não processa mensagens que NÓS enviamos
         if (remoteJid == null) return;
+
+        // HEARTBEAT FORTE — passou de fromMe + remoteJid válido, é mensagem real
+        // de cliente. Só agora atualizamos o sinal que prova bot operacional.
+        // (O heartbeat fraco já foi atualizado no entry point do webhook.)
+        whatsappService.marcarMensagemClienteRecebida(inst);
 
         // Texto: pode estar em message.conversation ou message.extendedTextMessage.text
         String texto = extrairTexto(dataMap);

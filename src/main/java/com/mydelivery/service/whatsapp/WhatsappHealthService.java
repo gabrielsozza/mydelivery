@@ -21,17 +21,22 @@ import lombok.extern.slf4j.Slf4j;
 /**
  * Calcula o estado REAL de saúde do bot.
  *
- * Heurística (validada na prática — antes monitorávamos só status enum):
+ * Heurística revisada — distingue HEARTBEAT FRACO (Evolution → backend está
+ * vivo, mas qualquer event-spam da Evolution conta) de HEARTBEAT FORTE
+ * (mensagem REAL de cliente chegou):
  *
- *   🟢 OPERACIONAL — status=CONECTADA E última msg recebida há <= 30min
- *   🟡 INSTÁVEL    — status=CONECTADA mas última msg há 30min-3h
- *                    (suspeita de "sessão zumbi": Evolution diz OK mas
- *                     WhatsApp parou de enviar eventos)
- *   🔴 OFFLINE     — status != CONECTADA OU sem msg há > 3h
+ *   🟢 OPERACIONAL — status=CONECTADA E
+ *                    heartbeat fraco <= 15min (Evolution ainda fala com a gente)
+ *                    E (heartbeat forte <= 6h OU nunca houve msg cliente ainda)
+ *   🟡 INSTÁVEL    — status=CONECTADA mas:
+ *                    heartbeat fraco > 15min (Evolution não nos manda nada)
+ *                    OU heartbeat forte > 6h (clientes mandam msg e bot não vê)
+ *   🔴 OFFLINE     — status != CONECTADA OU heartbeat fraco > 1h
  *
- * As janelas (30min, 3h) foram escolhidas considerando que mesmo restaurantes
- * com baixo volume recebem ALGUMA interação ao longo do dia. Sem nada por
- * mais de 3h sinaliza zumbi com alta confiança.
+ * Antes: qualquer CONNECTION_UPDATE periódico da Evolution renovava o
+ * heartbeat e o gráfico mostrava OPERACIONAL mesmo com bot dormindo. Agora
+ * separamos: heartbeat fraco prova conectividade, heartbeat forte prova
+ * que MESSAGES_UPSERT está chegando de verdade.
  */
 @Slf4j
 @Service
@@ -45,26 +50,52 @@ public class WhatsappHealthService {
     @Autowired
     private EvolutionClient evolutionClient;
 
-    private static final int MIN_OPERACIONAL = 30;     // até 30min sem msg = OK
-    private static final int MIN_INSTAVEL    = 180;    // 30min-3h = INSTAVEL
-                                                       // > 3h ou status fora = OFFLINE
+    // Janelas — heartbeat FRACO (qualquer evento, inclusive keep-alive Evolution)
+    private static final int MIN_FRACO_OPERACIONAL = 15;   // até 15min = ok
+    private static final int MIN_FRACO_OFFLINE     = 60;   // > 1h sem evento = offline
+    // Janela — heartbeat FORTE (mensagem real de cliente)
+    private static final int MIN_FORTE_INSTAVEL    = 360;  // > 6h sem msg cliente = suspeito
 
     /** Calcula estado atual sem persistir. */
     public WhatsappHealthLog.Estado avaliarEstado(WhatsappInstance inst) {
         if (inst.getStatus() != WhatsappInstance.Status.CONECTADA) {
             return WhatsappHealthLog.Estado.OFFLINE;
         }
-        Integer minSemMsg = minutosSemMensagem(inst);
-        if (minSemMsg == null) return WhatsappHealthLog.Estado.INSTAVEL; // nunca recebeu nada
-        if (minSemMsg <= MIN_OPERACIONAL) return WhatsappHealthLog.Estado.OPERACIONAL;
-        if (minSemMsg <= MIN_INSTAVEL)    return WhatsappHealthLog.Estado.INSTAVEL;
-        return WhatsappHealthLog.Estado.OFFLINE;
+        Integer minFraco = minutosSemEventoEvolution(inst);
+        // Sem heartbeat fraco nenhum → instância recém-conectada ou sem dados;
+        // não é OFFLINE definitivo, mas tampouco é OPERACIONAL.
+        if (minFraco == null) return WhatsappHealthLog.Estado.INSTAVEL;
+        if (minFraco > MIN_FRACO_OFFLINE) return WhatsappHealthLog.Estado.OFFLINE;
+        if (minFraco > MIN_FRACO_OPERACIONAL) return WhatsappHealthLog.Estado.INSTAVEL;
+
+        // Heartbeat fraco OK. Checa o forte (cliente realmente conseguiu mandar msg).
+        Integer minForte = minutosSemMensagemCliente(inst);
+        if (minForte != null && minForte > MIN_FORTE_INSTAVEL) {
+            // Evolution responde mas faz 6h+ que ninguém manda msg pro bot —
+            // pode ser loja parada OU pode ser shadow-ban silencioso.
+            // Marcamos INSTAVEL pro operador ver, mas não OFFLINE (pode ser legítimo).
+            return WhatsappHealthLog.Estado.INSTAVEL;
+        }
+        return WhatsappHealthLog.Estado.OPERACIONAL;
     }
 
-    public Integer minutosSemMensagem(WhatsappInstance inst) {
+    /** Minutos desde QUALQUER evento da Evolution (keep-alive ou msg). */
+    public Integer minutosSemEventoEvolution(WhatsappInstance inst) {
         LocalDateTime ultima = inst.getUltimaMensagemRecebidaEm();
         if (ultima == null) return null;
         return (int) Duration.between(ultima, LocalDateTime.now()).toMinutes();
+    }
+
+    /** Minutos desde a última MENSAGEM REAL de cliente (MESSAGES_UPSERT). */
+    public Integer minutosSemMensagemCliente(WhatsappInstance inst) {
+        LocalDateTime ultima = inst.getUltimaMensagemClienteEm();
+        if (ultima == null) return null;
+        return (int) Duration.between(ultima, LocalDateTime.now()).toMinutes();
+    }
+
+    /** Alias retrocompatível — mantém callers antigos enquanto migramos. */
+    public Integer minutosSemMensagem(WhatsappInstance inst) {
+        return minutosSemEventoEvolution(inst);
     }
 
     /** Snapshot atual completo pro frontend (admin + dono do restaurante). */
@@ -75,9 +106,14 @@ public class WhatsappHealthService {
         r.put("status", inst.getStatus().name());
         r.put("ultimaMensagemRecebidaEm",
                 inst.getUltimaMensagemRecebidaEm() == null ? null : inst.getUltimaMensagemRecebidaEm().toString());
+        r.put("ultimaMensagemClienteEm",
+                inst.getUltimaMensagemClienteEm() == null ? null : inst.getUltimaMensagemClienteEm().toString());
         r.put("ultimaRespostaEnviadaEm",
                 inst.getUltimaRespostaEnviadaEm() == null ? null : inst.getUltimaRespostaEnviadaEm().toString());
-        r.put("minutosSemMensagem", minutosSemMensagem(inst));
+        r.put("minutosSemEvento", minutosSemEventoEvolution(inst));
+        r.put("minutosSemMensagemCliente", minutosSemMensagemCliente(inst));
+        // alias antigo pra não quebrar admin
+        r.put("minutosSemMensagem", minutosSemEventoEvolution(inst));
         r.put("tentativasReconexao", inst.getTentativasReconexaoSeguidas());
         r.put("botAtivo", inst.getBotAtivo());
         return r;

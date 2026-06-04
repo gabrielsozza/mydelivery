@@ -163,6 +163,31 @@ public class WhatsappController {
         return ResponseEntity.ok(whatsappService.diagnostico(r));
     }
 
+    /**
+     * Últimos 30 webhooks recebidos da Evolution pra essa instância. Buffer
+     * in-memory (perde no restart). Resposta vazia = Evolution NÃO está
+     * mandando nada (problema na Evolution ou no proxy). Se aparece só
+     * CONNECTION_UPDATE mas nunca MESSAGES_UPSERT = mensagens não estão
+     * chegando do WhatsApp, provavelmente shadow-ban ou proxy não
+     * roteia mensagens. Se MESSAGES_UPSERT chega mas bot não responde =
+     * problema no envio (logs do backend mostram).
+     */
+    @GetMapping("/diag/eventos")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Map<String, Object>> diagEventos(@AuthenticationPrincipal String email) {
+        Restaurante r = restauranteRepository.findByUsuarioEmail(email).orElseThrow();
+        WhatsappInstance inst = whatsappService.buscar(r);
+        Map<String, Object> resp = new HashMap<>();
+        if (inst == null) {
+            resp.put("erro", "sem instância");
+            return ResponseEntity.ok(resp);
+        }
+        resp.put("instanceName", inst.getInstanceName());
+        resp.put("totalEventos", WhatsappWebhookController.snapshotEventos(inst.getInstanceName()).size());
+        resp.put("eventos", WhatsappWebhookController.snapshotEventos(inst.getInstanceName()));
+        return ResponseEntity.ok(resp);
+    }
+
     /** Serialização: NÃO devolve instanceToken (segredo). */
     private Map<String, Object> serializar(WhatsappInstance inst) {
         Map<String, Object> m = new HashMap<>();

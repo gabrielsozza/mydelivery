@@ -42,8 +42,10 @@ public class WhatsappBotService {
     private final ConfiguracaoRestauranteRepository configRepo;
     private final EvolutionProperties props;
 
-    /** Delay (ms) de "digitando…" antes da msg aparecer. Curto pra não atrasar UX. */
-    private static final int TYPING_DELAY_MS = 1500;
+    /** Delay (ms) de "digitando…" antes da msg aparecer. Reduzido de 1500ms
+     *  pra 600ms a pedido do operador — meta de resposta ≤4s ponta a ponta
+     *  (webhook → decisão → typing → envio). */
+    private static final int TYPING_DELAY_MS = 600;
 
     /** Estado por número (key = instanceName + ":" + numero). */
     private final Map<String, EstadoNumero> estados = new ConcurrentHashMap<>();

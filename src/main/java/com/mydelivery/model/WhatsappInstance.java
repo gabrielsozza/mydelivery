@@ -78,12 +78,19 @@ public class WhatsappInstance {
     @Column(name = "conectado_em")
     private LocalDateTime conectadoEm;
 
-    /** Heartbeat de recebimento: atualizado pelo WhatsappWebhookController em
-     *  CADA webhook que chega (qualquer evento, não só MESSAGES_UPSERT).
-     *  Se ficar muito tempo sem atualizar mesmo com status=CONECTADA, a sessão
-     *  está zumbi (Evolution diz que conectou mas WhatsApp parou de enviar). */
+    /** Heartbeat fraco: atualizado em CADA webhook que chega da Evolution
+     *  (incluindo CONNECTION_UPDATE periódico que ela manda sozinha).
+     *  Prova só que "Evolution → backend" está vivo, NÃO que o bot funciona.
+     *  Pra "bot operacional" use ultimaMensagemClienteEm. */
     @Column(name = "ultima_msg_recebida_em")
     private LocalDateTime ultimaMensagemRecebidaEm;
+
+    /** Heartbeat forte: atualizado SÓ quando chega MESSAGES_UPSERT real
+     *  (cliente mandando msg). Esse é o sinal verdadeiro de que o bot está
+     *  recebendo mensagens. Se ficar muito tempo nulo + sem msg de cliente,
+     *  ainda não sabemos se é loja parada ou bot quebrado. */
+    @Column(name = "ultima_msg_cliente_em")
+    private LocalDateTime ultimaMensagemClienteEm;
 
     /** Heartbeat de envio: atualizado quando enviarMensagem retorna sucesso.
      *  Combinado com ultimaMensagemRecebidaEm permite detectar se o bot está

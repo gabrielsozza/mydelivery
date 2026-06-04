@@ -386,9 +386,15 @@ public class WhatsappService {
         return repo.findByInstanceName(instanceName).orElse(null);
     }
 
-    /** Heartbeat de recebimento — chamado pelo WhatsappWebhookController em CADA
-     *  evento. Single update, sem flush forçado. Também zera o contador de
-     *  reconexão (qualquer evento prova que a sessão está viva). */
+    /** Busca a instância do restaurante (ou null se não tem). Read-only. */
+    @Transactional(readOnly = true)
+    public WhatsappInstance buscar(Restaurante restaurante) {
+        return repo.findByRestauranteId(restaurante.getId()).orElse(null);
+    }
+
+    /** Heartbeat FRACO — chamado pelo WhatsappWebhookController em CADA evento
+     *  (inclusive CONNECTION_UPDATE periódico). Só prova "Evolution → backend"
+     *  está vivo, NÃO que o bot funciona. */
     @Transactional
     public void marcarMensagemRecebida(WhatsappInstance inst) {
         try {
@@ -398,7 +404,21 @@ public class WhatsappService {
             }
             repo.save(inst);
         } catch (Exception e) {
-            log.warn("[WhatsApp] Falha ao atualizar heartbeat de recebimento: {}", e.getMessage());
+            log.warn("[WhatsApp] Falha ao atualizar heartbeat fraco: {}", e.getMessage());
+        }
+    }
+
+    /** Heartbeat FORTE — chamado SÓ em MESSAGES_UPSERT real de cliente
+     *  (já filtrado fromMe=false + remoteJid válido). É o sinal que prova
+     *  que o bot está realmente recebendo mensagens, não só os keep-alives
+     *  internos da Evolution. */
+    @Transactional
+    public void marcarMensagemClienteRecebida(WhatsappInstance inst) {
+        try {
+            inst.setUltimaMensagemClienteEm(java.time.LocalDateTime.now());
+            repo.save(inst);
+        } catch (Exception e) {
+            log.warn("[WhatsApp] Falha ao atualizar heartbeat forte: {}", e.getMessage());
         }
     }
 

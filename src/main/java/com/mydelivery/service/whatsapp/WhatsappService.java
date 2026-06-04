@@ -9,6 +9,7 @@ import org.springframework.transaction.annotation.Transactional;
 import com.mydelivery.config.EvolutionProperties;
 import com.mydelivery.model.Restaurante;
 import com.mydelivery.model.WhatsappInstance;
+import com.mydelivery.repository.WhatsappHealthLogRepository;
 import com.mydelivery.repository.WhatsappInstanceRepository;
 
 import lombok.RequiredArgsConstructor;
@@ -26,6 +27,7 @@ import lombok.extern.slf4j.Slf4j;
 public class WhatsappService {
 
     private final WhatsappInstanceRepository repo;
+    private final WhatsappHealthLogRepository healthLogRepo;
     private final EvolutionClient evolutionClient;
     private final EvolutionProperties props;
 
@@ -127,16 +129,32 @@ public class WhatsappService {
                     String msg = e.getMessage() == null ? "" : e.getMessage().toLowerCase();
                     log.warn("[WhatsApp] re-tentativa /connect falhou pra {}: {}",
                             inst.getInstanceName(), e.getMessage());
-                    // Instância sumiu da Evolution (deletada manualmente, reset do servidor,
-                    // ou nunca foi criada com sucesso) — recria do zero. Sem isso o usuário
-                    // ficaria preso pra sempre com um registro local sem contrapartida.
+                    // Instância sumiu na Evolution (deletada manualmente, reset do servidor,
+                    // ou nunca foi criada com sucesso). Recria IN-PLACE no mesmo registro
+                    // — NÃO deleta a linha porque whatsapp_health_log tem FK pra cá sem
+                    // ON DELETE CASCADE, e DELETE quebraria com constraint violation.
                     if (msg.contains("not found") || msg.contains("does not exist")
                             || msg.contains("404")) {
-                        log.warn("[WhatsApp] instância {} sumiu da Evolution — recriando do zero",
+                        log.warn("[WhatsApp] instância {} sumiu da Evolution — recriando in-place",
                                 inst.getInstanceName());
-                        repo.delete(inst);
-                        repo.flush();
-                        return conectar(restaurante);
+                        String webhookUrl = props.getWebhookBaseUrl()
+                                + "/api/webhooks/whatsapp/" + inst.getInstanceName();
+                        try {
+                            @SuppressWarnings("unchecked")
+                            Map<String, Object> resp2 = evolutionClient.criarInstancia(
+                                    inst.getInstanceName(), webhookUrl);
+                            String tk = extrairInstanceToken(resp2);
+                            if (tk != null) inst.setInstanceToken(tk);
+                            String qr2 = extrairQrCode(resp2);
+                            if (qr2 != null) {
+                                inst.setQrCode(qr2);
+                                inst.setQrExpiraEm(LocalDateTime.now().plusSeconds(60));
+                            }
+                            inst.setStatus(WhatsappInstance.Status.AGUARDANDO_QR);
+                            log.info("[WhatsApp] recriada in-place. QR={}", qr2 != null ? "ok" : "aguardando webhook");
+                        } catch (RuntimeException e2) {
+                            log.error("[WhatsApp] recriação in-place falhou: {}", e2.getMessage());
+                        }
                     }
                 }
             }
@@ -246,11 +264,20 @@ public class WhatsappService {
     public void resetar(Restaurante restaurante) {
         repo.findByRestauranteId(restaurante.getId()).ifPresent(inst -> {
             String nome = inst.getInstanceName();
+            Long instId = inst.getId();
             try { evolutionClient.logout(nome); } catch (RuntimeException e) {
                 log.warn("[WhatsApp] logout falhou no reset (ok): {}", e.getMessage());
             }
             try { evolutionClient.deletar(nome); } catch (RuntimeException e) {
                 log.warn("[WhatsApp] delete falhou no reset (ok): {}", e.getMessage());
+            }
+            // whatsapp_health_log tem FK pra whatsapp_instances sem ON DELETE CASCADE.
+            // Deleta os snapshots manualmente antes da instância pra evitar
+            // foreign key constraint violation.
+            try {
+                healthLogRepo.deleteByInstanceId(instId);
+            } catch (RuntimeException e) {
+                log.warn("[WhatsApp] limpeza de health_log falhou no reset (ok): {}", e.getMessage());
             }
             repo.delete(inst);
             log.info("[WhatsApp] Reset completo de {}", nome);

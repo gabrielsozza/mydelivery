@@ -16,4 +16,8 @@ public interface WhatsappHealthLogRepository extends JpaRepository<WhatsappHealt
 
     /** Limpa snapshots antigos pra controlar tamanho da tabela. */
     void deleteByEmBefore(LocalDateTime corte);
+
+    /** Apaga TODOS os snapshots de uma instância. Usado no reset() pra liberar FK
+     *  antes de deletar o registro da instância em si. */
+    void deleteByInstanceId(Long instanceId);
 }

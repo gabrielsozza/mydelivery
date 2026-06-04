@@ -99,6 +99,35 @@ public class WhatsappService {
                     .build();
         }
         atualizarStatusDaEvolution(inst);
+
+        // AUTO-RECOVERY: usuário relatava QR ficando eternamente em spinner. Causa:
+        // Evolution às vezes não dispara QRCODE_UPDATED depois de /connect numa
+        // instância recém-criada (webhook não chega, ou sessão fica em "connecting"
+        // sem emitir QR). Se passamos do tempo de expiração esperado SEM QR válido,
+        // re-disparamos /connect — Evolution gera QR novo e o webhook deve cuspir.
+        if (inst.getStatus() == WhatsappInstance.Status.AGUARDANDO_QR) {
+            boolean qrAusente = inst.getQrCode() == null || inst.getQrCode().isBlank();
+            boolean qrExpirado = inst.getQrExpiraEm() != null
+                    && LocalDateTime.now().isAfter(inst.getQrExpiraEm());
+            if (qrAusente || qrExpirado) {
+                try {
+                    log.info("[WhatsApp] QR ausente/expirado pra {} — forçando /connect novamente",
+                            inst.getInstanceName());
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> resp = evolutionClient.conectar(inst.getInstanceName());
+                    String qr = extrairQrCode(resp);
+                    if (qr != null) {
+                        inst.setQrCode(qr);
+                        inst.setQrExpiraEm(LocalDateTime.now().plusSeconds(60));
+                        log.info("[WhatsApp] QR re-obtido sincronamente pra {}", inst.getInstanceName());
+                    }
+                } catch (RuntimeException e) {
+                    log.warn("[WhatsApp] re-tentativa /connect falhou pra {}: {}",
+                            inst.getInstanceName(), e.getMessage());
+                }
+            }
+        }
+
         return repo.save(inst);
     }
 
@@ -351,12 +380,28 @@ public class WhatsappService {
         }
 
         String token = extrairInstanceToken(resp);
+        // Evolution v2.x já devolve o QR no body do /instance/create quando
+        // qrcode=true (ver EvolutionClient.criarInstancia). Aproveitar isso
+        // evita esperar 5-20s pelo webhook QRCODE_UPDATED, que às vezes
+        // demora ou nem chega (rede entre Evolution e nosso backend).
+        String qrInicial = extrairQrCode(resp);
+        WhatsappInstance.Status statusInicial = qrInicial != null
+                ? WhatsappInstance.Status.AGUARDANDO_QR
+                : WhatsappInstance.Status.NOVA;
+        LocalDateTime qrExpira = qrInicial != null
+                ? LocalDateTime.now().plusSeconds(60)
+                : null;
+        if (qrInicial != null) {
+            log.info("[WhatsApp] QR pré-extraído da resposta /instance/create para {}", nome);
+        }
 
         return repo.save(WhatsappInstance.builder()
                 .restaurante(restaurante)
                 .instanceName(nome)
                 .instanceToken(token)
-                .status(WhatsappInstance.Status.NOVA)
+                .qrCode(qrInicial)
+                .qrExpiraEm(qrExpira)
+                .status(statusInicial)
                 .botAtivo(true)
                 .build());
     }

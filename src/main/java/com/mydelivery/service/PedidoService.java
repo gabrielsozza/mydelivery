@@ -302,8 +302,8 @@ public class PedidoService {
         //    com tela bloqueada se Service Worker registrado). Best-effort.
         if (webPushService != null) {
             try {
-                String tipo = String.valueOf(salvo.getTipo());
-                boolean ehMesa = "MESA".equalsIgnoreCase(tipo);
+                String tipoPedido = String.valueOf(salvo.getTipo());
+                boolean ehMesa = "MESA".equalsIgnoreCase(tipoPedido);
                 String titulo = ehMesa ? "🍽️ Novo pedido — Mesa" : "🛵 Novo pedido — Delivery";
                 String corpo = (salvo.getCliente() != null && salvo.getCliente().getNome() != null
                                 ? salvo.getCliente().getNome() + " · " : "")

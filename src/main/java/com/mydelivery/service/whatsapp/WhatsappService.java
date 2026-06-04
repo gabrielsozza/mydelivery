@@ -9,7 +9,9 @@ import org.springframework.transaction.annotation.Transactional;
 import com.mydelivery.config.EvolutionProperties;
 import com.mydelivery.model.Restaurante;
 import com.mydelivery.model.WhatsappInstance;
+import com.mydelivery.repository.WhatsappAcaoAutomaticaRepository;
 import com.mydelivery.repository.WhatsappHealthLogRepository;
+import com.mydelivery.repository.WhatsappIncidenteRepository;
 import com.mydelivery.repository.WhatsappInstanceRepository;
 
 import lombok.RequiredArgsConstructor;
@@ -30,6 +32,15 @@ public class WhatsappService {
     private final WhatsappHealthLogRepository healthLogRepo;
     private final EvolutionClient evolutionClient;
     private final EvolutionProperties props;
+    // Injeção via field pra evitar problema de ordem de bootstrap.
+    // IncidenteService não depende de WhatsappService, então não há ciclo,
+    // mas usar field aqui mantém o construtor enxuto e permite null safety.
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private WhatsappIncidenteService incidenteService;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private WhatsappIncidenteRepository incidenteRepoOpt;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private WhatsappAcaoAutomaticaRepository acaoRepoOpt;
 
     /**
      * Conecta o WhatsApp do restaurante. Idempotente:
@@ -271,13 +282,21 @@ public class WhatsappService {
             try { evolutionClient.deletar(nome); } catch (RuntimeException e) {
                 log.warn("[WhatsApp] delete falhou no reset (ok): {}", e.getMessage());
             }
-            // whatsapp_health_log tem FK pra whatsapp_instances sem ON DELETE CASCADE.
-            // Deleta os snapshots manualmente antes da instância pra evitar
-            // foreign key constraint violation.
+            // whatsapp_health_log + whatsapp_incidentes + whatsapp_acoes_automaticas
+            // têm FK pra whatsapp_instances sem ON DELETE CASCADE. Deleta os
+            // dependentes ANTES da instância pra evitar foreign key violation.
             try {
                 healthLogRepo.deleteByInstanceId(instId);
             } catch (RuntimeException e) {
                 log.warn("[WhatsApp] limpeza de health_log falhou no reset (ok): {}", e.getMessage());
+            }
+            if (acaoRepoOpt != null) {
+                try { acaoRepoOpt.deleteByInstanceId(instId); }
+                catch (RuntimeException e) { log.warn("[WhatsApp] limpeza ações falhou: {}", e.getMessage()); }
+            }
+            if (incidenteRepoOpt != null) {
+                try { incidenteRepoOpt.deleteByInstanceId(instId); }
+                catch (RuntimeException e) { log.warn("[WhatsApp] limpeza incidentes falhou: {}", e.getMessage()); }
             }
             repo.delete(inst);
             log.info("[WhatsApp] Reset completo de {}", nome);
@@ -331,6 +350,7 @@ public class WhatsappService {
             marcarRespostaEnviada(inst);
         } catch (RuntimeException e) {
             log.error("[WhatsApp] Falha ao enviar: {}", e.getMessage());
+            boolean fallbackOk = false;
             // Fallback: se enviar mídia falhou (URL inválida etc), manda só o caption como texto
             if (texto != null && texto.startsWith("IMG::")) {
                 String semPrefix = texto.substring(5);
@@ -340,10 +360,23 @@ public class WhatsappService {
                     try {
                         evolutionClient.enviarTexto(inst.getInstanceName(), inst.getInstanceToken(),
                                 numeroDestino, fallback, delayMs);
+                        marcarRespostaEnviada(inst);
+                        fallbackOk = true;
                     } catch (RuntimeException e2) {
                         log.error("[WhatsApp] Fallback texto também falhou: {}", e2.getMessage());
                     }
                 }
+            }
+            // Só abre incidente se TUDO falhou (envio original + eventual fallback).
+            // Senão estaríamos abrindo incidente toda vez que cai no fallback de mídia.
+            if (!fallbackOk && incidenteService != null) {
+                try {
+                    incidenteService.abrirSe(inst,
+                            com.mydelivery.model.WhatsappIncidente.Tipo.ERRO_API_EVOLUTION,
+                            com.mydelivery.model.WhatsappIncidente.Severidade.MEDIA,
+                            "enviarMensagem falhou: " + e.getMessage(),
+                            "{\"destino\":\"***\",\"len\":" + (texto == null ? 0 : texto.length()) + "}");
+                } catch (Exception ignore) { /* incidente é best-effort, não bloqueia envio */ }
             }
         }
     }

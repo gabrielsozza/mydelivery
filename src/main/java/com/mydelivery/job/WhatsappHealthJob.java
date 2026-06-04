@@ -6,11 +6,15 @@ import java.time.LocalDateTime;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import com.mydelivery.model.WhatsappAcaoAutomatica;
 import com.mydelivery.model.WhatsappHealthLog;
 import com.mydelivery.model.WhatsappInstance;
+import com.mydelivery.repository.WhatsappAcaoAutomaticaRepository;
 import com.mydelivery.repository.WhatsappHealthLogRepository;
+import com.mydelivery.repository.WhatsappIncidenteRepository;
 import com.mydelivery.repository.WhatsappInstanceRepository;
 import com.mydelivery.service.whatsapp.WhatsappHealthService;
+import com.mydelivery.service.whatsapp.WhatsappIncidenteService;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -35,6 +39,9 @@ public class WhatsappHealthJob {
     private final WhatsappInstanceRepository instanceRepo;
     private final WhatsappHealthLogRepository healthLogRepo;
     private final WhatsappHealthService healthService;
+    private final WhatsappIncidenteService incidenteService;
+    private final WhatsappIncidenteRepository incidenteRepo;
+    private final WhatsappAcaoAutomaticaRepository acaoRepo;
 
     /** Cooldown entre auto-reconexões da MESMA instância (anti-loop). */
     private static final int COOLDOWN_RECONEXAO_MIN = 15;
@@ -60,6 +67,13 @@ public class WhatsappHealthJob {
         WhatsappHealthLog.Estado estado = healthService.avaliarEstado(inst);
         boolean reconectou = false;
 
+        // ── Detectores rodam ANTES da decisão de intervir, pra classificar
+        //    a causa raiz. Cada um abre/resolve incidente do seu tipo.
+        try { incidenteService.detectarEvolutionFora(inst); } catch (Exception e) { logDet(e); }
+        try { incidenteService.detectarBaileysTravado(inst); } catch (Exception e) { logDet(e); }
+        try { incidenteService.detectarShadowBan(inst); } catch (Exception e) { logDet(e); }
+        try { incidenteService.detectarRecuperacaoEsgotada(inst); } catch (Exception e) { logDet(e); }
+
         // Auto-reconexão: só se ativa o bot, instância já foi conectada um dia,
         // está OFFLINE OU INSTÁVEL, e cooldown passou.
         boolean precisaIntervir = (estado == WhatsappHealthLog.Estado.OFFLINE
@@ -74,9 +88,30 @@ public class WhatsappHealthJob {
             log.warn("[WAHealth] instância {} em {} — disparando auto-reconexão",
                     inst.getInstanceName(), estado);
             reconectou = healthService.tentarReconectar(inst);
+
+            // Registra a tentativa pra histórico auditável. Vincula ao incidente
+            // mais relevante (BAILEYS_TRAVADO ou EVOLUTION_FORA) se houver.
+            var incidenteRelacionado = incidenteRepo
+                    .findFirstByInstanceIdAndTipoAndResolvidoEmIsNull(
+                            inst.getId(),
+                            com.mydelivery.model.WhatsappIncidente.Tipo.BAILEYS_TRAVADO)
+                    .orElse(incidenteRepo
+                            .findFirstByInstanceIdAndTipoAndResolvidoEmIsNull(
+                                    inst.getId(),
+                                    com.mydelivery.model.WhatsappIncidente.Tipo.EVOLUTION_FORA)
+                            .orElse(null));
+            incidenteService.registrarAcao(incidenteRelacionado, inst,
+                    WhatsappAcaoAutomatica.Acao.RECONECTAR,
+                    reconectou ? WhatsappAcaoAutomatica.Resultado.OK
+                              : WhatsappAcaoAutomatica.Resultado.FALHA,
+                    "tentativa #" + inst.getTentativasReconexaoSeguidas());
         }
 
         healthService.registrarSnapshot(inst, reconectou);
+    }
+
+    private void logDet(Exception e) {
+        log.debug("[WAHealth] detector falhou (silenciado): {}", e.getMessage());
     }
 
     private boolean cooldownOk(WhatsappInstance inst) {
@@ -85,13 +120,19 @@ public class WhatsappHealthJob {
         return min >= COOLDOWN_RECONEXAO_MIN;
     }
 
-    /** Limpa snapshots antigos (mantém 7 dias). Roda diariamente às 4h. */
+    /** Limpa snapshots antigos (7 dias) + incidentes resolvidos antigos (30 dias)
+     *  + ações antigas (30 dias). Roda diariamente às 4h. */
     @Scheduled(cron = "0 0 4 * * *")
     public void limpar() {
-        LocalDateTime corte = LocalDateTime.now().minusDays(7);
+        LocalDateTime corte7 = LocalDateTime.now().minusDays(7);
+        LocalDateTime corte30 = LocalDateTime.now().minusDays(30);
         try {
-            healthLogRepo.deleteByEmBefore(corte);
-            log.info("[WAHealth] snapshots anteriores a {} removidos", corte);
+            healthLogRepo.deleteByEmBefore(corte7);
+            // Só apaga incidentes JÁ resolvidos há mais de 30 dias — abertos
+            // ficam pra sempre até serem fechados manualmente ou automaticamente.
+            incidenteRepo.deleteByAbertoEmBefore(corte30);
+            acaoRepo.deleteByEmBefore(corte30);
+            log.info("[WAHealth] limpeza diária ok: snapshots>7d, incidentes>30d, ações>30d");
         } catch (Exception e) {
             log.error("[WAHealth] erro na limpeza: {}", e.getMessage());
         }

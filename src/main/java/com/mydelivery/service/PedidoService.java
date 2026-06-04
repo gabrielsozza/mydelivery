@@ -47,6 +47,8 @@ public class PedidoService {
     private final EstoqueService estoqueService;
     private final PagamentoService pagamentoService;
     private final HorarioLojaService horarioLojaService;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private WebPushService webPushService;
 
     @Transactional
     public PedidoResponse criarPedido(NovoPedidoRequest request) {
@@ -295,6 +297,23 @@ public class PedidoService {
         try {
             estoqueService.baixarEstoquePorPedido(salvo);
         } catch (Exception ignored) {}
+
+        // ── Web Push: notifica TODOS aparelhos do restaurante (toca mesmo
+        //    com tela bloqueada se Service Worker registrado). Best-effort.
+        if (webPushService != null) {
+            try {
+                String tipo = String.valueOf(salvo.getTipo());
+                boolean ehMesa = "MESA".equalsIgnoreCase(tipo);
+                String titulo = ehMesa ? "🍽️ Novo pedido — Mesa" : "🛵 Novo pedido — Delivery";
+                String corpo = (salvo.getCliente() != null && salvo.getCliente().getNome() != null
+                                ? salvo.getCliente().getNome() + " · " : "")
+                             + "R$ " + (salvo.getTotal() == null ? "0,00"
+                                : salvo.getTotal().toPlainString().replace(".", ","));
+                String url = ehMesa ? "/pedidos.html?tipo=mesa" : "/pedidos.html?tipo=delivery";
+                webPushService.notificar(restaurante.getId(), titulo, corpo, url,
+                        ehMesa ? "pedido-mesa" : "pedido-delivery");
+            } catch (Exception ignored) {}
+        }
 
         return toResponse(salvo);
     }

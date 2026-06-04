@@ -74,6 +74,8 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.POST, "/api/restaurante/assinatura/replicar-cardapio-admin").permitAll()
                 // Health do WhatsApp — autenticação via X-Admin-Secret validada no controller
                 .requestMatchers("/api/admin-internal/whatsapp/**").permitAll()
+                // Web Push: setup VAPID — autenticado via X-Admin-Secret no controller
+                .requestMatchers("/api/admin-internal/web-push/**").permitAll()
                 .requestMatchers("/api/admin/**").hasRole("ADMIN")
                 .requestMatchers("/api/restaurante/**").hasAnyRole("RESTAURANTE", "ADMIN")
                 .anyRequest().authenticated()

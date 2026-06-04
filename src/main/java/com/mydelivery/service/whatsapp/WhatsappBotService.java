@@ -41,6 +41,8 @@ public class WhatsappBotService {
     private final WhatsappService whatsappService;
     private final ConfiguracaoRestauranteRepository configRepo;
     private final EvolutionProperties props;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private WhatsappIncidenteService incidenteService;
 
     /** Delay (ms) de "digitando…" antes da msg aparecer. Reduzido de 1500ms
      *  pra 600ms a pedido do operador — meta de resposta ≤4s ponta a ponta
@@ -55,6 +57,26 @@ public class WhatsappBotService {
      * Caso contrário, fica em silêncio.
      */
     public void processar(WhatsappInstance inst, String numero, String texto) {
+        try {
+            processarInterno(inst, numero, texto);
+        } catch (RuntimeException e) {
+            // Qualquer falha inesperada vira incidente classificado em vez de virar
+            // log enterrado. Sem isso, bot quebrava silenciosamente e ninguém via.
+            log.error("[Bot] exception em processar({}, ***): {}", inst.getInstanceName(), e.getMessage(), e);
+            if (incidenteService != null) {
+                try {
+                    incidenteService.abrirSe(inst,
+                            com.mydelivery.model.WhatsappIncidente.Tipo.ERRO_INTERNO_BOT,
+                            com.mydelivery.model.WhatsappIncidente.Severidade.MEDIA,
+                            "processar() lançou: " + e.getClass().getSimpleName() + ": " + e.getMessage(),
+                            null);
+                } catch (Exception ignore) {}
+            }
+            // Não relança — webhook precisa responder 200 pra Evolution não fazer retry.
+        }
+    }
+
+    private void processarInterno(WhatsappInstance inst, String numero, String texto) {
         if (!Boolean.TRUE.equals(inst.getBotAtivo())) {
             log.debug("[Bot] desligado pra instância {} — não responde", inst.getInstanceName());
             return;

@@ -127,6 +127,19 @@
             <artifactId>jsoup</artifactId>
             <version>1.18.1</version>
         </dependency>
+        <!-- Web Push (notificações com tela bloqueada via FCM gratuito + VAPID) -->
+        <dependency>
+            <groupId>nl.martijndwars</groupId>
+            <artifactId>web-push</artifactId>
+            <version>5.1.1</version>
+        </dependency>
+        <!-- BouncyCastle: provider de criptografia usado pela lib web-push pra
+             gerar/validar chaves elípticas (ECDSA-P256, requerido pelo VAPID). -->
+        <dependency>
+            <groupId>org.bouncycastle</groupId>
+            <artifactId>bcprov-jdk18on</artifactId>
+            <version>1.78.1</version>
+        </dependency>
     </dependencies>
 
     <build>

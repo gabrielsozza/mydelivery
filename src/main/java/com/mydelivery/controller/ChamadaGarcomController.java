@@ -37,6 +37,8 @@ public class ChamadaGarcomController {
     private final ChamadaGarcomRepository chamadaRepo;
     private final MesaRepository mesaRepo;
     private final RestauranteRepository restauranteRepo;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.mydelivery.service.WebPushService webPushService;
 
     /** Throttle: novo chamado da mesma mesa só após N segundos (evita spam do botão). */
     private static final int THROTTLE_SEGUNDOS = 30;
@@ -78,6 +80,16 @@ public class ChamadaGarcomController {
                 .build());
         log.info("[Garcom] Chamada criada — restaurante={} mesa={} cliente={}",
                 mesa.getRestaurante().getId(), mesa.getSlug(), nome);
+
+        // Web Push: notifica aparelhos do restaurante mesmo com tela bloqueada
+        if (webPushService != null) {
+            try {
+                String mesaNome = mesa.getNome() != null ? mesa.getNome() : ("Mesa " + mesa.getSlug());
+                String corpo = (nome != null && !nome.isBlank() ? nome + " · " : "") + mesaNome;
+                webPushService.notificar(mesa.getRestaurante().getId(),
+                        "🔔 Garçom solicitado", corpo, "/painel.html", "garcom-mesa");
+            } catch (Exception ignored) {}
+        }
 
         return ResponseEntity.status(HttpStatus.CREATED).body(Map.of(
                 "ok", true,
@@ -207,6 +219,14 @@ public class ChamadaGarcomController {
                 .build());
         log.info("[FecharConta] Solicitação criada — restaurante={} mesa={} cliente={}",
                 mesa.getRestaurante().getId(), mesa.getSlug(), nome);
+        if (webPushService != null) {
+            try {
+                String mesaNome = mesa.getNome() != null ? mesa.getNome() : ("Mesa " + mesa.getSlug());
+                String corpo = (nome != null && !nome.isBlank() ? nome + " · " : "") + mesaNome;
+                webPushService.notificar(mesa.getRestaurante().getId(),
+                        "💳 Cliente pediu a conta", corpo, "/painel.html", "fechar-conta");
+            } catch (Exception ignored) {}
+        }
         return ResponseEntity.status(HttpStatus.CREATED).body(Map.of("ok", true, "id", c.getId()));
     }
 

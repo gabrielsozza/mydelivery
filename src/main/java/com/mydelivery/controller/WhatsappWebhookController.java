@@ -51,6 +51,11 @@ public class WhatsappWebhookController {
             return ResponseEntity.ok().build();
         }
 
+        // HEARTBEAT REAL — atualiza timestamp em QUALQUER evento que chega da
+        // Evolution. É o único sinal forte de que a sessão WhatsApp está viva.
+        // Se ficar muito tempo sem update mesmo com status=CONECTADA, é zumbi.
+        whatsappService.marcarMensagemRecebida(inst);
+
         String event = strDe(payload, "event");
         // TEMP: log INFO pra diagnostico v2.1.x. Voltar pra debug depois.
         Object dataDbg = payload.get("data");

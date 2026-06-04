@@ -78,6 +78,29 @@ public class WhatsappInstance {
     @Column(name = "conectado_em")
     private LocalDateTime conectadoEm;
 
+    /** Heartbeat de recebimento: atualizado pelo WhatsappWebhookController em
+     *  CADA webhook que chega (qualquer evento, não só MESSAGES_UPSERT).
+     *  Se ficar muito tempo sem atualizar mesmo com status=CONECTADA, a sessão
+     *  está zumbi (Evolution diz que conectou mas WhatsApp parou de enviar). */
+    @Column(name = "ultima_msg_recebida_em")
+    private LocalDateTime ultimaMensagemRecebidaEm;
+
+    /** Heartbeat de envio: atualizado quando enviarMensagem retorna sucesso.
+     *  Combinado com ultimaMensagemRecebidaEm permite detectar se o bot está
+     *  respondendo. */
+    @Column(name = "ultima_resp_enviada_em")
+    private LocalDateTime ultimaRespostaEnviadaEm;
+
+    /** Quantas tentativas de auto-reconexão foram feitas desde o último
+     *  sucesso. Resetado quando recebe webhook ou envia resposta com sucesso. */
+    @Builder.Default
+    @Column(name = "tentativas_reconexao_seguidas", nullable = false)
+    private Integer tentativasReconexaoSeguidas = 0;
+
+    /** Última vez que o job de auto-reconexão tentou. Usado pra throttle. */
+    @Column(name = "ultima_tentativa_reconexao_em")
+    private LocalDateTime ultimaTentativaReconexaoEm;
+
     /**
      * Toggle do bot: quando false, mensagens recebidas não disparam resposta
      * automática (mas continuam sendo persistidas pra histórico futuro).

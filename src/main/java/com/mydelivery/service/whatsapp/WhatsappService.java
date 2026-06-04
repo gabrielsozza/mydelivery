@@ -200,6 +200,9 @@ public class WhatsappService {
                     numeroDestino, texto, delayMs);
             log.info("[WhatsApp] Mensagem enviada — instância={}, para={}***", inst.getInstanceName(),
                     numeroDestino.length() > 5 ? numeroDestino.substring(0, 5) : numeroDestino);
+            // Heartbeat de envio — atualizado SÓ em sucesso. Combinado com
+            // ultimaMensagemRecebidaEm prova que o bot está respondendo.
+            marcarRespostaEnviada(inst);
         } catch (RuntimeException e) {
             log.error("[WhatsApp] Falha ao enviar: {}", e.getMessage());
             // Fallback: se enviar mídia falhou (URL inválida etc), manda só o caption como texto
@@ -255,6 +258,33 @@ public class WhatsappService {
     /** Lookup por nome de instância (usado pelo WebhookController). */
     public WhatsappInstance buscarPorNome(String instanceName) {
         return repo.findByInstanceName(instanceName).orElse(null);
+    }
+
+    /** Heartbeat de recebimento — chamado pelo WhatsappWebhookController em CADA
+     *  evento. Single update, sem flush forçado. Também zera o contador de
+     *  reconexão (qualquer evento prova que a sessão está viva). */
+    @Transactional
+    public void marcarMensagemRecebida(WhatsappInstance inst) {
+        try {
+            inst.setUltimaMensagemRecebidaEm(java.time.LocalDateTime.now());
+            if (inst.getTentativasReconexaoSeguidas() != null && inst.getTentativasReconexaoSeguidas() > 0) {
+                inst.setTentativasReconexaoSeguidas(0);
+            }
+            repo.save(inst);
+        } catch (Exception e) {
+            log.warn("[WhatsApp] Falha ao atualizar heartbeat de recebimento: {}", e.getMessage());
+        }
+    }
+
+    /** Heartbeat de envio — chamado por enviarMensagem em sucesso. */
+    @Transactional
+    public void marcarRespostaEnviada(WhatsappInstance inst) {
+        try {
+            inst.setUltimaRespostaEnviadaEm(java.time.LocalDateTime.now());
+            repo.save(inst);
+        } catch (Exception e) {
+            log.warn("[WhatsApp] Falha ao atualizar heartbeat de envio: {}", e.getMessage());
+        }
     }
 
     /** Atualizado pelo handler do webhook quando recebe CONNECTION_UPDATE. */

@@ -125,6 +125,40 @@ public class WhatsappHealthService {
         return healthLogRepo.findByInstanceIdAndEmGreaterThanEqualOrderByEmAsc(instanceId, desde);
     }
 
+    /**
+     * Agregado GLOBAL das últimas N horas pra gráfico do dashboard admin.
+     * Agrupa snapshots por hora (bucket de 60min) somando quantos restaurantes
+     * estavam em cada estado naquela janela. Devolve lista cronológica.
+     * Cada item: { em: "HH:00", operacional, instavel, offline }.
+     */
+    public List<Map<String, Object>> resumoGlobal(int horas) {
+        LocalDateTime desde = LocalDateTime.now().minusHours(horas);
+        var logs = healthLogRepo.findByEmGreaterThanEqualOrderByEmAsc(desde);
+        // Bucket key = "yyyy-MM-dd HH:00"
+        java.util.Map<String, int[]> buckets = new java.util.TreeMap<>();
+        for (var l : logs) {
+            String key = String.format("%04d-%02d-%02d %02d:00",
+                    l.getEm().getYear(), l.getEm().getMonthValue(),
+                    l.getEm().getDayOfMonth(), l.getEm().getHour());
+            int[] arr = buckets.computeIfAbsent(key, k -> new int[3]);
+            switch (l.getEstado()) {
+                case OPERACIONAL -> arr[0]++;
+                case INSTAVEL    -> arr[1]++;
+                case OFFLINE     -> arr[2]++;
+            }
+        }
+        java.util.List<Map<String, Object>> out = new java.util.ArrayList<>(buckets.size());
+        for (var e : buckets.entrySet()) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("em", e.getKey());
+            m.put("operacional", e.getValue()[0]);
+            m.put("instavel", e.getValue()[1]);
+            m.put("offline", e.getValue()[2]);
+            out.add(m);
+        }
+        return out;
+    }
+
     /** Marca tentativa de reconexão e chama Evolution.restart(). */
     @Transactional
     public boolean tentarReconectar(WhatsappInstance inst) {

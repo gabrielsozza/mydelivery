@@ -4,6 +4,8 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 import com.mydelivery.model.WhatsappHealthLog;
 
@@ -13,6 +15,10 @@ public interface WhatsappHealthLogRepository extends JpaRepository<WhatsappHealt
      *  pro mais antigo. Usado pelo gráfico de acompanhamento no admin. */
     List<WhatsappHealthLog> findByInstanceIdAndEmGreaterThanEqualOrderByEmAsc(
             Long instanceId, LocalDateTime desde);
+
+    /** TODOS os snapshots globais a partir de uma data. Usado pra montar
+     *  gráfico agregado de saúde da operação (todos restaurantes juntos). */
+    List<WhatsappHealthLog> findByEmGreaterThanEqualOrderByEmAsc(LocalDateTime desde);
 
     /** Limpa snapshots antigos pra controlar tamanho da tabela. */
     void deleteByEmBefore(LocalDateTime corte);

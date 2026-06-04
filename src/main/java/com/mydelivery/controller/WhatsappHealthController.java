@@ -100,6 +100,21 @@ public class WhatsappHealthController {
         return ResponseEntity.ok(out);
     }
 
+    /**
+     * Saúde GLOBAL — agregado horário das últimas N horas (default 12),
+     * mostrando quantos restaurantes estavam em cada estado por hora.
+     * Usado pelo gráfico do dashboard admin.
+     */
+    @GetMapping("/api/admin-internal/whatsapp/saude-global")
+    public ResponseEntity<List<Map<String, Object>>> saudeGlobal(
+            @org.springframework.web.bind.annotation.RequestParam(defaultValue = "12") int horas,
+            @RequestHeader(value = "X-Admin-Secret", required = false) String secret) {
+        validarSecret(secret);
+        if (horas < 1) horas = 1;
+        if (horas > 168) horas = 168; // 7 dias max
+        return ResponseEntity.ok(healthService.resumoGlobal(horas));
+    }
+
     @GetMapping("/api/admin-internal/whatsapp/{instanceName}/historico")
     public ResponseEntity<List<Map<String, Object>>> historicoAdmin(
             @PathVariable String instanceName,

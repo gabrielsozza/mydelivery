@@ -305,7 +305,11 @@ public class WhatsappIncidenteService {
             m.put("acao", a.getAcao().name());
             m.put("resultado", a.getResultado().name());
             m.put("detalhe", a.getDetalhe());
-            m.put("instanceName", a.getInstance() != null ? a.getInstance().getInstanceName() : null);
+            WhatsappInstance inst = a.getInstance();
+            m.put("instanceName", inst != null ? inst.getInstanceName() : null);
+            m.put("restauranteNome", inst != null && inst.getRestaurante() != null
+                    ? inst.getRestaurante().getNome() : null);
+            m.put("phone", inst != null ? inst.getPhone() : null);
             m.put("incidenteId", a.getIncidente() != null ? a.getIncidente().getId() : null);
             return m;
         }).toList();
@@ -324,8 +328,17 @@ public class WhatsappIncidenteService {
     private Map<String, Object> serializar(WhatsappIncidente i) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("id", i.getId());
-        m.put("instanceId", i.getInstance() == null ? null : i.getInstance().getId());
-        m.put("instanceName", i.getInstance() == null ? null : i.getInstance().getInstanceName());
+        WhatsappInstance inst = i.getInstance();
+        m.put("instanceId", inst == null ? null : inst.getId());
+        m.put("instanceName", inst == null ? null : inst.getInstanceName());
+        // Dados pra UI: nome do restaurante + telefone conectado.
+        // Lazy fetch é OK aqui porque o método-pai é @Transactional(readOnly=true).
+        if (inst != null && inst.getRestaurante() != null) {
+            m.put("restauranteNome", inst.getRestaurante().getNome());
+        } else {
+            m.put("restauranteNome", null);
+        }
+        m.put("phone", inst == null ? null : inst.getPhone());
         m.put("restauranteId", i.getRestauranteId());
         m.put("tipo", i.getTipo().name());
         m.put("severidade", i.getSeveridade().name());

@@ -22,6 +22,7 @@ import com.mydelivery.model.WhatsappInstance;
 import com.mydelivery.repository.RestauranteRepository;
 import com.mydelivery.repository.WhatsappInstanceRepository;
 import com.mydelivery.service.whatsapp.WhatsappHealthService;
+import com.mydelivery.service.whatsapp.WhatsappService;
 
 import lombok.RequiredArgsConstructor;
 
@@ -44,6 +45,7 @@ public class WhatsappHealthController {
     private final RestauranteRepository restauranteRepo;
     private final WhatsappInstanceRepository instanceRepo;
     private final WhatsappHealthService healthService;
+    private final WhatsappService whatsappService;
 
     @Value("${mydelivery.admin.internal-secret:${ADMIN_INTERNAL_SECRET:}}")
     private String adminSecret;
@@ -126,6 +128,49 @@ public class WhatsappHealthController {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
         boolean ok = healthService.tentarReconectar(inst);
         return ResponseEntity.ok(Map.of("ok", ok, "estadoAtual", healthService.avaliarEstado(inst).name()));
+    }
+
+    /**
+     * RESET COMPLETO da instância — logout + delete na Evolution + apaga local.
+     * Diferente do reconectar() que só refresca o socket Baileys: este destrava
+     * sessão "shadow-banned" do número (WhatsApp marcou o número como suspeito
+     * e silenciou as mensagens entrantes mantendo a sessão CONECTADA).
+     *
+     * Após reset, o restaurante precisa escanear NOVO QR pelo painel dele.
+     * Use só quando reconectar() já tentou várias vezes e bot continua mudo.
+     */
+    @PostMapping("/api/admin-internal/whatsapp/{instanceName}/reset-full")
+    public ResponseEntity<Map<String, Object>> resetFullAdmin(
+            @PathVariable String instanceName,
+            @RequestHeader(value = "X-Admin-Secret", required = false) String secret) {
+        validarSecret(secret);
+        WhatsappInstance inst = instanceRepo.findByInstanceName(instanceName)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+        Restaurante r = inst.getRestaurante();
+        whatsappService.resetar(r);
+        return ResponseEntity.ok(Map.of(
+                "ok", true,
+                "instanceName", instanceName,
+                "mensagem", "Reset completo executado. Restaurante precisa escanear QR novo."
+        ));
+    }
+
+    /**
+     * Últimos webhooks recebidos da Evolution pra essa instância (ring buffer
+     * in-memory). Permite ao admin investigar "por que esse bot está dormindo"
+     * sem precisar acessar Railway logs.
+     */
+    @GetMapping("/api/admin-internal/whatsapp/{instanceName}/eventos")
+    public ResponseEntity<Map<String, Object>> eventosAdmin(
+            @PathVariable String instanceName,
+            @RequestHeader(value = "X-Admin-Secret", required = false) String secret) {
+        validarSecret(secret);
+        var eventos = WhatsappWebhookController.snapshotEventos(instanceName);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("instanceName", instanceName);
+        out.put("totalEventos", eventos.size());
+        out.put("eventos", eventos);
+        return ResponseEntity.ok(out);
     }
 
     private void validarSecret(String received) {

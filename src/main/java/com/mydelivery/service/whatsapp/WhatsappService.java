@@ -537,7 +537,16 @@ public class WhatsappService {
             Map<String, Object> resp = evolutionClient.consultarStatus(inst.getInstanceName());
             String state = extrairState(resp);
             if ("open".equalsIgnoreCase(state)) {
-                if (inst.getStatus() != WhatsappInstance.Status.CONECTADA) {
+                // RESPEITA INTENÇÃO DO USUÁRIO: se o usuário acabou de clicar
+                // "Desconectar" (status=DESCONECTADA), NÃO promove de volta pra
+                // CONECTADA só porque a Evolution ainda mostra "open" — o logout
+                // demora alguns segundos pra propagar no Baileys. Antes desse fix
+                // a tela ficava presa em "Conectado" após desconectar.
+                // Só auto-promove se a transição faz sentido: NOVA, AGUARDANDO_QR
+                // ou ERRO indicam que estamos tentando subir; CONECTADA já está OK.
+                if (inst.getStatus() == WhatsappInstance.Status.NOVA
+                        || inst.getStatus() == WhatsappInstance.Status.AGUARDANDO_QR
+                        || inst.getStatus() == WhatsappInstance.Status.ERRO) {
                     inst.setStatus(WhatsappInstance.Status.CONECTADA);
                     inst.setConectadoEm(LocalDateTime.now());
                     inst.setQrCode(null);

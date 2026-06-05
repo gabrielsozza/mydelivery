@@ -65,6 +65,24 @@ public class Mesa {
     @Builder.Default
     private Boolean ativa = true;
 
+    /** Setor opcional pra organização visual ("Varanda", "Área Externa", "VIP"). */
+    @Column(length = 80)
+    private String setor;
+
+    /** Posição X no mapa visual do salão (em pixels ou unidades relativas).
+     *  Configurado via drag&drop pelo gerente. null = ainda não posicionada. */
+    @Column(name = "posicao_x")
+    private Integer posicaoX;
+
+    @Column(name = "posicao_y")
+    private Integer posicaoY;
+
+    /** Capacidade padrão da mesa em pessoas. Usado pra sugerir contagem
+     *  ao abrir sessão e em métricas de ocupação. */
+    @Builder.Default
+    @Column(nullable = false)
+    private Integer capacidade = 4;
+
     @CreationTimestamp
     @Column(name = "criada_em", updatable = false)
     private LocalDateTime criadaEm;

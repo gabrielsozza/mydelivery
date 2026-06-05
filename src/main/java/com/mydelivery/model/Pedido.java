@@ -45,6 +45,18 @@ public class Pedido {
     private LocalDateTime pagoEm;
     private String enderecoEntrega;
     @Column(name="agendado_para") private LocalDateTime agendadoPara;
+
+    // ── Garçom / Balcão / Divisão ──
+    /** Sessão de mesa à qual esse pedido pertence (null pra delivery/balcão). */
+    @Column(name="sessao_id") private Long sessaoId;
+    /** Garçom que lançou esse pedido (null se foi cliente direto pelo QR). */
+    @Column(name="garcom_id") private Long garcomId;
+    /** Índice da pessoa na mesa (1, 2, 3...) pra divisão proporcional da conta.
+     *  null = pedido coletivo (rateio igual). */
+    @Column(name="pessoa_indice") private Integer pessoaIndice;
+    /** Nome ou senha pra chamar no balcão ("João", "47"). */
+    @Column(name="nome_chamada", length=50) private String nomeChamada;
+
     @OneToMany(mappedBy="pedido",cascade=CascadeType.ALL,orphanRemoval=true) private List<PedidoItem> itens=new ArrayList<>();
     @CreationTimestamp private LocalDateTime criadoEm;
     @UpdateTimestamp private LocalDateTime atualizadoEm;

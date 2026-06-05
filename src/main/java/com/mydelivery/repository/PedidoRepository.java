@@ -27,4 +27,7 @@ public interface PedidoRepository extends JpaRepository<Pedido, Long> {
     @Query("SELECT p FROM Pedido p WHERE p.mesa.id = :mesaId " +
            "AND p.status NOT IN ('CANCELADO', 'ENTREGUE') ORDER BY p.criadoEm ASC")
     List<Pedido> findComandaAtivaPorMesa(Long mesaId);
+
+    /** Todos os pedidos de uma sessão de mesa específica (Garçom). */
+    List<Pedido> findBySessaoIdOrderByCriadoEmAsc(Long sessaoId);
 }

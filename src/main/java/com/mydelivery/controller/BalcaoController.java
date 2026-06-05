@@ -20,6 +20,7 @@ import com.mydelivery.model.Pedido;
 import com.mydelivery.model.Restaurante;
 import com.mydelivery.repository.PedidoRepository;
 import com.mydelivery.repository.RestauranteRepository;
+import com.mydelivery.repository.SenhaBalcaoRepository;
 import com.mydelivery.service.BalcaoService;
 
 import lombok.RequiredArgsConstructor;
@@ -39,6 +40,7 @@ public class BalcaoController {
     private final BalcaoService balcaoService;
     private final RestauranteRepository restauranteRepo;
     private final PedidoRepository pedidoRepo;
+    private final SenhaBalcaoRepository senhaRepo;
 
     @PostMapping("/api/restaurante/balcao/pedido")
     @PreAuthorize("hasRole('RESTAURANTE')")
@@ -105,6 +107,42 @@ public class BalcaoController {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "status inválido");
         }
         return ResponseEntity.ok(Map.of("ok", true, "status", p.getStatus().name()));
+    }
+
+    /**
+     * Endpoint PÚBLICO pro painel de chamada na TV do balcão. Sem auth porque
+     * TV não tem teclado. Devolve apenas senhas com status PRONTO ou EM_PREPARO
+     * do dia atual — não vaza dados sensíveis (nome de cliente é pseudonimo).
+     */
+    @GetMapping("/public/painel-chamada/{slugRestaurante}")
+    @org.springframework.transaction.annotation.Transactional(readOnly = true)
+    public ResponseEntity<Map<String, Object>> painelChamada(@PathVariable String slugRestaurante) {
+        Restaurante r = restauranteRepo.findBySlug(slugRestaurante)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+        var hoje = java.time.LocalDate.now();
+        var senhas = senhaRepo.findByRestauranteIdAndDataEmissaoOrderByNumeroAsc(r.getId(), hoje);
+        java.util.List<Map<String, Object>> prontos = new java.util.ArrayList<>();
+        java.util.List<Map<String, Object>> preparando = new java.util.ArrayList<>();
+        for (var s : senhas) {
+            Pedido p = pedidoRepo.findById(s.getPedidoId()).orElse(null);
+            if (p == null) continue;
+            if (p.getStatus() == Pedido.Status.ENTREGUE || p.getStatus() == Pedido.Status.CANCELADO) continue;
+            Map<String, Object> m = new java.util.LinkedHashMap<>();
+            m.put("senha", s.getNumero());
+            m.put("nome", s.getNomeCliente());
+            m.put("status", p.getStatus().name());
+            // Sem itens, total, etc — TV não precisa
+            if (p.getStatus() == Pedido.Status.PRONTO || p.getStatus() == Pedido.Status.NA_MESA) {
+                prontos.add(m);
+            } else {
+                preparando.add(m);
+            }
+        }
+        Map<String, Object> out = new java.util.LinkedHashMap<>();
+        out.put("restaurante", r.getNome());
+        out.put("prontos", prontos);
+        out.put("preparando", preparando);
+        return ResponseEntity.ok(out);
     }
 
     private String strOf(Object o) { return o == null ? null : o.toString(); }

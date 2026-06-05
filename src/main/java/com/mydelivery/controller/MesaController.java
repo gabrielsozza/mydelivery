@@ -190,8 +190,80 @@ public class MesaController {
         out.put("nome", m.getNome());
         out.put("slug", m.getSlug());
         out.put("ativa", m.getAtiva());
+        out.put("setor", m.getSetor());
+        out.put("capacidade", m.getCapacidade());
+        out.put("posicaoX", m.getPosicaoX());
+        out.put("posicaoY", m.getPosicaoY());
         out.put("criadaEm", m.getCriadaEm() != null ? m.getCriadaEm().toString() : null);
         return out;
+    }
+
+    /**
+     * Edita atributos da mesa: nome, setor, capacidade e posição no mapa.
+     * Body parcial: { nome?, setor?, capacidade?, posicaoX?, posicaoY? }
+     * Não-nulos atualizam, nulos preservam.
+     */
+    @org.springframework.web.bind.annotation.PatchMapping("/api/mesas/{id}")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    @org.springframework.transaction.annotation.Transactional
+    public ResponseEntity<Map<String, Object>> editar(
+            @AuthenticationPrincipal String email,
+            @PathVariable Long id,
+            @RequestBody Map<String, Object> body) {
+        Restaurante r = restauranteRepo.findByUsuarioEmail(email).orElseThrow();
+        Mesa m = mesaRepo.findById(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+        if (!m.getRestaurante().getId().equals(r.getId())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+        }
+        if (body.get("nome") != null) {
+            String nome = body.get("nome").toString().trim();
+            if (!nome.isEmpty()) m.setNome(nome);
+        }
+        if (body.containsKey("setor")) {
+            Object v = body.get("setor");
+            m.setSetor(v == null ? null : v.toString().trim());
+        }
+        if (body.get("capacidade") instanceof Number n) {
+            int cap = n.intValue();
+            if (cap > 0 && cap <= 50) m.setCapacidade(cap);
+        }
+        if (body.containsKey("posicaoX")) {
+            Object v = body.get("posicaoX");
+            m.setPosicaoX(v instanceof Number n ? n.intValue() : null);
+        }
+        if (body.containsKey("posicaoY")) {
+            Object v = body.get("posicaoY");
+            m.setPosicaoY(v instanceof Number n ? n.intValue() : null);
+        }
+        mesaRepo.save(m);
+        return ResponseEntity.ok(serializar(m));
+    }
+
+    /** Bulk-update de posições — payload [{id, posicaoX, posicaoY}, ...]. Usado pelo
+     *  editor de mapa do salão: arrastou mesa, salva todas as posições em 1 chamada. */
+    @org.springframework.web.bind.annotation.PatchMapping("/api/mesas/posicoes")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    @org.springframework.transaction.annotation.Transactional
+    public ResponseEntity<Map<String, Object>> atualizarPosicoes(
+            @AuthenticationPrincipal String email,
+            @RequestBody List<Map<String, Object>> posicoes) {
+        Restaurante r = restauranteRepo.findByUsuarioEmail(email).orElseThrow();
+        int alterados = 0;
+        for (var p : posicoes) {
+            Object idObj = p.get("id");
+            if (!(idObj instanceof Number)) continue;
+            Long mid = ((Number) idObj).longValue();
+            var mOpt = mesaRepo.findById(mid);
+            if (mOpt.isEmpty()) continue;
+            Mesa m = mOpt.get();
+            if (!m.getRestaurante().getId().equals(r.getId())) continue;
+            if (p.get("posicaoX") instanceof Number nx) m.setPosicaoX(nx.intValue());
+            if (p.get("posicaoY") instanceof Number ny) m.setPosicaoY(ny.intValue());
+            mesaRepo.save(m);
+            alterados++;
+        }
+        return ResponseEntity.ok(Map.of("ok", true, "alterados", alterados));
     }
 
     /** kebab-case sem acento. "Área Externa" → "area-externa". */

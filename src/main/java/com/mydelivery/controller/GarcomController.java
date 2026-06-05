@@ -257,6 +257,86 @@ public class GarcomController {
         ));
     }
 
+    /**
+     * Divisão PROPORCIONAL da conta — diferencial real.
+     *
+     * Agrupa os pedidos da sessão por pessoa_indice. Pedidos sem indice
+     * (coletivos) são rateados igualmente entre as pessoas. Soma 10% de
+     * taxa de serviço por padrão (garçom desmarca individualmente se
+     * cliente recusar).
+     *
+     * Retorno: [{ pessoa: 1|2|null, subtotal, taxa10, total, itens: [...] }]
+     */
+    @GetMapping("/api/garcom/mesa/{slug}/divisao")
+    @PreAuthorize("hasRole('GARCOM')")
+    public ResponseEntity<Map<String, Object>> divisao(
+            @AuthenticationPrincipal String subject,
+            @PathVariable String slug) {
+        Ctx ctx = parseSubject(subject);
+        var sessaoOpt = garcomService.sessaoDaMesa(ctx.restauranteId, slug);
+        if (sessaoOpt.isEmpty()) {
+            return ResponseEntity.ok(Map.of("ocupada", false));
+        }
+        var sessao = sessaoOpt.get();
+        int pessoasTotal = sessao.getPessoas() == null ? 1 : sessao.getPessoas();
+        var pedidos = pedidoRepo.findBySessaoIdOrderByCriadoEmAsc(sessao.getId());
+
+        // Agrupa: pessoaIndice → lista de itens + subtotal
+        java.util.Map<Integer, java.util.List<Map<String, Object>>> porPessoa = new java.util.LinkedHashMap<>();
+        java.util.Map<Integer, java.math.BigDecimal> subtotalPessoa = new java.util.LinkedHashMap<>();
+        java.math.BigDecimal subtotalColetivo = java.math.BigDecimal.ZERO;
+        java.util.List<Map<String, Object>> itensColetivos = new java.util.ArrayList<>();
+
+        for (var p : pedidos) {
+            if (p.getStatus() == com.mydelivery.model.Pedido.Status.CANCELADO) continue;
+            for (var it : p.getItens()) {
+                java.math.BigDecimal vit = it.getSubtotal() == null ? java.math.BigDecimal.ZERO : it.getSubtotal();
+                Map<String, Object> itDto = new java.util.LinkedHashMap<>();
+                itDto.put("nome", it.getNomeProduto());
+                itDto.put("quantidade", it.getQuantidade());
+                itDto.put("subtotal", vit);
+
+                if (p.getPessoaIndice() == null) {
+                    subtotalColetivo = subtotalColetivo.add(vit);
+                    itensColetivos.add(itDto);
+                } else {
+                    int idx = p.getPessoaIndice();
+                    porPessoa.computeIfAbsent(idx, k -> new java.util.ArrayList<>()).add(itDto);
+                    subtotalPessoa.merge(idx, vit, java.math.BigDecimal::add);
+                }
+            }
+        }
+
+        // Rateio coletivo: divide igualmente entre TODAS as pessoas (1..pessoasTotal),
+        // mesmo as que não tem itens individuais.
+        java.math.BigDecimal rateio = pessoasTotal > 0
+                ? subtotalColetivo.divide(java.math.BigDecimal.valueOf(pessoasTotal), 2, java.math.RoundingMode.HALF_UP)
+                : java.math.BigDecimal.ZERO;
+
+        java.util.List<Map<String, Object>> pessoas = new java.util.ArrayList<>();
+        for (int i = 1; i <= pessoasTotal; i++) {
+            java.math.BigDecimal sub = subtotalPessoa.getOrDefault(i, java.math.BigDecimal.ZERO).add(rateio);
+            java.math.BigDecimal taxa10 = sub.multiply(new java.math.BigDecimal("0.10")).setScale(2, java.math.RoundingMode.HALF_UP);
+            Map<String, Object> p = new java.util.LinkedHashMap<>();
+            p.put("pessoa", i);
+            p.put("subtotal", sub);
+            p.put("taxaSugerida", taxa10);
+            p.put("totalComTaxa", sub.add(taxa10));
+            p.put("itens", porPessoa.getOrDefault(i, java.util.List.of()));
+            pessoas.add(p);
+        }
+
+        Map<String, Object> out = new java.util.LinkedHashMap<>();
+        out.put("ocupada", true);
+        out.put("pessoasTotal", pessoasTotal);
+        out.put("totalSessao", sessao.getTotalAcumulado());
+        out.put("subtotalColetivo", subtotalColetivo);
+        out.put("rateioPorPessoa", rateio);
+        out.put("itensColetivos", itensColetivos);
+        out.put("pessoas", pessoas);
+        return ResponseEntity.ok(out);
+    }
+
     @PostMapping("/api/garcom/mesa/{slug}/fechar")
     @PreAuthorize("hasRole('GARCOM')")
     public ResponseEntity<Map<String, Object>> fecharMesa(

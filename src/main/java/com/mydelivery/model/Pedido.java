@@ -63,7 +63,9 @@ public class Pedido {
     public boolean isAgendado(){return agendadoPara!=null;}
     /** Pedido AGUARDANDO_PAGAMENTO = criado online, ainda não confirmado pelo cliente. */
     /** NA_MESA = pedido entregue na mesa pelo garçom, aguardando fechamento da conta. Só usado em pedidos MESA. */
-    public enum Status{AGUARDANDO_PAGAMENTO,PENDENTE,CONFIRMADO,EM_PREPARO,SAIU_ENTREGA,NA_MESA,ENTREGUE,CANCELADO}
+    /** PRONTO = cozinha finalizou, aguardando retirada pelo cliente (balcão) ou
+     *  saída de entregador. Usado pelo painel-chamada da TV pra mostrar "Senha 47". */
+    public enum Status{AGUARDANDO_PAGAMENTO,PENDENTE,CONFIRMADO,EM_PREPARO,PRONTO,SAIU_ENTREGA,NA_MESA,ENTREGUE,CANCELADO}
     /** BALCAO = cliente faz pedido no caixa, recebe senha, retira na hora. */
     public enum Tipo{DELIVERY,RETIRADA,MESA,BALCAO}
     /** Forma específica usada — guarda histórico do que cliente escolheu. */

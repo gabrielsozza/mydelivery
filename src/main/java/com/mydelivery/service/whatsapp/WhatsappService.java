@@ -151,6 +151,50 @@ public class WhatsappService {
                         inst.setQrExpiraEm(LocalDateTime.now().plusSeconds(60));
                         inst.setStatus(WhatsappInstance.Status.AGUARDANDO_QR);
                         log.info("[WhatsApp] QR re-obtido sincronamente pra {}", inst.getInstanceName());
+                    } else {
+                        // FALLBACK ANTI-WEBHOOK-PERDIDO: a Evolution v2.x responde
+                        // /connect com {"count":0} quando a sessão já está "connecting"
+                        // — espera-se que o QR chegue por webhook QRCODE_UPDATED. Se o
+                        // webhook foi perdido (Railway em deploy, instabilidade de rede,
+                        // Evolution não reemitir), o QR fica preso pra sempre — usuário
+                        // só consegue destravar via "Resetar e recomeçar" manualmente.
+                        // Solução: detectamos esse caso e fazemos o reset automático com
+                        // throttle de 25s pra não loopar. Renomeia a instância (sufixo
+                        // timestamp) pra obrigar Evolution a emitir QR fresh.
+                        boolean podeAutoReset = inst.getUltimaTentativaReconexaoEm() == null
+                                || LocalDateTime.now().isAfter(
+                                        inst.getUltimaTentativaReconexaoEm().plusSeconds(25));
+                        if (podeAutoReset) {
+                            inst.setUltimaTentativaReconexaoEm(LocalDateTime.now());
+                            log.warn("[WhatsApp] /connect sem QR pra {} — forçando recriação com nome novo",
+                                    inst.getInstanceName());
+                            try { evolutionClient.logout(inst.getInstanceName()); }
+                            catch (RuntimeException ignore) { /* sessão pode já estar fechada */ }
+                            try { evolutionClient.deletar(inst.getInstanceName()); }
+                            catch (RuntimeException ignore) { /* idem */ }
+                            String nomeBase = inst.getInstanceName().replaceAll("-\\d+$", "");
+                            String novoNome = nomeBase + "-" + (System.currentTimeMillis() / 1000);
+                            String webhookUrl = props.getWebhookBaseUrl()
+                                    + "/api/webhooks/whatsapp/" + novoNome;
+                            try {
+                                @SuppressWarnings("unchecked")
+                                Map<String, Object> respNova = evolutionClient.criarInstancia(novoNome, webhookUrl);
+                                inst.setInstanceName(novoNome);
+                                String tk = extrairInstanceToken(respNova);
+                                if (tk != null) inst.setInstanceToken(tk);
+                                String qrNovo = extrairQrCode(respNova);
+                                if (qrNovo != null) {
+                                    inst.setQrCode(qrNovo);
+                                    inst.setQrExpiraEm(LocalDateTime.now().plusSeconds(60));
+                                    log.info("[WhatsApp] QR obtido na recriação forçada pra {}", novoNome);
+                                } else {
+                                    log.info("[WhatsApp] Recriação OK ({}). QR virá por webhook.", novoNome);
+                                }
+                                inst.setStatus(WhatsappInstance.Status.AGUARDANDO_QR);
+                            } catch (RuntimeException e2) {
+                                log.error("[WhatsApp] Recriação forçada falhou: {}", e2.getMessage());
+                            }
+                        }
                     }
                 } catch (RuntimeException e) {
                     String msg = e.getMessage() == null ? "" : e.getMessage().toLowerCase();

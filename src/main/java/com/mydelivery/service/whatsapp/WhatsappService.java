@@ -3,6 +3,7 @@ package com.mydelivery.service.whatsapp;
 import java.time.LocalDateTime;
 import java.util.Map;
 
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -53,7 +54,22 @@ public class WhatsappService {
         WhatsappInstance inst = repo.findByRestauranteId(restaurante.getId()).orElse(null);
 
         if (inst == null) {
-            inst = criarNova(restaurante);
+            // Race condition: o job de reconnect, outra aba do painel ou um POST
+            // duplicado podem ter criado a instância em paralelo. O findByRestauranteId
+            // não enxergou porque outra transaction ainda não commitou no momento da
+            // leitura, mas quando o INSERT do criarNova roda, o índice unique
+            // (idx_wa_restaurante em restaurante_id) já está ocupado e estoura
+            // DataIntegrityViolationException → vira HTTP 400 no GlobalExceptionHandler.
+            // Fix: catch a violação e re-fetch a linha que a outra transaction criou.
+            try {
+                inst = criarNova(restaurante);
+            } catch (DataIntegrityViolationException dive) {
+                log.warn("[WhatsApp] Concorrência ao criar instância pra rest_id={} — re-fetch da linha existente",
+                        restaurante.getId());
+                inst = repo.findByRestauranteId(restaurante.getId())
+                        .orElseThrow(() -> new RuntimeException(
+                                "Falha ao criar instância WhatsApp (constraint violada mas linha ausente)"));
+            }
         }
 
         // Refresca status atual da Evolution antes de decidir o que fazer

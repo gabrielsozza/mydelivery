@@ -443,11 +443,16 @@ public class GarcomController {
         m.put("total", p.getTotal());
         m.put("pessoaIndice", p.getPessoaIndice());
         m.put("criadoEm", p.getCriadoEm() == null ? null : p.getCriadoEm().toString());
-        m.put("itens", p.getItens().stream().map(it -> Map.of(
-                "nome", it.getNomeProduto(),
-                "quantidade", it.getQuantidade(),
-                "subtotal", it.getSubtotal()
-        )).toList());
+        // Map.of() rejeita null. Itens vindos do cliente/balcão podem ter
+        // nomeProduto/subtotal nulos — usamos HashMap pra preservar a chave
+        // mesmo com null e evitar NPE -> HTTP 400 no GET /mesa/{slug}.
+        m.put("itens", p.getItens().stream().map(it -> {
+            Map<String, Object> i = new LinkedHashMap<>();
+            i.put("nome", it.getNomeProduto());
+            i.put("quantidade", it.getQuantidade());
+            i.put("subtotal", it.getSubtotal());
+            return i;
+        }).toList());
         return m;
     }
 }

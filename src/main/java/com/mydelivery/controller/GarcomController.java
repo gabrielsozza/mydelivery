@@ -439,7 +439,6 @@ public class GarcomController {
     private Map<String, Object> resumirPedido(Pedido p) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("id", p.getId());
-        m.put("numero", p.getNumero());
         m.put("status", p.getStatus().name());
         m.put("total", p.getTotal());
         m.put("pessoaIndice", p.getPessoaIndice());

@@ -2,6 +2,7 @@ package com.mydelivery.service.whatsapp;
 
 import java.time.LocalDateTime;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
@@ -33,6 +34,18 @@ public class WhatsappService {
     private final WhatsappHealthLogRepository healthLogRepo;
     private final EvolutionClient evolutionClient;
     private final EvolutionProperties props;
+
+    /**
+     * Lock por restauranteId pra evitar que múltiplas threads do polling do
+     * frontend (a cada 4s) ou threads paralelas do job de reconnect entrem
+     * simultaneamente no auto-recovery e criem múltiplas instâncias na
+     * Evolution. O caso real observado: 3 threads exec-1/3/4 rodaram o
+     * status() em paralelo, cada uma criou um nome diferente
+     * (...8448 / ...8461 / ...8465), e os webhooks chegavam para nomes que
+     * o banco local já tinha sobrescrito → "instância não encontrada
+     * localmente — descartando evento". Resultado: QR nunca chegava.
+     */
+    private static final ConcurrentHashMap<Long, Object> autoRecoveryLocks = new ConcurrentHashMap<>();
     // Injeção via field pra evitar problema de ordem de bootstrap.
     // IncidenteService não depende de WhatsappService, então não há ciclo,
     // mas usar field aqui mantém o construtor enxuto e permite null safety.
@@ -134,12 +147,29 @@ public class WhatsappService {
         // instância recém-criada (webhook não chega, ou sessão fica em "connecting"
         // sem emitir QR). Se passamos do tempo de expiração esperado SEM QR válido,
         // re-disparamos /connect — Evolution gera QR novo e o webhook deve cuspir.
+        //
+        // CRITICAL: tudo aqui dentro precisa rodar 1 thread por vez por restaurante,
+        // senão o polling do frontend (4s) cria múltiplas instâncias paralelas na
+        // Evolution e o webhook QR fica sendo descartado por nome inconsistente.
         if (inst.getStatus() == WhatsappInstance.Status.AGUARDANDO_QR
                 || inst.getStatus() == WhatsappInstance.Status.NOVA) {
             boolean qrAusente = inst.getQrCode() == null || inst.getQrCode().isBlank();
             boolean qrExpirado = inst.getQrExpiraEm() != null
                     && LocalDateTime.now().isAfter(inst.getQrExpiraEm());
             if (qrAusente || qrExpirado) {
+                Object lock = autoRecoveryLocks.computeIfAbsent(restaurante.getId(), k -> new Object());
+                synchronized (lock) {
+                    // Re-fetch dentro do lock pra pegar atualização de outra thread que
+                    // acabou de terminar — evita disparar /connect logo após outra thread
+                    // ter setado o qrCode.
+                    WhatsappInstance fresh = repo.findByRestauranteId(restaurante.getId()).orElse(null);
+                    if (fresh != null) inst = fresh;
+                    qrAusente = inst.getQrCode() == null || inst.getQrCode().isBlank();
+                    qrExpirado = inst.getQrExpiraEm() != null
+                            && LocalDateTime.now().isAfter(inst.getQrExpiraEm());
+                    if (!qrAusente && !qrExpirado) {
+                        return repo.save(inst);
+                    }
                 try {
                     log.info("[WhatsApp] QR ausente/expirado pra {} — forçando /connect novamente",
                             inst.getInstanceName());
@@ -228,6 +258,7 @@ public class WhatsappService {
                         }
                     }
                 }
+                } // end synchronized (lock)
             }
         }
 

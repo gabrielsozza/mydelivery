@@ -84,7 +84,11 @@ public class Pedido {
     /** BALCAO = cliente faz pedido no caixa, recebe senha, retira na hora. */
     public enum Tipo{DELIVERY,RETIRADA,MESA,BALCAO}
     /** Forma específica usada — guarda histórico do que cliente escolheu. */
-    public enum FormaPagamento{PIX,DINHEIRO,CARTAO_MAQUININHA,CARTAO_CREDITO,CARTAO_DEBITO,APPLE_PAY}
+    /** PENDENTE = pedido criado sem cobranca (cliente vai pagar depois — uso comum em
+     *  balcao quando dono quer fechar conjunto no fim do dia/da visita). Diferente
+     *  de Status.AGUARDANDO_PAGAMENTO (esse e' fluxo de PIX online esperando webhook
+     *  do Mercado Pago). PENDENTE significa "ainda nao escolheu como pagar". */
+    public enum FormaPagamento{PIX,DINHEIRO,CARTAO_MAQUININHA,CARTAO_CREDITO,CARTAO_DEBITO,APPLE_PAY,PENDENTE}
     /** ONLINE = paga agora pelo site. NA_ENTREGA = paga quando receber. */
     public enum ModoPagamento{ONLINE,NA_ENTREGA}
 }

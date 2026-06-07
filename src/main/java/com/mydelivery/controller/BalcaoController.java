@@ -81,6 +81,31 @@ public class BalcaoController {
         return ResponseEntity.ok(balcaoService.memoriaCliente(r.getId(), tel));
     }
 
+    /**
+     * Cobra um pedido balcao que foi criado como "Cobrar depois"
+     * (formaPagamento=PENDENTE). Recebe a forma real escolhida no momento
+     * do pagamento. Marca pago=true e grava timestamp.
+     */
+    @PostMapping("/api/restaurante/balcao/pedido/{id}/cobrar")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Map<String, Object>> cobrar(
+            @AuthenticationPrincipal String email,
+            @PathVariable Long id,
+            @RequestBody Map<String, String> body) {
+        Restaurante r = restauranteRepo.findByUsuarioEmail(email).orElseThrow();
+        String forma = body == null ? null : body.get("formaPagamento");
+        if (forma == null || forma.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "formaPagamento obrigatoria");
+        }
+        try {
+            return ResponseEntity.ok(balcaoService.cobrar(r.getId(), id, forma));
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+        } catch (SecurityException e) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+        }
+    }
+
     @PatchMapping("/api/restaurante/balcao/pedido/{id}")
     @PreAuthorize("hasRole('RESTAURANTE')")
     @org.springframework.transaction.annotation.Transactional

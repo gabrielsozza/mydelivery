@@ -60,6 +60,11 @@ public class BalcaoService {
         if (itensReq == null || itensReq.isEmpty()) {
             throw new IllegalArgumentException("itens vazio");
         }
+        // Nome obrigatorio — pedido sem identificacao salvava com nome generico
+        // "cliente", o que confundia operacao do balcao (varios pedidos iguais).
+        if (nomeChamada == null || nomeChamada.trim().isEmpty()) {
+            throw new IllegalArgumentException("Informe o nome do cliente.");
+        }
 
         Pedido p = new Pedido();
         p.setRestaurante(r);
@@ -68,7 +73,10 @@ public class BalcaoService {
         Pedido.FormaPagamento fp = parseFormaPag(formaPagamentoStr);
         p.setFormaPagamento(fp);
         p.setModoPagamento(Pedido.ModoPagamento.NA_ENTREGA);
-        p.setNomeChamada(nomeChamada);
+        // pago = false (default no model). Quando o dono finalmente cobrar (forma
+        // PENDENTE ou nao), o endpoint /balcao/pedido/{id}/cobrar marca pago=true
+        // + grava a forma real escolhida na hora do pagamento.
+        p.setNomeChamada(nomeChamada.trim());
         p.setObservacao(observacao);
         p.setTaxaEntrega(BigDecimal.ZERO);
         p.setDesconto(BigDecimal.ZERO);
@@ -226,9 +234,33 @@ public class BalcaoService {
     }
 
     private Pedido.FormaPagamento parseFormaPag(String s) {
-        if (s == null) return Pedido.FormaPagamento.DINHEIRO;
+        if (s == null || s.trim().isEmpty()) return Pedido.FormaPagamento.DINHEIRO;
         try { return Pedido.FormaPagamento.valueOf(s.trim().toUpperCase()); }
         catch (Exception e) { return Pedido.FormaPagamento.DINHEIRO; }
+    }
+
+    /**
+     * Cobranca tardia: pedido foi criado com forma PENDENTE ("cobrar depois"),
+     * agora o cliente esta pagando. Atualiza forma + marca pago=true.
+     * Nao muda o status (CONFIRMADO continua CONFIRMADO; ENTREGUE continua
+     * ENTREGUE) — quem move status e' o endpoint PATCH dedicado.
+     */
+    @org.springframework.transaction.annotation.Transactional
+    public Map<String, Object> cobrar(Long restauranteId, Long pedidoId, String formaPagamentoStr) {
+        Pedido p = pedidoRepo.findById(pedidoId)
+                .orElseThrow(() -> new IllegalArgumentException("Pedido " + pedidoId + " nao existe"));
+        if (!p.getRestaurante().getId().equals(restauranteId)) {
+            throw new SecurityException("Pedido de outro restaurante");
+        }
+        Pedido.FormaPagamento fp = parseFormaPag(formaPagamentoStr);
+        if (fp == Pedido.FormaPagamento.PENDENTE) {
+            throw new IllegalArgumentException("Escolha a forma de pagamento real.");
+        }
+        p.setFormaPagamento(fp);
+        p.setPago(true);
+        p.setPagoEm(java.time.LocalDateTime.now());
+        pedidoRepo.save(p);
+        return Map.of("ok", true, "formaPagamento", fp.name(), "pago", true);
     }
     private Long toLong(Object o) {
         if (o == null) return null;

@@ -8,7 +8,22 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.ArrayList;
 
-@Entity @Table(name="pedidos") @Data @NoArgsConstructor @AllArgsConstructor @Builder
+@Entity
+@Table(name = "pedidos", indexes = {
+    // Painel: listar pedidos do restaurante recentes (mais comum).
+    @jakarta.persistence.Index(name = "ix_pedido_rest_criado",
+            columnList = "restaurante_id, criado_em"),
+    // Painel filtrado por status (ex: ABERTOS, EM_PREPARO).
+    @jakarta.persistence.Index(name = "ix_pedido_rest_status_criado",
+            columnList = "restaurante_id, status, criado_em"),
+    // Comanda da mesa (cliente final + painel).
+    @jakarta.persistence.Index(name = "ix_pedido_mesa_status",
+            columnList = "mesa_id, status"),
+    // Garçom: pedidos de uma sessão (Mesa aberta).
+    @jakarta.persistence.Index(name = "ix_pedido_sessao_criado",
+            columnList = "sessao_id, criado_em")
+})
+@Data @NoArgsConstructor @AllArgsConstructor @Builder
 public class Pedido {
     @Id @GeneratedValue(strategy=GenerationType.IDENTITY) private Long id;
     @ManyToOne @JoinColumn(name="restaurante_id",nullable=false) private Restaurante restaurante;

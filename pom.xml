@@ -66,6 +66,18 @@
             <artifactId>mysql-connector-j</artifactId>
             <scope>runtime</scope>
         </dependency>
+        <!-- Flyway: gerencia migrations de schema. Baseline configurado em
+             application.properties pra adotar incrementalmente sem dropar
+             nada do que ja existe em prod. Proximas mudancas de schema vao
+             como V2__xxx.sql em src/main/resources/db/migration/. -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-mysql</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>

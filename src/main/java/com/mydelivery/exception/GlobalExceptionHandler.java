@@ -2,8 +2,12 @@ package com.mydelivery.exception;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.NoSuchElementException;
 
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
@@ -12,24 +16,96 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.multipart.MultipartException;
 import org.springframework.web.multipart.support.MissingServletRequestPartException;
+import org.springframework.web.server.ResponseStatusException;
 
+import jakarta.persistence.EntityNotFoundException;
 import lombok.extern.slf4j.Slf4j;
 
+/**
+ * Handlers tipados por exceção. Antes desse refactor todo RuntimeException
+ * virava HTTP 400, mascarando 500/404/409 e dificultando debug em prod.
+ * Agora cada categoria devolve o status semanticamente correto + log no
+ * nivel apropriado.
+ */
 @Slf4j
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
+    /** Argumento invalido vindo do usuario (validacao de logica de negocio). */
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<Map<String, String>> handleIllegalArgument(IllegalArgumentException e) {
+        log.warn("[Validacao] {}", e.getMessage());
+        return ResponseEntity.badRequest().body(Map.of("erro", safeMsg(e)));
+    }
+
+    /** Entidade nao encontrada. Vira 404, nao 400. */
+    @ExceptionHandler({ EntityNotFoundException.class, NoSuchElementException.class })
+    public ResponseEntity<Map<String, String>> handleNotFound(RuntimeException e) {
+        log.warn("[NotFound] {}: {}", e.getClass().getSimpleName(), e.getMessage());
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(Map.of("erro", safeMsg(e)));
+    }
+
+    /** Violacao de constraint do banco (unique, FK, NOT NULL). Vira 409. */
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    public ResponseEntity<Map<String, String>> handleDataIntegrity(DataIntegrityViolationException e) {
+        // Mensagem do JPA traz SQL cru e nomes de constraints internas — nao expor.
+        String root = e.getMostSpecificCause() != null ? e.getMostSpecificCause().getMessage() : e.getMessage();
+        log.error("[DataIntegrity] {}", root);
+        String msg = "Conflito de dados. Verifique se o registro ja existe ou tem dependencias.";
+        if (root != null && root.toLowerCase().contains("duplicate")) {
+            msg = "Registro duplicado.";
+        }
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of("erro", msg));
+    }
+
+    /** Autorizacao negada (Spring Security ja seria 403, mas algumas vezes chega aqui). */
+    @ExceptionHandler(AccessDeniedException.class)
+    public ResponseEntity<Map<String, String>> handleAccessDenied(AccessDeniedException e) {
+        log.warn("[Forbidden] {}", e.getMessage());
+        return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .body(Map.of("erro", "Voce nao tem permissao pra essa acao."));
+    }
+
+    /** Excecoes onde o controller ja definiu o status (ex: throw new ResponseStatusException). */
+    @ExceptionHandler(ResponseStatusException.class)
+    public ResponseEntity<Map<String, String>> handleResponseStatus(ResponseStatusException e) {
+        log.warn("[ResponseStatus] {} -> {}", e.getStatusCode(), e.getReason());
+        String msg = e.getReason() != null ? e.getReason() : e.getStatusCode().toString();
+        return ResponseEntity.status(e.getStatusCode()).body(Map.of("erro", msg));
+    }
+
+    /**
+     * Fallback pra RuntimeException nao tratada. Mantemos 400 com a mensagem
+     * por COMPATIBILIDADE: muito codigo legado lanca
+     * {@code throw new RuntimeException("msg amigavel")} esperando o frontend
+     * ler a msg e mostrar pro usuario.
+     *
+     * Bugs reais (NPE, OOM, IllegalStateException) tambem caem aqui — sao
+     * detectados pelo {@link NullPointerException} no log. A medio prazo, esse
+     * codigo legado deve migrar pra IllegalArgumentException (400) ou
+     * ResponseStatusException (status custom).
+     */
     @ExceptionHandler(RuntimeException.class)
     public ResponseEntity<Map<String, String>> handleRuntimeException(RuntimeException e) {
-        // Loga stack trace pra facilitar debug — antes ficava só "Bad Request" no front
-        // sem rastro do que aconteceu no backend.
-        log.error("[GlobalException] {}: {}", e.getClass().getSimpleName(), e.getMessage(), e);
-        String msg = e.getMessage() != null && !e.getMessage().isBlank()
+        // NPE / IllegalState / etc. sao bugs reais — log com stack trace.
+        // Mensagens amigaveis (throw new RuntimeException("msg")) viram 400.
+        boolean bugReal = e instanceof NullPointerException
+                || e instanceof IllegalStateException
+                || e instanceof ClassCastException;
+        if (bugReal) {
+            log.error("[ServerError] {}: {}", e.getClass().getSimpleName(), e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("erro", "Erro interno. Tente novamente em instantes."));
+        }
+        log.warn("[BusinessError] {}: {}", e.getClass().getSimpleName(), e.getMessage());
+        return ResponseEntity.badRequest().body(Map.of("erro", safeMsg(e)));
+    }
+
+    private static String safeMsg(Throwable e) {
+        return e.getMessage() != null && !e.getMessage().isBlank()
                 ? e.getMessage()
                 : e.getClass().getSimpleName();
-        return ResponseEntity
-                .badRequest()
-                .body(Map.of("erro", msg));
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

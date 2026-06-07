@@ -33,6 +33,7 @@ import lombok.extern.slf4j.Slf4j;
 public class MercadoPagoWebhookController {
 
     private final MercadoPagoWebhookService webhookService;
+    private final com.mydelivery.service.WebhookDedupService dedupService;
 
     @PostMapping("/api/webhooks/mercadopago")
     public ResponseEntity<Void> receber(
@@ -48,6 +49,16 @@ public class MercadoPagoWebhookController {
         String dataId = dataIdParam != null ? dataIdParam : dataIdDoBody(body);
 
         log.info("Webhook MP recebido: type={}, action={}, dataId={}, reqId={}", tipo, acao, dataId, requestId);
+
+        // Dedup: MP reenvia webhook em timeout/retry. Sem isso, pedido virava
+        // pago 2x e fidelidade somava pontos duplicados. Chave = (type, dataId).
+        // Preferimos type+dataId em vez de requestId porque requestId muda
+        // entre retries do mesmo evento — type+dataId identifica o pagamento.
+        String chaveDedup = (tipo == null ? "" : tipo) + ":" + (dataId == null ? "" : dataId);
+        if (!chaveDedup.equals(":") && !dedupService.tryClaim("mercadopago", chaveDedup)) {
+            log.info("Webhook MP duplicado ignorado: {}", chaveDedup);
+            return ResponseEntity.ok().build();
+        }
 
         var input = new WebhookInput(requestId, signature, tipo, acao, dataId);
         Resultado r = webhookService.processar(input);

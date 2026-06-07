@@ -84,10 +84,15 @@ public class WhatsappWebhookController {
         whatsappService.marcarMensagemRecebida(inst);
 
         String event = strDe(payload, "event");
-        // TEMP: log INFO pra diagnostico v2.1.x. Voltar pra debug depois.
-        Object dataDbg = payload.get("data");
-        log.info("[WA-Webhook] {} evento={} data-keys={}", instanceName, event,
-                dataDbg instanceof Map<?, ?> mdbg ? mdbg.keySet() : (dataDbg == null ? "null" : dataDbg.getClass().getSimpleName()));
+        // Log granular por evento: DEBUG (poluiu prod com 100+ restaurantes ativos,
+        // cada msg recebida no WhatsApp logava). Eventos relevantes (CONNECTION_UPDATE,
+        // QRCODE_UPDATED, erros) sao logados em INFO dentro dos respectivos handlers.
+        if (log.isDebugEnabled()) {
+            Object dataDbg = payload.get("data");
+            log.debug("[WA-Webhook] {} evento={} data-keys={}", instanceName, event,
+                    dataDbg instanceof Map<?, ?> mdbg ? mdbg.keySet()
+                            : (dataDbg == null ? "null" : dataDbg.getClass().getSimpleName()));
+        }
         registrarEvento(instanceName, event, payload);
 
         try {

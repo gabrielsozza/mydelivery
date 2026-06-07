@@ -141,6 +141,30 @@ public class EvolutionClient {
     }
 
     /**
+     * Lista TODAS as instâncias na Evolution. Usado pelo reset emergencial
+     * pra encontrar instâncias órfãs (criadas por bugs antigos como o de
+     * threads paralelas) com prefix {@code mydelivery-rest-{id}-...} e
+     * deletá-las em lote.
+     */
+    @SuppressWarnings("unchecked")
+    public java.util.List<Map<String, Object>> fetchInstances() {
+        try {
+            Object resp = executar("GET", "/instance/fetchInstances", apiKeyGlobal(), null, Object.class);
+            if (resp instanceof java.util.List<?> l) {
+                java.util.List<Map<String, Object>> out = new java.util.ArrayList<>();
+                for (Object o : l) {
+                    if (o instanceof Map<?, ?> m) out.add((Map<String, Object>) m);
+                }
+                return out;
+            }
+            return java.util.Collections.emptyList();
+        } catch (RuntimeException e) {
+            log.warn("[Evolution] fetchInstances falhou: {}", e.getMessage());
+            return java.util.Collections.emptyList();
+        }
+    }
+
+    /**
      * Envia mensagem de texto. Number aceita formatos "55119...", "55119...@s.whatsapp.net"
      * (Evolution normaliza). Usa o token da instância (não a chave global).
      *

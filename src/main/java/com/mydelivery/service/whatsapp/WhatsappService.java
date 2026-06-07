@@ -364,9 +364,35 @@ public class WhatsappService {
      */
     @Transactional
     public void resetar(Restaurante restaurante) {
+        // RESET TOTAL: além da instância "atual" no banco, varremos a Evolution
+        // procurando TODAS as instâncias com prefix "mydelivery-rest-{id}-" e
+        // deletamos todas. Isso é necessário porque o bug bf61fcf (corrigido em
+        // f29d49e) chegou a criar várias instâncias órfãs na Evolution
+        // (...-1780788448, ...-1780788461, ...-1780788465 nos logs). O reset
+        // antigo só deletava a "atual" no banco, as órfãs ficavam respondendo
+        // ao /connect com {"count":0} e o QR nunca chegava.
+        String prefix = "mydelivery-rest-" + restaurante.getId();
+        try {
+            java.util.List<Map<String, Object>> todas = evolutionClient.fetchInstances();
+            for (Map<String, Object> ev : todas) {
+                Object nObj = ev.get("name");
+                if (nObj == null) nObj = ev.get("instanceName");
+                String n = nObj == null ? null : nObj.toString();
+                if (n != null && (n.equals(prefix) || n.startsWith(prefix + "-"))) {
+                    try { evolutionClient.logout(n); } catch (RuntimeException ignore) {}
+                    try { evolutionClient.deletar(n); }
+                    catch (RuntimeException e) { log.warn("[WhatsApp] delete órfã {} falhou: {}", n, e.getMessage()); }
+                    log.info("[WhatsApp] Órfã removida da Evolution: {}", n);
+                }
+            }
+        } catch (RuntimeException e) {
+            log.warn("[WhatsApp] varredura de órfãs falhou (ok): {}", e.getMessage());
+        }
         repo.findByRestauranteId(restaurante.getId()).ifPresent(inst -> {
             String nome = inst.getInstanceName();
             Long instId = inst.getId();
+            // Tenta de novo a "atual" caso a varredura tenha perdido (fetchInstances pode
+            // não listar instâncias em estado intermediário).
             try { evolutionClient.logout(nome); } catch (RuntimeException e) {
                 log.warn("[WhatsApp] logout falhou no reset (ok): {}", e.getMessage());
             }

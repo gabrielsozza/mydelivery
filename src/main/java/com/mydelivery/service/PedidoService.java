@@ -161,7 +161,34 @@ public class PedidoService {
         String enderecoStr = null;
         if (request.getEndereco() != null && !request.getEndereco().isEmpty()) {
             if ("delivery".equalsIgnoreCase(request.getModo())) {
-                enderecoStr = request.getEndereco().getOrDefault("rua", "") + ", " + request.getEndereco().getOrDefault("numero", "") + " - " + request.getEndereco().getOrDefault("bairro", "");
+                // Monta endereço incluindo COMPLEMENTO (Ap, bloco, casa) e REFERÊNCIA
+                // (próximo a tal coisa) que o cliente preenche. Bug anterior:
+                // só rua/numero/bairro eram concatenados — entregador não enxergava
+                // complemento na comanda e errava entrega.
+                String rua  = request.getEndereco().getOrDefault("rua", "");
+                String num  = request.getEndereco().getOrDefault("numero", "");
+                String comp = request.getEndereco().getOrDefault("complemento", "");
+                String bai  = request.getEndereco().getOrDefault("bairro", "");
+                String ref  = request.getEndereco().getOrDefault("referencia", "");
+                StringBuilder sb = new StringBuilder();
+                if (rua != null && !rua.isBlank()) sb.append(rua);
+                if (num != null && !num.isBlank()) {
+                    if (sb.length() > 0) sb.append(", ");
+                    sb.append(num);
+                }
+                if (comp != null && !comp.isBlank()) {
+                    if (sb.length() > 0) sb.append(" - ");
+                    sb.append(comp);
+                }
+                if (bai != null && !bai.isBlank()) {
+                    if (sb.length() > 0) sb.append(" - ");
+                    sb.append(bai);
+                }
+                if (ref != null && !ref.isBlank()) {
+                    if (sb.length() > 0) sb.append(" (Ref: ").append(ref).append(")");
+                    else sb.append("Ref: ").append(ref);
+                }
+                enderecoStr = sb.toString();
             } else if ("mesa".equalsIgnoreCase(request.getModo())) {
                 // Mesa real (mesa != null) → usa nome cadastrado. Senão fallback no que veio.
                 enderecoStr = (mesa != null ? mesa.getNome() : ("Mesa " + request.getEndereco().getOrDefault("mesa", "")))

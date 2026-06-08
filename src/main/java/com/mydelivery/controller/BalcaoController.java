@@ -138,15 +138,15 @@ public class BalcaoController {
      * Endpoint PÚBLICO pro painel de chamada na TV do balcão. Sem auth porque
      * TV não tem teclado.
      *
-     * <p>Mostra <b>todos os pedidos ativos do dia</b> em que o cliente
-     * está/vem ao salão:
+     * <p>Mostra pedidos do dia onde o cliente está esperando ser CHAMADO
+     * pra retirar:
      * <ul>
-     *   <li>BALCAO (com senha numerica)
-     *   <li>RETIRADA (cliente vem buscar)
-     *   <li>MESA (cliente esta no salao — util pra cozinha sinalizar
-     *       visualmente que o pedido ficou pronto)
+     *   <li>BALCAO (com senha numerica) — cliente pegou senha, espera
+     *   <li>RETIRADA (cliente fez pedido pra buscar, espera ficar pronto)
      * </ul>
-     * DELIVERY fica de fora — cliente nao esta no salao pra ver.
+     * <b>MESA fica de fora</b> — cliente esta sentado, garcom leva direto.
+     * Mostrar pedido de mesa na TV nao serve a ninguem. <b>DELIVERY</b>
+     * idem — cliente nao esta no salao.
      *
      * <p>Status filtrados (excluidos): ENTREGUE, CANCELADO,
      * SAIU_ENTREGA (delivery), AGUARDANDO_PAGAMENTO. Os demais
@@ -174,9 +174,10 @@ public class BalcaoController {
         java.util.List<Map<String, Object>> prontos = new java.util.ArrayList<>();
         java.util.List<Map<String, Object>> preparando = new java.util.ArrayList<>();
         for (Pedido p : pedidosHoje) {
-            // Filtra tipo: balcao, retirada, mesa.
+            // So BALCAO + RETIRADA aparecem na TV. MESA = garcom leva.
+            // DELIVERY = cliente nao esta no salao.
             Pedido.Tipo tp = p.getTipo();
-            if (tp == null || tp == Pedido.Tipo.DELIVERY) continue;
+            if (tp != Pedido.Tipo.BALCAO && tp != Pedido.Tipo.RETIRADA) continue;
             // Filtra status final: entregue, cancelado, saiu pra entrega,
             // aguardando pagamento online — nada disso aparece na TV.
             Pedido.Status st = p.getStatus();
@@ -186,25 +187,15 @@ public class BalcaoController {
                 || st == Pedido.Status.AGUARDANDO_PAGAMENTO) continue;
 
             Map<String, Object> m = new java.util.LinkedHashMap<>();
-            // Identificador: senha numerica > "Mesa X" > nome cliente.
+            // Identificador: senha numerica (BALCAO) > nome cliente (RETIRADA).
             var senha = porPedidoId.get(p.getId());
             if (senha != null) {
                 m.put("senha", senha.getNumero());
                 m.put("nome", senha.getNomeCliente());
-            } else if (tp == Pedido.Tipo.MESA && p.getMesa() != null) {
-                m.put("senha", null);
-                String nomeMesa = p.getMesa().getNome() != null
-                        ? p.getMesa().getNome()
-                        : "Mesa " + p.getMesa().getId();
-                String quem = p.getNomeClienteMesa();
-                m.put("nome", (quem != null && !quem.isBlank())
-                        ? nomeMesa + " · " + quem
-                        : nomeMesa);
             } else {
+                // RETIRADA (ou BALCAO antigo sem senha) — usa nome do
+                // cliente cadastrado ou nomeChamada (fallback do toResponse).
                 m.put("senha", null);
-                // RETIRADA sem senha — usa nome do cliente cadastrado ou
-                // nomeChamada (fallback do toResponse ja cobriu isso pra
-                // outros lugares mas aqui o acesso e direto).
                 String nome = p.getCliente() != null ? p.getCliente().getNome() : null;
                 if (nome == null || nome.isBlank()) nome = p.getNomeChamada();
                 if (nome == null || nome.isBlank()) nome = "Pedido #" + p.getId();
@@ -212,7 +203,8 @@ public class BalcaoController {
             }
             m.put("status", st.name());
 
-            if (st == Pedido.Status.PRONTO || st == Pedido.Status.NA_MESA) {
+            // PRONTO = chamar. NA_MESA nao se aplica (mesa nao entra na TV).
+            if (st == Pedido.Status.PRONTO) {
                 prontos.add(m);
             } else {
                 preparando.add(m);

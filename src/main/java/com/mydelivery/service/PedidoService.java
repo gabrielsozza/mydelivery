@@ -602,10 +602,18 @@ public class PedidoService {
                 .mesaNome(p.getMesa() != null ? p.getMesa().getNome() : null)
                 .mesaSlug(p.getMesa() != null ? p.getMesa().getSlug() : null)
                 .nomeClienteMesa(p.getNomeClienteMesa())
-                // Pra pedidos de mesa o cliente real fica em nomeClienteMesa — devolve
-                // ele também em nomeCliente pra UIs antigas mostrarem algo coerente.
-                .nomeCliente(p.getCliente() != null ? p.getCliente().getNome()
-                            : p.getNomeClienteMesa())
+                // Devolve um nomeCliente "util" pra UI mesmo quando nao ha Cliente
+                // vinculado no banco. Ordem de fallback:
+                //   1. Cliente cadastrado (delivery via cardapio publico)
+                //   2. nomeClienteMesa (cliente digitou na mesa via QR)
+                //   3. nomeChamada (balcao — dono digitou na hora da venda)
+                // Antes ignorava (3) e card aparecia generico "Cliente".
+                .nomeCliente(
+                    p.getCliente() != null ? p.getCliente().getNome()
+                    : p.getNomeClienteMesa() != null && !p.getNomeClienteMesa().isBlank()
+                            ? p.getNomeClienteMesa()
+                    : p.getNomeChamada()
+                )
                 .itens(itens).build();
     }
 

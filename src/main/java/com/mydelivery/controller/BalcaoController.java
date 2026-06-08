@@ -141,7 +141,6 @@ public class BalcaoController {
      */
     @GetMapping("/public/painel-chamada/{slugRestaurante}")
     @org.springframework.transaction.annotation.Transactional(readOnly = true)
-    @org.springframework.cache.annotation.Cacheable(value = "painel-chamada", key = "#slugRestaurante")
     public ResponseEntity<Map<String, Object>> painelChamada(@PathVariable String slugRestaurante) {
         Restaurante r = restauranteRepo.findBySlug(slugRestaurante)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));

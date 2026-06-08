@@ -231,15 +231,33 @@ public class PedidoService {
                     .orElseThrow(() -> new RuntimeException("Produto nao encontrado: " + itemReq.getProdutoId()));
             // Preço base do produto (do banco). É o piso — cliente nunca paga menos.
             BigDecimal precoUnit = produto.getPreco();
-            // Se o frontend mandou um preço MAIOR que o base, é porque o cliente
-            // selecionou complementos pagos (ex.: Açaí R$ 27 + Frozen R$ 3 = R$ 30).
-            // Sem isso, o complemento "some" do total — bug crítico de cobrança.
-            // Sanity check: aceita só se for maior que o base (anti-fraude) e
-            // dentro de um teto razoável (10× o base) pra cortar valores absurdos.
+
+            // ── BLINDAGEM DE COBRANÇA DE COMPLEMENTOS ──
+            // Duas camadas, independentes (cinto + suspensório):
+            //
+            //  1. PRIMÁRIA: se o frontend mandou `preco` MAIOR que o base, é
+            //     porque já somou o complemento no cliente (ex.: Açaí R$ 27 +
+            //     Frozen R$ 3 = R$ 30). Usa esse valor.
+            //
+            //  2. FALLBACK: se o frontend NÃO mandou preço (versão antiga do
+            //     HTML cacheada no browser do cliente, ou Netlify atrasado),
+            //     extrai os valores dos complementos pagos da própria obs.
+            //     A obs vem no formato "+ Leite em pó, Granola, Frozen (R$ 3,00)".
+            //     Regex captura todos os "(R$ X,XX)" e soma.
+            //
+            //  Sanity check anti-fraude: nunca aceita preço menor que o base,
+            //  nunca aceita complemento > 10× o base (cliente malicioso).
+            BigDecimal limiteMax = precoUnit.multiply(BigDecimal.valueOf(10));
             if (itemReq.getPreco() != null
                     && itemReq.getPreco().compareTo(precoUnit) > 0
-                    && itemReq.getPreco().compareTo(precoUnit.multiply(BigDecimal.valueOf(10))) <= 0) {
+                    && itemReq.getPreco().compareTo(limiteMax) <= 0) {
                 precoUnit = itemReq.getPreco();
+            } else {
+                BigDecimal extras = extrairValorComplementosDaObs(itemReq.getObs());
+                if (extras.compareTo(BigDecimal.ZERO) > 0) {
+                    BigDecimal somado = precoUnit.add(extras);
+                    if (somado.compareTo(limiteMax) <= 0) precoUnit = somado;
+                }
             }
             BigDecimal itemSub = precoUnit.multiply(BigDecimal.valueOf(itemReq.getQty()));
             PedidoItem item = new PedidoItem();
@@ -654,5 +672,38 @@ public class PedidoService {
         return Normalizer.normalize(s, Normalizer.Form.NFD)
                 .replaceAll("\\p{InCombiningDiacriticalMarks}+", "")
                 .toLowerCase().trim();
+    }
+
+    /**
+     * Fallback de cobrança de complementos: extrai a soma dos valores
+     * em parênteses da observação do item.
+     *
+     * O frontend monta a obs no formato:
+     *   "+ Leite em pó, Granola, Frozen (R$ 3,00)"
+     *   "+ Bacon ×3 (R$ 6,00), Queijo extra (R$ 4,00)"
+     *
+     * Esta função casa todos os "(R$ X,XX)" / "(R$ X.XX)" e soma. Usada só
+     * quando o frontend NAO envia o `preco` somado (browser cacheado/antigo)
+     * — assim mesmo com cliente atrasado, o pedido sai com o total certo.
+     *
+     * Retorna ZERO se a obs for null/vazia ou se nao houver match.
+     */
+    private static final java.util.regex.Pattern COMPLEMENTO_PRECO_RX =
+            java.util.regex.Pattern.compile("\\(\\s*R\\$\\s*([0-9]+(?:[.,][0-9]{1,2})?)\\s*\\)");
+
+    private static BigDecimal extrairValorComplementosDaObs(String obs) {
+        if (obs == null || obs.isBlank()) return BigDecimal.ZERO;
+        java.util.regex.Matcher m = COMPLEMENTO_PRECO_RX.matcher(obs);
+        BigDecimal soma = BigDecimal.ZERO;
+        while (m.find()) {
+            try {
+                // Normaliza decimal pt-BR ("3,00") pra formato Java ("3.00")
+                String num = m.group(1).replace(",", ".");
+                soma = soma.add(new BigDecimal(num));
+            } catch (NumberFormatException ignore) {
+                // Ignora valor malformado — não trava o pedido por isso
+            }
+        }
+        return soma;
     }
 }

@@ -115,6 +115,10 @@ public class GarcomController {
 
     @GetMapping("/api/garcom/mesa/{slug}")
     @PreAuthorize("hasRole('GARCOM')")
+    @org.springframework.transaction.annotation.Transactional(readOnly = true)
+    // @Transactional necessario porque resumirPedido() abaixo acessa
+    // p.getItens() que e' uma colecao LAZY do JPA. Sem isso, a sessao
+    // ja' fechou e estoura LazyInitializationException -> HTTP 400.
     public ResponseEntity<Map<String, Object>> detalheMesa(@AuthenticationPrincipal String subject,
                                                             @PathVariable String slug) {
         Ctx ctx = parseSubject(subject);

@@ -602,6 +602,7 @@ public class PedidoService {
                 .mesaNome(p.getMesa() != null ? p.getMesa().getNome() : null)
                 .mesaSlug(p.getMesa() != null ? p.getMesa().getSlug() : null)
                 .nomeClienteMesa(p.getNomeClienteMesa())
+                .nomeChamada(p.getNomeChamada())
                 // Devolve um nomeCliente "util" pra UI mesmo quando nao ha Cliente
                 // vinculado no banco. Ordem de fallback:
                 //   1. Cliente cadastrado (delivery via cardapio publico)

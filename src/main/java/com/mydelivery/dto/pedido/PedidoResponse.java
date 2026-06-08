@@ -37,6 +37,10 @@ public class PedidoResponse {
     private String mesaNome;
     private String mesaSlug;
     private String nomeClienteMesa;
+    /** Nome digitado no balcao (POS). Distinto de nomeClienteMesa (QR mesa)
+     *  e da entidade Cliente. nomeCliente ja faz fallback pra ele, mas
+     *  expor explicito ajuda telas que querem distinguir origem. */
+    private String nomeChamada;
     private List<ItemPedidoResponse> itens;
 
     @Data @Builder

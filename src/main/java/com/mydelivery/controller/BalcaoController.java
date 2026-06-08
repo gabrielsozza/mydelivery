@@ -136,8 +136,21 @@ public class BalcaoController {
 
     /**
      * Endpoint PÚBLICO pro painel de chamada na TV do balcão. Sem auth porque
-     * TV não tem teclado. Devolve apenas senhas com status PRONTO ou EM_PREPARO
-     * do dia atual — não vaza dados sensíveis (nome de cliente é pseudonimo).
+     * TV não tem teclado.
+     *
+     * <p>Mostra <b>todos os pedidos ativos do dia</b> em que o cliente
+     * está/vem ao salão:
+     * <ul>
+     *   <li>BALCAO (com senha numerica)
+     *   <li>RETIRADA (cliente vem buscar)
+     *   <li>MESA (cliente esta no salao — util pra cozinha sinalizar
+     *       visualmente que o pedido ficou pronto)
+     * </ul>
+     * DELIVERY fica de fora — cliente nao esta no salao pra ver.
+     *
+     * <p>Status filtrados (excluidos): ENTREGUE, CANCELADO,
+     * SAIU_ENTREGA (delivery), AGUARDANDO_PAGAMENTO. Os demais
+     * (PENDENTE, CONFIRMADO, EM_PREPARO, PRONTO, NA_MESA) aparecem.
      */
     @GetMapping("/public/painel-chamada/{slugRestaurante}")
     @org.springframework.transaction.annotation.Transactional(readOnly = true)
@@ -145,24 +158,67 @@ public class BalcaoController {
         Restaurante r = restauranteRepo.findBySlug(slugRestaurante)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
         var hoje = java.time.LocalDate.now();
+
+        // 1. Indexa as senhas do dia por pedidoId — usado pra mostrar #42 em
+        //    pedidos BALCAO + dedup (nao mostra o mesmo pedido 2x se ja
+        //    estiver na lista de senhas).
         var senhas = senhaRepo.findByRestauranteIdAndDataEmissaoOrderByNumeroAsc(r.getId(), hoje);
+        java.util.Map<Long, com.mydelivery.model.SenhaBalcao> porPedidoId = new java.util.HashMap<>();
+        for (var s : senhas) porPedidoId.put(s.getPedidoId(), s);
+
+        // 2. Pedidos do dia (BALCAO/RETIRADA/MESA) ativos. DELIVERY fora.
+        var inicio = hoje.atStartOfDay();
+        var fim = hoje.plusDays(1).atStartOfDay();
+        var pedidosHoje = pedidoRepo.findByRestauranteIdAndPeriodo(r.getId(), inicio, fim);
+
         java.util.List<Map<String, Object>> prontos = new java.util.ArrayList<>();
         java.util.List<Map<String, Object>> preparando = new java.util.ArrayList<>();
-        for (var s : senhas) {
-            Pedido p = pedidoRepo.findById(s.getPedidoId()).orElse(null);
-            if (p == null) continue;
-            if (p.getStatus() == Pedido.Status.ENTREGUE || p.getStatus() == Pedido.Status.CANCELADO) continue;
+        for (Pedido p : pedidosHoje) {
+            // Filtra tipo: balcao, retirada, mesa.
+            Pedido.Tipo tp = p.getTipo();
+            if (tp == null || tp == Pedido.Tipo.DELIVERY) continue;
+            // Filtra status final: entregue, cancelado, saiu pra entrega,
+            // aguardando pagamento online — nada disso aparece na TV.
+            Pedido.Status st = p.getStatus();
+            if (st == Pedido.Status.ENTREGUE
+                || st == Pedido.Status.CANCELADO
+                || st == Pedido.Status.SAIU_ENTREGA
+                || st == Pedido.Status.AGUARDANDO_PAGAMENTO) continue;
+
             Map<String, Object> m = new java.util.LinkedHashMap<>();
-            m.put("senha", s.getNumero());
-            m.put("nome", s.getNomeCliente());
-            m.put("status", p.getStatus().name());
-            // Sem itens, total, etc — TV não precisa
-            if (p.getStatus() == Pedido.Status.PRONTO || p.getStatus() == Pedido.Status.NA_MESA) {
+            // Identificador: senha numerica > "Mesa X" > nome cliente.
+            var senha = porPedidoId.get(p.getId());
+            if (senha != null) {
+                m.put("senha", senha.getNumero());
+                m.put("nome", senha.getNomeCliente());
+            } else if (tp == Pedido.Tipo.MESA && p.getMesa() != null) {
+                m.put("senha", null);
+                String nomeMesa = p.getMesa().getNome() != null
+                        ? p.getMesa().getNome()
+                        : "Mesa " + p.getMesa().getId();
+                String quem = p.getNomeClienteMesa();
+                m.put("nome", (quem != null && !quem.isBlank())
+                        ? nomeMesa + " · " + quem
+                        : nomeMesa);
+            } else {
+                m.put("senha", null);
+                // RETIRADA sem senha — usa nome do cliente cadastrado ou
+                // nomeChamada (fallback do toResponse ja cobriu isso pra
+                // outros lugares mas aqui o acesso e direto).
+                String nome = p.getCliente() != null ? p.getCliente().getNome() : null;
+                if (nome == null || nome.isBlank()) nome = p.getNomeChamada();
+                if (nome == null || nome.isBlank()) nome = "Pedido #" + p.getId();
+                m.put("nome", nome);
+            }
+            m.put("status", st.name());
+
+            if (st == Pedido.Status.PRONTO || st == Pedido.Status.NA_MESA) {
                 prontos.add(m);
             } else {
                 preparando.add(m);
             }
         }
+
         Map<String, Object> out = new java.util.LinkedHashMap<>();
         out.put("restaurante", r.getNome());
         out.put("prontos", prontos);

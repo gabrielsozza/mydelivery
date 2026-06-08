@@ -229,7 +229,18 @@ public class PedidoService {
         for (NovoPedidoRequest.ItemDto itemReq : request.getItens()) {
             Produto produto = produtoRepository.findById(itemReq.getProdutoId())
                     .orElseThrow(() -> new RuntimeException("Produto nao encontrado: " + itemReq.getProdutoId()));
+            // Preço base do produto (do banco). É o piso — cliente nunca paga menos.
             BigDecimal precoUnit = produto.getPreco();
+            // Se o frontend mandou um preço MAIOR que o base, é porque o cliente
+            // selecionou complementos pagos (ex.: Açaí R$ 27 + Frozen R$ 3 = R$ 30).
+            // Sem isso, o complemento "some" do total — bug crítico de cobrança.
+            // Sanity check: aceita só se for maior que o base (anti-fraude) e
+            // dentro de um teto razoável (10× o base) pra cortar valores absurdos.
+            if (itemReq.getPreco() != null
+                    && itemReq.getPreco().compareTo(precoUnit) > 0
+                    && itemReq.getPreco().compareTo(precoUnit.multiply(BigDecimal.valueOf(10))) <= 0) {
+                precoUnit = itemReq.getPreco();
+            }
             BigDecimal itemSub = precoUnit.multiply(BigDecimal.valueOf(itemReq.getQty()));
             PedidoItem item = new PedidoItem();
             item.setPedido(pedido);

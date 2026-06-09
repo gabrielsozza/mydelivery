@@ -14,10 +14,12 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.mydelivery.model.Mesa;
 import com.mydelivery.model.MesaSessao;
+import com.mydelivery.model.Pedido;
 import com.mydelivery.model.Restaurante;
 import com.mydelivery.model.UsuarioGarcom;
 import com.mydelivery.repository.MesaRepository;
 import com.mydelivery.repository.MesaSessaoRepository;
+import com.mydelivery.repository.PedidoRepository;
 import com.mydelivery.repository.RestauranteRepository;
 import com.mydelivery.repository.UsuarioGarcomRepository;
 
@@ -43,6 +45,7 @@ public class GarcomService {
     private final MesaRepository mesaRepo;
     private final MesaSessaoRepository sessaoRepo;
     private final UsuarioGarcomRepository garcomRepo;
+    private final PedidoRepository pedidoRepo;
     private final BCryptPasswordEncoder encoder = new BCryptPasswordEncoder();
 
     // ─── LOGIN POR PIN ────────────────────────────────────────────────────
@@ -212,13 +215,70 @@ public class GarcomService {
 
     @Transactional
     public MesaSessao fecharSessao(Long sessaoId, Long garcomId) {
+        return fecharSessao(sessaoId, garcomId, null);
+    }
+
+    /**
+     * Fecha a sessão registrando opcionalmente o payload de pagamentos
+     * (divisão por pessoa + forma de pagamento).
+     *
+     * Também marca TODOS os pedidos não-cancelados da sessão como:
+     *   - pago = true
+     *   - status = ENTREGUE
+     *
+     * Sem isso, os pedidos ficavam abertos eternamente nos relatórios
+     * mesmo depois do garçom fechar — bug real.
+     *
+     * Operação é idempotente: chamar 2x na mesma sessão fechada não causa
+     * nada (apenas retorna a sessão como está).
+     *
+     * @param payload mapa com chaves opcionais "valorTotal", "comServico",
+     *                "divisao": [{pessoa,total,formaPagamento}]. Pode ser null
+     *                (mantém retrocompatibilidade com fluxo antigo).
+     */
+    @Transactional
+    public MesaSessao fecharSessao(Long sessaoId, Long garcomId, Map<String, Object> payload) {
         var s = sessaoRepo.findById(sessaoId)
                 .orElseThrow(() -> new RuntimeException("Sessão não encontrada"));
         if (s.getFechamentoEm() != null) return s; // idempotente
+
+        // Marca todos os pedidos da sessão como pagos + entregues.
+        // Sem isso, o restaurante vê os pedidos "abertos" mesmo após fechar.
+        try {
+            var pedidos = pedidoRepo.findBySessaoIdOrderByCriadoEmAsc(sessaoId);
+            for (var p : pedidos) {
+                if (p.getStatus() == Pedido.Status.CANCELADO) continue;
+                p.setPago(true);
+                if (p.getStatus() != Pedido.Status.ENTREGUE) {
+                    p.setStatus(Pedido.Status.ENTREGUE);
+                }
+            }
+            if (!pedidos.isEmpty()) pedidoRepo.saveAll(pedidos);
+        } catch (Exception e) {
+            // Não deixa falha de marcação derrubar o fechamento — loga e segue.
+            log.warn("[Garçom] Falha ao marcar pedidos pagos na sessão {}: {}", sessaoId, e.getMessage());
+        }
+
+        // Persiste payload de pagamentos (se vier)
+        if (payload != null && !payload.isEmpty()) {
+            try {
+                String json = new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(payload);
+                s.setPagamentosJson(json);
+            } catch (Exception e) {
+                log.warn("[Garçom] Falha ao serializar pagamentos: {}", e.getMessage());
+            }
+            Object v = payload.get("valorTotal");
+            if (v != null) {
+                try { s.setValorCobrado(new BigDecimal(v.toString())); }
+                catch (Exception ignore) { /* valor mal formado, ignora */ }
+            }
+        }
+
         s.setStatus(MesaSessao.Status.FECHADA);
         s.setFechamentoEm(LocalDateTime.now());
         s.setUltimaInteracaoEm(LocalDateTime.now());
-        log.info("[Garçom] Fechando sessão {} (garçom={})", sessaoId, garcomId);
+        log.info("[Garçom] Fechando sessão {} (garçom={}, divisao={})",
+                sessaoId, garcomId, payload != null && payload.get("divisao") != null);
         return sessaoRepo.save(s);
     }
 

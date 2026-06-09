@@ -110,6 +110,25 @@ public class MesaSessao {
     @Column(columnDefinition = "TEXT")
     private String observacoes;
 
+    /**
+     * JSON do payload de fechamento — populado quando o garçom fecha a conta
+     * pelo modal novo. Estrutura típica:
+     *   { "comServico": true,
+     *     "valorTotal": 105.50,
+     *     "divisao": [
+     *       { "pessoa": 1, "total": 52.75, "formaPagamento": "PIX" },
+     *       { "pessoa": 2, "total": 52.75, "formaPagamento": "CARTAO_CREDITO" }
+     *     ] }
+     * Null = sessão fechada pelo fluxo antigo (sem divisão registrada).
+     */
+    @Column(name = "pagamentos_json", columnDefinition = "TEXT")
+    private String pagamentosJson;
+
+    /** Total efetivamente cobrado no fechamento (com ou sem 10% de serviço).
+     *  Distinto de totalAcumulado, que soma apenas subtotais brutos dos pedidos. */
+    @Column(name = "valor_cobrado", precision = 10, scale = 2)
+    private BigDecimal valorCobrado;
+
     public enum Status {
         /** Acabou de abrir, sem pedidos ainda. */
         ABERTA,

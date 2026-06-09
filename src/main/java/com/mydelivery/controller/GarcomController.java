@@ -345,13 +345,17 @@ public class GarcomController {
     @PreAuthorize("hasRole('GARCOM')")
     public ResponseEntity<Map<String, Object>> fecharMesa(
             @AuthenticationPrincipal String subject,
-            @PathVariable String slug) {
+            @PathVariable String slug,
+            // Body opcional: { valorTotal, comServico, divisao:[{pessoa,total,formaPagamento}] }
+            // Quando vem, é registrado no MesaSessao.pagamentosJson pra histórico.
+            // Quando NÃO vem, fechamento "simples" (compat com fluxo antigo).
+            @RequestBody(required = false) Map<String, Object> body) {
         Ctx ctx = parseSubject(subject);
         var sessaoOpt = garcomService.sessaoDaMesa(ctx.restauranteId, slug);
         if (sessaoOpt.isEmpty()) {
             return ResponseEntity.ok(Map.of("ok", true, "mensagem", "mesa já estava livre"));
         }
-        var fechada = garcomService.fecharSessao(sessaoOpt.get().getId(), ctx.garcomId);
+        var fechada = garcomService.fecharSessao(sessaoOpt.get().getId(), ctx.garcomId, body);
         return ResponseEntity.ok(Map.of("ok", true, "status", fechada.getStatus().name()));
     }
 

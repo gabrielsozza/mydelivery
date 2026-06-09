@@ -43,6 +43,21 @@ public class PedidoResponse {
     private String nomeChamada;
     private List<ItemPedidoResponse> itens;
 
+    /**
+     * Divisão de pagamentos por pessoa (preenchido quando a sessão da mesa
+     * foi fechada com "Dividir conta"). Vazio/null = pagamento único —
+     * neste caso a informação está em {@link #formaPagamento}.
+     */
+    private List<DivisaoPagamentoResponse> divisaoPagamentos;
+
+    /** True se a sessão da mesa incluiu 10% de serviço no fechamento. */
+    private Boolean incluiuServico;
+
+    /** Valor total efetivamente cobrado na sessão da mesa (com ou sem
+     *  10% de serviço). Distinto de {@link #total} do pedido — pode ser
+     *  maior se houver mais de um pedido na mesa. */
+    private BigDecimal valorCobradoSessao;
+
     @Data @Builder
     public static class ItemPedidoResponse {
         private Long id;
@@ -51,5 +66,16 @@ public class PedidoResponse {
         private BigDecimal precoUnitario;
         private BigDecimal subtotal;
         private String observacao;
+    }
+
+    @Data @Builder
+    public static class DivisaoPagamentoResponse {
+        /** 1..N. Pessoa 1 = primeira pessoa, etc. */
+        private Integer pessoa;
+        /** Valor que essa pessoa pagou (já inclui parte do 10% se houver). */
+        private BigDecimal total;
+        /** Forma de pagamento. Valores: DINHEIRO, PIX, CARTAO_CREDITO,
+         *  CARTAO_DEBITO, CARTAO_MAQUININHA. */
+        private String formaPagamento;
     }
 }

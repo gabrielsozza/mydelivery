@@ -40,6 +40,7 @@ public class PedidoService {
     private final ConfiguracaoRestauranteRepository configuracaoRepository;
     private final EntregadorRepository entregadorRepository;
     private final MesaRepository mesaRepository;
+    private final com.mydelivery.repository.MesaSessaoRepository mesaSessaoRepository;
     private final CarrinhoAbandonadoService carrinhoAbandonadoService;
     private final CupomService cupomService;
     private final FidelidadeService fidelidadeService;
@@ -644,7 +645,77 @@ public class PedidoService {
                             ? p.getNomeClienteMesa()
                     : p.getNomeChamada()
                 )
+                .divisaoPagamentos(extrairDivisaoDaSessao(p.getSessaoId()))
+                .incluiuServico(extrairServicoDaSessao(p.getSessaoId()))
+                .valorCobradoSessao(extrairValorCobradoDaSessao(p.getSessaoId()))
                 .itens(itens).build();
+    }
+
+    /** Cache leve do JSON parseado por sessaoId — evita re-parsear em
+     *  cada chamada do getter quando o mesmo pedido tem múltiplos campos
+     *  vindos da mesma sessão. */
+    private final java.util.Map<Long, java.util.Map<String, Object>> _sessaoPayloadCache =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    private java.util.Map<String, Object> carregarPayloadSessao(Long sessaoId) {
+        if (sessaoId == null) return null;
+        return _sessaoPayloadCache.computeIfAbsent(sessaoId, id -> {
+            try {
+                var sess = mesaSessaoRepository.findById(id).orElse(null);
+                if (sess == null || sess.getPagamentosJson() == null) return java.util.Map.of();
+                var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+                @SuppressWarnings("unchecked")
+                java.util.Map<String, Object> parsed = mapper.readValue(
+                        sess.getPagamentosJson(), java.util.Map.class);
+                return parsed != null ? parsed : java.util.Map.of();
+            } catch (Exception e) {
+                return java.util.Map.of();
+            }
+        });
+    }
+
+    /** Limpa o cache de payload da sessão. Chamar ao final de operações de
+     *  fechamento/edição. Como o service é singleton e o cache nunca cresce
+     *  além do número de sessões ativas no dia, em prática não precisa GC. */
+    public void limparCachePayloadSessao() { _sessaoPayloadCache.clear(); }
+
+    private List<PedidoResponse.DivisaoPagamentoResponse> extrairDivisaoDaSessao(Long sessaoId) {
+        var payload = carregarPayloadSessao(sessaoId);
+        if (payload == null || payload.isEmpty()) return null;
+        Object divisaoObj = payload.get("divisao");
+        if (!(divisaoObj instanceof java.util.List<?> divisaoList) || divisaoList.isEmpty()) return null;
+        List<PedidoResponse.DivisaoPagamentoResponse> out = new java.util.ArrayList<>();
+        for (Object item : divisaoList) {
+            if (!(item instanceof java.util.Map<?, ?> m)) continue;
+            try {
+                Object pessoa = m.get("pessoa");
+                Object total = m.get("total");
+                Object forma = m.get("formaPagamento");
+                out.add(PedidoResponse.DivisaoPagamentoResponse.builder()
+                        .pessoa(pessoa == null ? null : Integer.valueOf(pessoa.toString()))
+                        .total(total == null ? null : new java.math.BigDecimal(total.toString()))
+                        .formaPagamento(forma == null ? null : forma.toString())
+                        .build());
+            } catch (Exception ignore) { /* item malformado, pula */ }
+        }
+        return out.isEmpty() ? null : out;
+    }
+
+    private Boolean extrairServicoDaSessao(Long sessaoId) {
+        var payload = carregarPayloadSessao(sessaoId);
+        if (payload == null || payload.isEmpty()) return null;
+        Object v = payload.get("comServico");
+        if (v instanceof Boolean b) return b;
+        if (v != null) return Boolean.parseBoolean(v.toString());
+        return null;
+    }
+
+    private java.math.BigDecimal extrairValorCobradoDaSessao(Long sessaoId) {
+        if (sessaoId == null) return null;
+        try {
+            var sess = mesaSessaoRepository.findById(sessaoId).orElse(null);
+            return sess == null ? null : sess.getValorCobrado();
+        } catch (Exception e) { return null; }
     }
 
     /**

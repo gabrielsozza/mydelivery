@@ -246,6 +246,20 @@ public class CardapioService {
         produtoRepository.delete(produto);
     }
 
+    /**
+     * Toggle de disponibilidade do produto. Operação leve — só muda o campo
+     * disponivel sem precisar revalidar nome/preco/categoria como o PUT
+     * completo faria. Multi-tenant safe.
+     */
+    @Transactional
+    public ProdutoResponse atualizarDisponibilidade(Long restauranteId, Long produtoId, boolean disponivel) {
+        Produto produto = produtoRepository.findById(produtoId)
+                .orElseThrow(() -> new RuntimeException("Produto não encontrado"));
+        validarPropriedade(produto.getRestaurante().getId(), restauranteId);
+        produto.setDisponivel(disponivel);
+        return toProdutoResponse(produtoRepository.save(produto));
+    }
+
     // ─── Helpers ─────────────────────────────────────────────────────────
 
     private void validarPropriedade(Long dono, Long solicitante) {

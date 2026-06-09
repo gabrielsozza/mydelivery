@@ -176,6 +176,44 @@ public class CardapioController {
         return ResponseEntity.noContent().build();
     }
 
+    /**
+     * Toggle de disponibilidade do produto (sem precisar mandar o ProdutoRequest
+     * inteiro, que exige nome/preco/categoria etc). Caso de uso: o dono
+     * pausa um produto que acabou no estoque, depois reativa.
+     *
+     * Aceita body em duas variacoes pra compat com clientes diferentes:
+     *   { "disponivel": true|false }   ← preferido
+     *   { "ativo":      true|false }   ← alias (frontend antigo)
+     *
+     * Multi-tenant safe — checa que o produto pertence ao restaurante do email.
+     */
+    @PatchMapping("/api/restaurante/{slug}/produtos/{id}/disponivel")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<ProdutoResponse> atualizarDisponibilidade(
+            @PathVariable String slug,
+            @AuthenticationPrincipal String email,
+            @PathVariable Long id,
+            @RequestBody java.util.Map<String, Object> body) {
+        Long restauranteId = getRestauranteId(email);
+        Object v = body.get("disponivel");
+        if (v == null) v = body.get("ativo");
+        boolean disponivel = (v instanceof Boolean b) ? b
+                : v != null && Boolean.parseBoolean(v.toString());
+        return ResponseEntity.ok(cardapioService.atualizarDisponibilidade(restauranteId, id, disponivel));
+    }
+
+    /** Alias /ativo — frontend antigo (cardapio.html) chamava este path.
+     *  Mantemos pra nao quebrar a versao cacheada no browser do dono. */
+    @PatchMapping("/api/restaurante/{slug}/produtos/{id}/ativo")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<ProdutoResponse> atualizarAtivoAlias(
+            @PathVariable String slug,
+            @AuthenticationPrincipal String email,
+            @PathVariable Long id,
+            @RequestBody java.util.Map<String, Object> body) {
+        return atualizarDisponibilidade(slug, email, id, body);
+    }
+
     /** Body: [id1, id2, ...] na nova ordem dos produtos da categoria. Multi-tenant safe. */
     @PutMapping("/api/restaurante/{slug}/categorias/{categoriaId}/produtos/reordenar")
     @PreAuthorize("hasRole('RESTAURANTE')")

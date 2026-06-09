@@ -66,6 +66,7 @@ import lombok.extern.slf4j.Slf4j;
 public class GarcomController {
 
     private final GarcomService garcomService;
+    private final com.mydelivery.service.PedidoService pedidoService;
     private final RestauranteRepository restauranteRepo;
     private final UsuarioGarcomRepository garcomRepo;
     private final PedidoRepository pedidoRepo;
@@ -356,6 +357,10 @@ public class GarcomController {
             return ResponseEntity.ok(Map.of("ok", true, "mensagem", "mesa já estava livre"));
         }
         var fechada = garcomService.fecharSessao(sessaoOpt.get().getId(), ctx.garcomId, body);
+        // Invalida o cache de payload da sessão no PedidoService — assim o
+        // painel do dono vê a divisão de pagamentos imediatamente, sem
+        // precisar reiniciar o serviço.
+        try { pedidoService.limparCachePayloadSessao(); } catch (Exception ignore) {}
         return ResponseEntity.ok(Map.of("ok", true, "status", fechada.getStatus().name()));
     }
 

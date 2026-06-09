@@ -598,19 +598,78 @@ public class PedidoService {
     }
 
     private PedidoResponse toResponse(Pedido p) {
-        // Nome do produto vem do snapshot (i.getNomeProduto). Fallback pra produto.getNome()
-        // só pra pedidos antigos sem snapshot. Se ambos nulos, "Produto removido".
-        List<PedidoResponse.ItemPedidoResponse> itens = p.getItens() == null ? List.of()
-                : p.getItens().stream().map(i -> {
-                    String nome = i.getNomeProduto();
-                    if ((nome == null || nome.isBlank()) && i.getProduto() != null) {
-                        nome = i.getProduto().getNome();
-                    }
-                    if (nome == null) nome = "Produto removido";
-                    return PedidoResponse.ItemPedidoResponse.builder()
-                        .id(i.getId()).nomeProduto(nome).quantidade(i.getQuantidade())
-                        .precoUnitario(i.getPrecoUnitario()).subtotal(i.getSubtotal()).observacao(i.getObservacao()).build();
-                }).toList();
+        // ─────────────────────────────────────────────────────────────────
+        // CORREÇÃO DE COBRANÇA NA EXIBIÇÃO (defesa de última camada).
+        //
+        // Pedidos antigos foram criados quando o backend ainda não somava
+        // os complementos. Ficaram com precoUnitario = preço base do
+        // produto e subtotal = base × qty. A obs traz "(R$ 3,00)" no nome
+        // do complemento, mas o valor não foi somado.
+        //
+        // Em vez de fazer migration no banco (arriscado, irreversível),
+        // ajustamos na hora de devolver o pedido: detectamos a inconsistência
+        // (precoUnitario × qty == subtotal salvo, mas obs tem complemento
+        // pago) e devolvemos os valores corrigidos. O pedido no banco
+        // permanece como está; o painel passa a mostrar o valor correto.
+        //
+        // É idempotente: se o pedido JÁ tem o valor com complemento somado
+        // (precoUnitario > base, ou subtotal já reflete o ajuste),
+        // não faz nada.
+        // ─────────────────────────────────────────────────────────────────
+        BigDecimal subtotalCorrigido = BigDecimal.ZERO;
+        boolean houveAjuste = false;
+
+        List<PedidoResponse.ItemPedidoResponse> itens = new java.util.ArrayList<>();
+        if (p.getItens() != null) {
+            for (var i : p.getItens()) {
+                String nome = i.getNomeProduto();
+                if ((nome == null || nome.isBlank()) && i.getProduto() != null) {
+                    nome = i.getProduto().getNome();
+                }
+                if (nome == null) nome = "Produto removido";
+
+                BigDecimal precoUnit = i.getPrecoUnitario() == null ? BigDecimal.ZERO : i.getPrecoUnitario();
+                int qtd = i.getQuantidade() == null ? 1 : i.getQuantidade();
+                BigDecimal subSalvo = i.getSubtotal() == null ? BigDecimal.ZERO : i.getSubtotal();
+
+                // Extras detectados na obs (regex captura todos "(R$ X,XX)").
+                BigDecimal extras = extrairValorComplementosDaObs(i.getObservacao());
+
+                // Já está somado? Heurística: se subSalvo >= (precoUnit + extras) × qtd,
+                // o preço salvo já inclui o complemento — não ajusta de novo.
+                BigDecimal precoEsperadoComExtras = precoUnit.add(extras);
+                BigDecimal subEsperadoComExtras = precoEsperadoComExtras.multiply(BigDecimal.valueOf(qtd));
+
+                BigDecimal precoFinal = precoUnit;
+                BigDecimal subFinal = subSalvo;
+                if (extras.compareTo(BigDecimal.ZERO) > 0
+                        && subSalvo.compareTo(subEsperadoComExtras) < 0) {
+                    // Subtotal salvo está abaixo do esperado — aplica ajuste.
+                    precoFinal = precoEsperadoComExtras;
+                    subFinal = subEsperadoComExtras;
+                    houveAjuste = true;
+                }
+
+                subtotalCorrigido = subtotalCorrigido.add(subFinal);
+
+                itens.add(PedidoResponse.ItemPedidoResponse.builder()
+                        .id(i.getId()).nomeProduto(nome).quantidade(qtd)
+                        .precoUnitario(precoFinal).subtotal(subFinal).observacao(i.getObservacao()).build());
+            }
+        }
+
+        // Subtotal/total finais — usa o corrigido se houve ajuste, senão o salvo.
+        BigDecimal subtotalOut = houveAjuste ? subtotalCorrigido : p.getSubtotal();
+        BigDecimal totalOut;
+        if (houveAjuste) {
+            // total = subtotal corrigido − desconto + taxa, sem deixar negativo.
+            BigDecimal desconto = p.getDesconto() == null ? BigDecimal.ZERO : p.getDesconto();
+            BigDecimal taxa = p.getTaxaEntrega() == null ? BigDecimal.ZERO : p.getTaxaEntrega();
+            totalOut = subtotalCorrigido.subtract(desconto).max(BigDecimal.ZERO).add(taxa);
+        } else {
+            totalOut = p.getTotal();
+        }
+
         return PedidoResponse.builder().id(p.getId()).status(p.getStatus()).tipo(p.getTipo())
                 .formaPagamento(p.getFormaPagamento())
                 .modoPagamento(p.getModoPagamento())
@@ -619,7 +678,7 @@ public class PedidoService {
                 .nomeCliente(p.getCliente() != null ? p.getCliente().getNome() : null)
                 .telefoneCliente(p.getCliente() != null ? p.getCliente().getTelefone() : null)
                 .enderecoEntrega(p.getEnderecoEntrega()).observacao(p.getObservacao())
-                .subtotal(p.getSubtotal()).taxaEntrega(p.getTaxaEntrega()).total(p.getTotal())
+                .subtotal(subtotalOut).taxaEntrega(p.getTaxaEntrega()).total(totalOut)
                 .criadoEm(p.getCriadoEm())
                 .agendadoPara(p.getAgendadoPara())
                 .restauranteNome(p.getRestaurante() != null ? p.getRestaurante().getNome() : null)

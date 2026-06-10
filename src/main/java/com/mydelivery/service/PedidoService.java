@@ -632,22 +632,41 @@ public class PedidoService {
                 int qtd = i.getQuantidade() == null ? 1 : i.getQuantidade();
                 BigDecimal subSalvo = i.getSubtotal() == null ? BigDecimal.ZERO : i.getSubtotal();
 
-                // Extras detectados na obs (regex captura todos "(R$ X,XX)").
-                BigDecimal extras = extrairValorComplementosDaObs(i.getObservacao());
-
-                // Já está somado? Heurística: se subSalvo >= (precoUnit + extras) × qtd,
-                // o preço salvo já inclui o complemento — não ajusta de novo.
-                BigDecimal precoEsperadoComExtras = precoUnit.add(extras);
-                BigDecimal subEsperadoComExtras = precoEsperadoComExtras.multiply(BigDecimal.valueOf(qtd));
-
                 BigDecimal precoFinal = precoUnit;
                 BigDecimal subFinal = subSalvo;
-                if (extras.compareTo(BigDecimal.ZERO) > 0
-                        && subSalvo.compareTo(subEsperadoComExtras) < 0) {
-                    // Subtotal salvo está abaixo do esperado — aplica ajuste.
-                    precoFinal = precoEsperadoComExtras;
-                    subFinal = subEsperadoComExtras;
-                    houveAjuste = true;
+
+                // ── Heurística para detectar pedidos antigos (cobrados a menos) ──
+                // Compara precoUnitario SALVO com o preço BASE do produto:
+                //   precoUnit > base  → complemento ja foi somado na criacao,
+                //                        nao mexer (caso #179 e #181 atuais)
+                //   precoUnit == base → cobrado SEM complemento. Se a obs traz
+                //                        "(R$ X)", soma agora (pedido antigo
+                //                        corrigido na exibicao)
+                //   produto == null   → produto deletado, sem como comparar,
+                //                        nao mexer
+                //
+                // Isso elimina a duplicacao que existia na versao anterior:
+                // antes a heuristica olhava so subSalvo vs subEsperadoComExtras,
+                // que era SEMPRE verdadeiro quando havia extras na obs
+                // (subSalvo de R\$ 25 < R\$ 28 esperado → adicionava de novo).
+                BigDecimal precoBase = null;
+                try {
+                    if (i.getProduto() != null && i.getProduto().getPreco() != null) {
+                        precoBase = i.getProduto().getPreco();
+                    }
+                } catch (Exception ignore) {
+                    // LazyInitException em algum caso bizarro — deixa null,
+                    // cai no caminho "nao mexer" abaixo
+                }
+
+                if (precoBase != null && precoUnit.compareTo(precoBase) <= 0) {
+                    // precoUnit nao excede a base → cobrado sem complemento.
+                    BigDecimal extras = extrairValorComplementosDaObs(i.getObservacao());
+                    if (extras.compareTo(BigDecimal.ZERO) > 0) {
+                        precoFinal = precoBase.add(extras);
+                        subFinal = precoFinal.multiply(BigDecimal.valueOf(qtd));
+                        houveAjuste = true;
+                    }
                 }
 
                 subtotalCorrigido = subtotalCorrigido.add(subFinal);

@@ -64,8 +64,9 @@ public class ComplementoController {
             @AuthenticationPrincipal String email,
             @PathVariable Long produtoId) {
         Produto p = checkOwner(email, produtoId);
+        // Admin: inclui inativos (precisa ver pra reativar).
         return ResponseEntity.ok(grupoRepo.findByProdutoIdOrderByIdAsc(p.getId())
-                .stream().map(this::serializar).toList());
+                .stream().map(g -> serializar(g, true)).toList());
     }
 
     @PostMapping("/api/produtos/{produtoId}/complementos")
@@ -87,7 +88,7 @@ public class ComplementoController {
         // Adiciona itens ANTES de salvar — cascade.ALL persiste tudo numa só
         adicionarItensA(g, body.get("itens"));
         g = grupoRepo.saveAndFlush(g);
-        return ResponseEntity.status(HttpStatus.CREATED).body(serializar(g));
+        return ResponseEntity.status(HttpStatus.CREATED).body(serializar(g, true));
     }
 
     @PutMapping("/api/complementos/grupos/{grupoId}")
@@ -120,7 +121,7 @@ public class ComplementoController {
             adicionarItensA(g, body.get("itens"));
         }
         g = grupoRepo.saveAndFlush(g);
-        return ResponseEntity.ok(serializar(g));
+        return ResponseEntity.ok(serializar(g, true));
     }
 
     /** Helper: parse o body.itens (List<Map>) e adiciona à coleção do grupo. */
@@ -154,14 +155,94 @@ public class ComplementoController {
         return ResponseEntity.noContent().build();
     }
 
+    /**
+     * Toggle ativar/desativar item de complemento, com propagação automática
+     * para TODOS os itens de mesmo nome no restaurante inteiro.
+     *
+     * Caso de uso: o dono cadastra "Morango" como complemento em "Açaí 300ml"
+     * E em "Açaí 500ml". Quando acaba o morango no estoque, ele desativa em
+     * UM produto e o sistema desativa nos outros automaticamente — assim o
+     * morango some do cardápio do cliente em todos os produtos onde aparece.
+     *
+     * Match case-insensitive por nome (após trim) + filtro pelo restaurante
+     * do email logado. Items de outros restaurantes nunca são afetados.
+     *
+     * Body: { "ativo": true|false, "propagar": true (default) }
+     * Se propagar=false, atualiza só o item especificado.
+     */
+    @org.springframework.web.bind.annotation.PatchMapping("/api/complementos/itens/{itemId}/ativo")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    @Transactional
+    public ResponseEntity<Map<String, Object>> toggleAtivoItem(
+            @AuthenticationPrincipal String email,
+            @PathVariable Long itemId,
+            @RequestBody Map<String, Object> body) {
+        ComplementoItem alvo = itemRepo.findById(itemId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Item não encontrado"));
+        // Multi-tenant guard: item tem que pertencer a um produto do dono.
+        Produto produtoDoAlvo = alvo.getGrupo() != null ? alvo.getGrupo().getProduto() : null;
+        if (produtoDoAlvo == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+        }
+        checkOwner(email, produtoDoAlvo.getId());
+
+        boolean ativo = boolOr(body, "ativo", true);
+        boolean propagar = boolOr(body, "propagar", true);
+
+        int afetados = 0;
+        if (!propagar) {
+            alvo.setAtivo(ativo);
+            itemRepo.save(alvo);
+            afetados = 1;
+        } else {
+            // Busca todos os itens com mesmo nome do mesmo restaurante.
+            Long restauranteId = produtoDoAlvo.getRestaurante().getId();
+            String alvoNomeNorm = normalizarNomeItem(alvo.getNome());
+            // Pra evitar query custosa por nome, fazemos varredura em memória
+            // sobre todos os grupos dos produtos do restaurante. Em volumes
+            // típicos (algumas dezenas de produtos × poucos grupos × poucos
+            // itens), são <500 entidades — performance OK.
+            var produtos = produtoRepo.findByRestauranteId(restauranteId);
+            for (var prod : produtos) {
+                var grupos = grupoRepo.findByProdutoIdOrderByIdAsc(prod.getId());
+                for (var grp : grupos) {
+                    if (grp.getItens() == null) continue;
+                    for (var it : grp.getItens()) {
+                        if (alvoNomeNorm.equals(normalizarNomeItem(it.getNome()))) {
+                            it.setAtivo(ativo);
+                            itemRepo.save(it);
+                            afetados++;
+                        }
+                    }
+                }
+            }
+        }
+
+        Map<String, Object> resp = new HashMap<>();
+        resp.put("ok", true);
+        resp.put("ativo", ativo);
+        resp.put("nome", alvo.getNome());
+        resp.put("afetados", afetados);
+        return ResponseEntity.ok(resp);
+    }
+
+    private static String normalizarNomeItem(String s) {
+        if (s == null) return "";
+        return java.text.Normalizer.normalize(s.trim(), java.text.Normalizer.Form.NFD)
+                .replaceAll("\\p{InCombiningDiacriticalMarks}+", "")
+                .toLowerCase();
+    }
+
     // ── PÚBLICO (cardápio) ──
 
     @GetMapping("/public/produtos/{produtoId}/complementos")
     public ResponseEntity<List<Map<String, Object>>> listarPublico(@PathVariable Long produtoId) {
+        // Público: cliente final só vê itens ATIVOS. Itens desativados pelo
+        // dono (ex.: ingrediente em falta) somem completamente do cardápio.
         return ResponseEntity.ok()
                 .header("Cache-Control", "no-cache, no-store, must-revalidate")
                 .body(grupoRepo.findByProdutoIdOrderByIdAsc(produtoId)
-                        .stream().map(this::serializar).toList());
+                        .stream().map(g -> serializar(g, false)).toList());
     }
 
     // ── helpers ──
@@ -176,7 +257,12 @@ public class ComplementoController {
         return p;
     }
 
-    private Map<String, Object> serializar(ComplementoGrupo g) {
+    /**
+     * @param incluirInativos true = devolve TODOS os itens (uso admin, pra
+     *                        ver e poder reativar); false = filtra só ativos
+     *                        (cardápio público — cliente não vê o que falta).
+     */
+    private Map<String, Object> serializar(ComplementoGrupo g, boolean incluirInativos) {
         Map<String, Object> out = new HashMap<>();
         out.put("id", g.getId());
         out.put("nome", g.getNome());
@@ -185,7 +271,7 @@ public class ComplementoController {
         out.put("maxEscolhas", g.getMaxEscolhas() != null ? g.getMaxEscolhas() : 1);
         List<Map<String, Object>> itens = g.getItens() == null ? List.of()
                 : g.getItens().stream()
-                    .filter(i -> Boolean.TRUE.equals(i.getAtivo()))
+                    .filter(i -> incluirInativos || Boolean.TRUE.equals(i.getAtivo()))
                     .map(i -> {
                         Map<String, Object> mi = new HashMap<>();
                         mi.put("id", i.getId());

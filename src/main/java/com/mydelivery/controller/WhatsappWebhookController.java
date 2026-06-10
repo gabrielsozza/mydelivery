@@ -163,12 +163,6 @@ public class WhatsappWebhookController {
             return;
         }
 
-        // pushName do Evolution — usado pra resposta personalizada do bot.
-        // Vem em data.pushName (Evolution v2). Pode ser null se contato sem nome.
-        String pushName = null;
-        Object pn = dataMap.get("pushName");
-        if (pn != null) pushName = pn.toString().trim();
-
         log.info("[WA-Webhook] msg recebida — instância={}, de={}***, len={}",
                 inst.getInstanceName(),
                 remoteJid.length() > 5 ? remoteJid.substring(0, 5) : remoteJid,
@@ -177,11 +171,12 @@ public class WhatsappWebhookController {
         // ASYNC: webhook devolve 200 imediato; bot processa em pool dedicado.
         // Evita timeout do Evolution (que retentava e gerava mensagem duplicada)
         // e desbloqueia o thread do Tomcat.
-        final String pushNameFinal = pushName;
+        // (NÃO passamos pushName — clientes com nome tipo "." ou emojis no
+        // perfil ficavam com saudação estranha. Mantemos o bot impessoal.)
         final String remoteJidFinal = remoteJid;
         BOT_EXEC.submit(() -> {
             try {
-                botService.processar(inst, remoteJidFinal, texto, pushNameFinal);
+                botService.processar(inst, remoteJidFinal, texto);
             } catch (Exception e) {
                 log.error("[WA-Webhook] erro assíncrono processando msg: {}", e.getMessage(), e);
             }

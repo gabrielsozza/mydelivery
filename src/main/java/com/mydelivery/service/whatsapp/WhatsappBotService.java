@@ -108,8 +108,9 @@ public class WhatsappBotService {
     }
 
     /**
-     * Overload com pushName — nome de exibição do cliente no WhatsApp.
-     * Usado pra personalizar saudações ("Oi João!" em vez de "Oi!").
+     * Overload com pushName — mantido por compat. O pushName é IGNORADO:
+     * o bot mantém tom impessoal porque muitos clientes têm nome de WhatsApp
+     * inválido (só ".", emoji, vazio etc.) e ficava saudação estranha.
      */
     public void processar(WhatsappInstance inst, String numero, String texto, String pushName) {
         try {
@@ -142,19 +143,8 @@ public class WhatsappBotService {
         String chave = inst.getInstanceName() + ":" + numeroLimpo;
         EstadoNumero st = estados.computeIfAbsent(chave, k -> new EstadoNumero());
 
-        // Captura pushName na primeira mensagem (ou atualiza se vier diferente).
-        // Usado pra personalizar saudação e respostas com nome próprio.
-        if (pushName != null && !pushName.isBlank() && pushName.length() <= 50) {
-            // Filtra nomes obviamente lixo (só numero, só simbolo)
-            String pn = pushName.trim();
-            if (pn.matches(".*\\p{L}.*")) { // tem pelo menos uma letra
-                // Pega só o primeiro nome — soa mais íntimo e evita "MARIA CONCEIÇÃO DOS SANTOS"
-                String primNome = pn.split("\\s+")[0];
-                if (primNome.length() >= 2 && primNome.length() <= 20) {
-                    st.pushName = primNome;
-                }
-            }
-        }
+        // (pushName intencionalmente ignorado — muitos clientes usam nome
+        //  esquisito tipo "." ou só emoji. Bot mantém tom impessoal.)
 
         LocalDateTime agora = LocalDateTime.now();
 
@@ -199,14 +189,13 @@ public class WhatsappBotService {
         // Cache TTL 60s — economiza ~300ms na primeira msg em cold start
         ConfiguracaoRestaurante cfg = carregarCfg(r.getId());
         st.totalMensagens++;
-        String nomeVoc = (st.pushName != null) ? ", " + st.pushName : ""; // ", João" ou ""
 
         // 0. Confirmação automática de pedido — marcador exclusivo do cardápio.
         java.util.regex.Matcher mPed = MARCADOR_PEDIDO_RX.matcher(texto != null ? texto : "");
         if (mPed.find()) {
             String num = mPed.group(1);
             st.ultimaIntencao = "confirma_pedido";
-            return primeiroNomeSaudacao(st) + " 👋 Recebemos o seu pedido *#" + num + "* aqui no "
+            return saudacaoHorario() + " 👋 Recebemos o seu pedido *#" + num + "* aqui no "
                     + r.getNome() + ".\n\n"
                     + "Ele já está em preparo e vai sair fresquinho pra você. "
                     + "É só aguardar um instantinho que ele bate na sua porta! 🛵";
@@ -217,7 +206,7 @@ public class WhatsappBotService {
                 "falar com voce", "atendimento humano", "operador")) {
             st.pediuAtendente = true;
             st.ultimaIntencao = "atendente";
-            return "Sem problema" + nomeVoc + "! 👤 Vou transferir você pra um atendente humano da " + r.getNome() + ".\n\n"
+            return "Sem problema! 👤 Vou transferir você pra um atendente humano da " + r.getNome() + ".\n\n"
                     + "Em instantes alguém da equipe responde aqui mesmo. 😊";
         }
 
@@ -257,7 +246,7 @@ public class WhatsappBotService {
                         + "Mas você ainda pode dar uma olhada no cardápio 👉 " + link
                         + "\n\n" + montarLinhaHorarioHoje(r);
             }
-            return "Aqui está nosso cardápio" + nomeVoc + " 👉 " + link
+            return "Aqui está nosso cardápio 👉 " + link
                     + "\n\nÉ só escolher os itens e finalizar pelo site. 🍽️";
         }
 
@@ -275,7 +264,7 @@ public class WhatsappBotService {
                 "ja saiu", "já saiu", "status pedido", "ta demorando",
                 "tá demorando", "to esperando", "tô esperando", "demora muito")) {
             st.ultimaIntencao = "status";
-            return primeiroNomeSaudacao(st) + " 🛵\n\n"
+            return saudacaoHorario() + " 🛵\n\n"
                     + "Pra te dar status do seu pedido, vou te transferir pra equipe do "
                     + r.getNome() + " — eles veem tudo na hora.\n\n"
                     + "Digite *atendente* que já te coloco em contato.";
@@ -296,7 +285,7 @@ public class WhatsappBotService {
                 "esqueceram", "faltando", "faltou")) {
             st.pediuAtendente = true;
             st.ultimaIntencao = "reclamacao";
-            return "Eita" + nomeVoc + "! Sinto muito 😞\n\n"
+            return "Eita, sinto muito 😞\n\n"
                     + "Vou te conectar agora mesmo com a equipe do "
                     + r.getNome() + " pra resolver. Só um instante.";
         }
@@ -337,7 +326,7 @@ public class WhatsappBotService {
         if (contemAlguma(t, "obrigado", "obrigada", "valeu", "vlw", "thanks",
                 "agradeço", "agradecido", "muito obrigado", "muito obrigada")) {
             st.ultimaIntencao = "agradecimento";
-            return "Por nada" + nomeVoc + "! 😊 Qualquer coisa é só chamar.";
+            return "Por nada! 😊 Qualquer coisa é só chamar.";
         }
 
         // 8a. Confirmação curta ("sim", "ok", "blz") sem contexto
@@ -371,16 +360,14 @@ public class WhatsappBotService {
 
     // ── Helpers de personalização ──
 
-    /** Saudação contextual pelo horário ("Bom dia, João!" ou só "Olá!"). */
-    private String primeiroNomeSaudacao(EstadoNumero st) {
+    /** Saudação contextual pelo horário ("Bom dia!"/"Boa tarde!"/"Boa noite!").
+     *  Sem nome próprio — bot mantém tom impessoal pra evitar saudação
+     *  estranha com clientes que tem nome lixo no WhatsApp ("." ou emoji). */
+    private String saudacaoHorario() {
         int hora = java.time.LocalTime.now().getHour();
-        String sauda = hora < 12 ? "Bom dia"
-                     : hora < 18 ? "Boa tarde"
-                     :             "Boa noite";
-        if (st != null && st.pushName != null) {
-            return sauda + ", " + st.pushName + "!";
-        }
-        return sauda + "!";
+        if (hora < 12) return "Bom dia";
+        if (hora < 18) return "Boa tarde";
+        return "Boa noite";
     }
 
     /** Montagem da resposta de formas de pagamento. Lê ConfiguracaoRestaurante
@@ -418,14 +405,13 @@ public class WhatsappBotService {
         return montarApresentacao(r, null);
     }
 
-    /** Overload com EstadoNumero pra personalizar saudação com nome do cliente
-     *  e horário do dia ("Bom dia, João!" em vez de "Olá!"). */
+    /** Overload com EstadoNumero (compat) — usa saudação contextual por horário. */
     private String montarApresentacao(Restaurante r, EstadoNumero st) {
         String link = montarLinkCardapio(r);
         boolean aberto = Boolean.TRUE.equals(r.getAberto());
 
-        // Saudação contextual: horário + nome (se disponível).
-        String sauda = (st != null) ? primeiroNomeSaudacao(st) : "Olá!";
+        // Saudação contextual: só horário do dia, sem nome próprio.
+        String sauda = saudacaoHorario() + "!";
 
         StringBuilder sb = new StringBuilder();
         sb.append(sauda).append(" 👋 Aqui é da *").append(r.getNome()).append("*.\n\n");

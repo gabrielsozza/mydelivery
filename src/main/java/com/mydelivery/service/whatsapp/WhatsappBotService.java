@@ -49,6 +49,18 @@ public class WhatsappBotService {
      *  (webhook → decisão → typing → envio). */
     private static final int TYPING_DELAY_MS = 600;
 
+    /**
+     * Marcador que o cardápio digital envia quando o cliente clica no botão
+     * "Confirmar via WhatsApp" após finalizar o pedido. Formato esperado:
+     *   [MyDelivery#PEDIDO_142]
+     * Match case-insensitive. Captura o número do pedido pra inclusão na
+     * resposta automática.
+     */
+    private static final java.util.regex.Pattern MARCADOR_PEDIDO_RX =
+            java.util.regex.Pattern.compile(
+                    "\\[\\s*MyDelivery\\s*#\\s*PEDIDO[_\\s]*([0-9]+)\\s*\\]",
+                    java.util.regex.Pattern.CASE_INSENSITIVE);
+
     /** Estado por número (key = instanceName + ":" + numero). */
     private final Map<String, EstadoNumero> estados = new ConcurrentHashMap<>();
 
@@ -128,6 +140,20 @@ public class WhatsappBotService {
     private String decidirResposta(Restaurante r, String texto, EstadoNumero st) {
         String t = normalizar(texto);
         ConfiguracaoRestaurante cfg = configRepo.findByRestauranteId(r.getId()).orElse(null);
+
+        // 0. Confirmação automática de pedido — disparada pelo botão
+        // "Confirmar via WhatsApp" do cardápio digital. O cardápio envia uma
+        // mensagem com o marcador [MyDelivery#PEDIDO_N], que o cliente NÃO
+        // digitaria por conta própria. Match exato pra evitar falso positivo.
+        // Resposta amigável tranquilizando o cliente.
+        java.util.regex.Matcher mPed = MARCADOR_PEDIDO_RX.matcher(texto != null ? texto : "");
+        if (mPed.find()) {
+            String num = mPed.group(1);
+            return "Olá! 👋 Recebemos o seu pedido *#" + num + "* aqui no "
+                    + r.getNome() + ".\n\n"
+                    + "Ele já está na cozinha e vai sair quentinho pra você. "
+                    + "É só aguardar um instantinho que ele bate na sua porta! 🍽️🛵";
+        }
 
         // 1. Atendente humano — prioridade máxima
         if (contemAlguma(t, "atendente", "humano", "pessoa", "falar com alguem",

@@ -70,6 +70,10 @@ public class ConfiguracaoService {
                     .toList());
         }
 
+        // Botão "Confirmar via WhatsApp" no checkout do cliente — opt-in do dono.
+        if (req.getConfirmacaoWhatsappAtiva() != null)
+            restaurante.setConfirmacaoWhatsappAtiva(req.getConfirmacaoWhatsappAtiva());
+
         // Automação de horário — toggles e cutoff
         if (req.getAberturaAutomatica() != null)
             restaurante.setAberturaAutomatica(req.getAberturaAutomatica());

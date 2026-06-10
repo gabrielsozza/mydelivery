@@ -142,6 +142,18 @@ public class Restaurante {
     @Builder.Default
     private Boolean aceitarPedidosAutomaticamente = false;
 
+    /**
+     * Se true, após o cliente finalizar o pedido no cardápio digital o
+     * frontend mostra um botão "Confirmar via WhatsApp" que abre conversa
+     * com o restaurante já com a mensagem pré-preenchida. O bot WhatsApp
+     * (Evolution API) detecta a chegada e responde automaticamente
+     * confirmando que o pedido foi recebido. Útil pra dar segurança
+     * adicional pro cliente em pedidos de delivery.
+     */
+    @Builder.Default
+    @Column(name = "confirmacao_whatsapp_ativa")
+    private Boolean confirmacaoWhatsappAtiva = false;
+
     // ── Horários de funcionamento ──
     // JSON serializado: { "seg": {"aberto":true,"abertura":"11:00","fechamento":"22:00"}, ... }
     // Guardado como TEXT pra evitar tabela separada — o front já trata como objeto.

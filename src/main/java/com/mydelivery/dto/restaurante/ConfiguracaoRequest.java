@@ -48,6 +48,8 @@ public class ConfiguracaoRequest {
     private Object horarios;
     /** Toggle: abre a loja automaticamente no horário cadastrado. */
     private Boolean aberturaAutomatica;
+    /** Toggle: cliente recebe botão "Confirmar via WhatsApp" após finalizar pedido. */
+    private Boolean confirmacaoWhatsappAtiva;
     /** Toggle: para de aceitar pedidos N min antes do fechamento. */
     private Boolean pararPedidosAntesFechamento;
     /** Quantos minutos antes do fechamento bloquear pedidos novos. */

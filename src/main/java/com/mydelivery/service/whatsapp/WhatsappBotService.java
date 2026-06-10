@@ -151,8 +151,8 @@ public class WhatsappBotService {
             String num = mPed.group(1);
             return "Olá! 👋 Recebemos o seu pedido *#" + num + "* aqui no "
                     + r.getNome() + ".\n\n"
-                    + "Ele já está na cozinha e vai sair quentinho pra você. "
-                    + "É só aguardar um instantinho que ele bate na sua porta! 🍽️🛵";
+                    + "Ele já está em preparo e vai sair fresquinho pra você. "
+                    + "É só aguardar um instantinho que ele bate na sua porta! 🛵";
         }
 
         // 1. Atendente humano — prioridade máxima

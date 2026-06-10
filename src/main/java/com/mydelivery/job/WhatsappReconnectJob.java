@@ -36,10 +36,15 @@ public class WhatsappReconnectJob {
     private final EvolutionClient evolutionClient;
 
     /**
-     * fixedDelay = 18h. initialDelay = 5min depois do boot pra não bater na Evolution
-     * antes do app estar 100% inicializado.
+     * fixedDelay = 6h (reduzido de 18h). Restaurantes reportavam que o bot
+     * "dormia" em silêncio depois de algumas horas (Baileys da Evolution
+     * acumula problemas de fila). 6h é mais agressivo mas pesa muito pouco
+     * — operação é só um restart de WebSocket por instância (~200ms cada).
+     *
+     * initialDelay = 5min depois do boot pra não bater na Evolution antes
+     * do app estar 100% inicializado.
      */
-    @Scheduled(fixedDelay = 18L * 60 * 60 * 1000, initialDelay = 5L * 60 * 1000)
+    @Scheduled(fixedDelay = 6L * 60 * 60 * 1000, initialDelay = 5L * 60 * 1000)
     public void restartPreventivo() {
         List<WhatsappInstance> ativas;
         try {

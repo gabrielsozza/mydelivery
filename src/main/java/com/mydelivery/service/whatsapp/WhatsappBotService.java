@@ -44,10 +44,45 @@ public class WhatsappBotService {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private WhatsappIncidenteService incidenteService;
 
-    /** Delay (ms) de "digitando…" antes da msg aparecer. Reduzido de 1500ms
-     *  pra 600ms a pedido do operador — meta de resposta ≤4s ponta a ponta
-     *  (webhook → decisão → typing → envio). */
-    private static final int TYPING_DELAY_MS = 600;
+    /** Delay (ms) de "digitando…" antes da msg aparecer. Reduzido novamente
+     *  de 600 → 250 — meta apertada de ≤3s ponta a ponta. 250ms ainda dá
+     *  sensação de "humano digitando rápido", abaixo disso fica robótico. */
+    private static final int TYPING_DELAY_MS = 250;
+
+    /** Cache em memória de ConfiguracaoRestaurante por restauranteId.
+     *  Evita query DB no caminho crítico de cada mensagem. TTL curto (60s)
+     *  garante que mudanças do dono (taxa, bairros, etc.) propaguem em até
+     *  1 min. Sem isso, cada msg fazia 1 SELECT — em cold start ~300ms. */
+    private static final long CACHE_CFG_TTL_MS = 60_000L;
+    private final java.util.concurrent.ConcurrentHashMap<Long, CfgCache> cfgCache =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private static class CfgCache {
+        final ConfiguracaoRestaurante cfg;
+        final long expiraEm;
+        CfgCache(ConfiguracaoRestaurante c, long ttl) {
+            this.cfg = c;
+            this.expiraEm = System.currentTimeMillis() + ttl;
+        }
+    }
+
+    /** Carrega config com cache TTL. Chamado dentro de decidirResposta. */
+    private ConfiguracaoRestaurante carregarCfg(Long restauranteId) {
+        if (restauranteId == null) return null;
+        var cached = cfgCache.get(restauranteId);
+        if (cached != null && cached.expiraEm > System.currentTimeMillis()) {
+            return cached.cfg;
+        }
+        ConfiguracaoRestaurante cfg = configRepo.findByRestauranteId(restauranteId).orElse(null);
+        cfgCache.put(restauranteId, new CfgCache(cfg, CACHE_CFG_TTL_MS));
+        return cfg;
+    }
+
+    /** Invalida o cache de config — chamado quando o dono salva alterações
+     *  ou quando o cache acumula muito (sanity). Mantém memória controlada. */
+    public void invalidarCacheConfig(Long restauranteId) {
+        if (restauranteId == null) cfgCache.clear();
+        else cfgCache.remove(restauranteId);
+    }
 
     /**
      * Marcador que o cardápio digital envia quando o cliente clica no botão
@@ -69,8 +104,16 @@ public class WhatsappBotService {
      * Caso contrário, fica em silêncio.
      */
     public void processar(WhatsappInstance inst, String numero, String texto) {
+        processar(inst, numero, texto, null);
+    }
+
+    /**
+     * Overload com pushName — nome de exibição do cliente no WhatsApp.
+     * Usado pra personalizar saudações ("Oi João!" em vez de "Oi!").
+     */
+    public void processar(WhatsappInstance inst, String numero, String texto, String pushName) {
         try {
-            processarInterno(inst, numero, texto);
+            processarInterno(inst, numero, texto, pushName);
         } catch (RuntimeException e) {
             // Qualquer falha inesperada vira incidente classificado em vez de virar
             // log enterrado. Sem isso, bot quebrava silenciosamente e ninguém via.
@@ -88,7 +131,7 @@ public class WhatsappBotService {
         }
     }
 
-    private void processarInterno(WhatsappInstance inst, String numero, String texto) {
+    private void processarInterno(WhatsappInstance inst, String numero, String texto, String pushName) {
         if (!Boolean.TRUE.equals(inst.getBotAtivo())) {
             log.debug("[Bot] desligado pra instância {} — não responde", inst.getInstanceName());
             return;
@@ -98,6 +141,20 @@ public class WhatsappBotService {
         String numeroLimpo = limparNumero(numero);
         String chave = inst.getInstanceName() + ":" + numeroLimpo;
         EstadoNumero st = estados.computeIfAbsent(chave, k -> new EstadoNumero());
+
+        // Captura pushName na primeira mensagem (ou atualiza se vier diferente).
+        // Usado pra personalizar saudação e respostas com nome próprio.
+        if (pushName != null && !pushName.isBlank() && pushName.length() <= 50) {
+            // Filtra nomes obviamente lixo (só numero, só simbolo)
+            String pn = pushName.trim();
+            if (pn.matches(".*\\p{L}.*")) { // tem pelo menos uma letra
+                // Pega só o primeiro nome — soa mais íntimo e evita "MARIA CONCEIÇÃO DOS SANTOS"
+                String primNome = pn.split("\\s+")[0];
+                if (primNome.length() >= 2 && primNome.length() <= 20) {
+                    st.pushName = primNome;
+                }
+            }
+        }
 
         LocalDateTime agora = LocalDateTime.now();
 
@@ -139,17 +196,17 @@ public class WhatsappBotService {
     /** Retorna texto da resposta ou null pra ignorar a mensagem. */
     private String decidirResposta(Restaurante r, String texto, EstadoNumero st) {
         String t = normalizar(texto);
-        ConfiguracaoRestaurante cfg = configRepo.findByRestauranteId(r.getId()).orElse(null);
+        // Cache TTL 60s — economiza ~300ms na primeira msg em cold start
+        ConfiguracaoRestaurante cfg = carregarCfg(r.getId());
+        st.totalMensagens++;
+        String nomeVoc = (st.pushName != null) ? ", " + st.pushName : ""; // ", João" ou ""
 
-        // 0. Confirmação automática de pedido — disparada pelo botão
-        // "Confirmar via WhatsApp" do cardápio digital. O cardápio envia uma
-        // mensagem com o marcador [MyDelivery#PEDIDO_N], que o cliente NÃO
-        // digitaria por conta própria. Match exato pra evitar falso positivo.
-        // Resposta amigável tranquilizando o cliente.
+        // 0. Confirmação automática de pedido — marcador exclusivo do cardápio.
         java.util.regex.Matcher mPed = MARCADOR_PEDIDO_RX.matcher(texto != null ? texto : "");
         if (mPed.find()) {
             String num = mPed.group(1);
-            return "Olá! 👋 Recebemos o seu pedido *#" + num + "* aqui no "
+            st.ultimaIntencao = "confirma_pedido";
+            return primeiroNomeSaudacao(st) + " 👋 Recebemos o seu pedido *#" + num + "* aqui no "
                     + r.getNome() + ".\n\n"
                     + "Ele já está em preparo e vai sair fresquinho pra você. "
                     + "É só aguardar um instantinho que ele bate na sua porta! 🛵";
@@ -159,89 +216,189 @@ public class WhatsappBotService {
         if (contemAlguma(t, "atendente", "humano", "pessoa", "falar com alguem",
                 "falar com voce", "atendimento humano", "operador")) {
             st.pediuAtendente = true;
-            return "Sem problema! 👤 Vou transferir você pra um atendente humano da " + r.getNome() + ".\n\n"
+            st.ultimaIntencao = "atendente";
+            return "Sem problema" + nomeVoc + "! 👤 Vou transferir você pra um atendente humano da " + r.getNome() + ".\n\n"
                     + "Em instantes alguém da equipe responde aqui mesmo. 😊";
         }
 
         // 2. Regiões / bairros atendidos
         if (contemAlguma(t, "regiao", "regioes", "atende", "atendem", "atende aqui",
                 "entrega aqui", "bairro", "bairros", "atendido", "cobertura")) {
+            st.ultimaIntencao = "regioes";
             return montarRespostaRegioes(r);
         }
 
         // 3. Taxa de entrega
         if (contemAlguma(t, "taxa", "frete", "valor da entrega", "quanto a entrega", "custo de entrega")) {
+            st.ultimaIntencao = "taxa";
             return montarRespostaTaxa(r);
         }
 
         // 4. Pedido mínimo
         if (contemAlguma(t, "minimo", "pedido min", "valor minimo", "quanto preciso pedir")) {
+            st.ultimaIntencao = "minimo";
             return montarRespostaMinimo(r);
         }
 
         // 5. Tempo de entrega
         if (contemAlguma(t, "demora", "quanto tempo", "tempo de entrega", "leva quanto",
                 "tempo medio", "demorar", "rapido")) {
+            st.ultimaIntencao = "tempo";
             return montarRespostaTempo(r);
         }
 
-        // 6. Cardápio
+        // 6. Cardápio / quero pedir
         if (contemAlguma(t, "cardapio", "menu", "produtos", "comprar", "pedir",
-                "fazer pedido", "fazer um pedido")) {
+                "fazer pedido", "fazer um pedido", "quero pedir", "vou pedir", "to pedindo")) {
+            st.ultimaIntencao = "cardapio";
             String link = montarLinkCardapio(r);
-            // Se loja fechada: envia link MAS sem incentivar compra
             if (!Boolean.TRUE.equals(r.getAberto())) {
                 return "A loja está *fechada* no momento 😅\n\n"
                         + "Mas você ainda pode dar uma olhada no cardápio 👉 " + link
                         + "\n\n" + montarLinhaHorarioHoje(r);
             }
-            return "Aqui está nosso cardápio 👉 " + link + "\n\nÉ só escolher os itens e finalizar pelo site. 🍽️";
+            return "Aqui está nosso cardápio" + nomeVoc + " 👉 " + link
+                    + "\n\nÉ só escolher os itens e finalizar pelo site. 🍽️";
         }
 
-        // 7. Horário / aberto / fechado / funcionando — cobre variações masculino/feminino/plural
+        // 6a. Formas de pagamento aceitas
+        if (contemAlguma(t, "pagamento", "paga como", "como pago", "aceita pix",
+                "aceita cartao", "aceita cartão", "dinheiro", "cartao credito",
+                "cartao debito", "como funciona o pagamento", "forma de pagamento",
+                "formas de pagamento", "vcs aceitam", "voces aceitam")) {
+            st.ultimaIntencao = "pagamento";
+            return montarRespostaPagamento(r, cfg);
+        }
+
+        // 6b. Status do pedido — cliente perguntando "cadê meu pedido"
+        if (contemAlguma(t, "cade meu pedido", "cadê meu pedido", "meu pedido",
+                "ja saiu", "já saiu", "status pedido", "ta demorando",
+                "tá demorando", "to esperando", "tô esperando", "demora muito")) {
+            st.ultimaIntencao = "status";
+            return primeiroNomeSaudacao(st) + " 🛵\n\n"
+                    + "Pra te dar status do seu pedido, vou te transferir pra equipe do "
+                    + r.getNome() + " — eles veem tudo na hora.\n\n"
+                    + "Digite *atendente* que já te coloco em contato.";
+        }
+
+        // 6c. Preço de um produto específico — direciona pro cardápio
+        if (contemAlguma(t, "quanto custa", "qual o preco", "qual o preço",
+                "preço de", "preco de", "valor do", "valor da")) {
+            st.ultimaIntencao = "preco_produto";
+            String link = montarLinkCardapio(r);
+            return "Os preços estão todos atualizadinhos no cardápio 👉 " + link
+                    + "\n\nLá você vê o valor exato e ainda já pode montar seu pedido. 😊";
+        }
+
+        // 6d. Reclamação / problema — escala com empatia
+        if (contemAlguma(t, "reclamacao", "reclamação", "problema", "veio errado",
+                "veio frio", "veio gelado", "atrasou", "atrasada", "atrasado",
+                "esqueceram", "faltando", "faltou")) {
+            st.pediuAtendente = true;
+            st.ultimaIntencao = "reclamacao";
+            return "Eita" + nomeVoc + "! Sinto muito 😞\n\n"
+                    + "Vou te conectar agora mesmo com a equipe do "
+                    + r.getNome() + " pra resolver. Só um instante.";
+        }
+
+        // 7. Horário / aberto / fechado / funcionando
         if (contemAlguma(t, "horario", "horário", "que horas", "abre", "aberto", "aberta",
                 "abertos", "abertas", "ta aberto", "ta aberta", "esta aberto", "esta aberta",
                 "estao abertos", "estao abertas", "funcionamento", "funcionando", "funciona",
                 "atendendo", "ainda atende", "ta atendendo", "fechado", "fechada", "fechados",
                 "ta funcionando", "esta funcionando", "vcs estao", "voces estao")) {
+            st.ultimaIntencao = "horario";
             return montarRespostaHorario(r);
         }
 
-        // 7a. Endereço / localização ("onde fica", "qual endereço", "como chegar")
+        // 7a. Endereço / localização
         if (contemAlguma(t, "endereco", "onde fica", "onde voces ficam", "onde estao",
                 "localizacao", "localização", "como chegar", "qual o endereco",
                 "qual endereco", "lugar", "endereço")) {
+            st.ultimaIntencao = "endereco";
             return montarRespostaEndereco(r);
         }
 
         // 7b. Telefone / contato
         if (contemAlguma(t, "telefone", "numero", "contato", "telefonar",
                 "ligar", "qual o telefone", "fone", "whats")) {
+            st.ultimaIntencao = "telefone";
             return montarRespostaTelefone(r);
         }
 
-        // 7c. CNPJ / CPF — POR POLÍTICA, o bot não revela documentos fiscais.
-        // Mesmo que estejam cadastrados, são dados sensíveis. Respondemos
-        // educadamente direcionando pra falar com a equipe.
+        // 7c. CNPJ / CPF — política: bot não revela
         if (contemAlguma(t, "cnpj", "cpf", "documento", "razao social", "razão social")) {
+            st.ultimaIntencao = "documento";
             return "Essa informação não está disponível no atendimento automático. "
                     + "Se precisar do dado fiscal pra nota, fale com a equipe — digite *atendente*.";
         }
 
-        // 8. Agradecimento curto — responde gentil sem repetir menu
-        if (contemAlguma(t, "obrigado", "obrigada", "valeu", "vlw", "thanks")) {
-            return "Por nada! 😊 Qualquer coisa é só chamar.";
+        // 8. Agradecimento curto
+        if (contemAlguma(t, "obrigado", "obrigada", "valeu", "vlw", "thanks",
+                "agradeço", "agradecido", "muito obrigado", "muito obrigada")) {
+            st.ultimaIntencao = "agradecimento";
+            return "Por nada" + nomeVoc + "! 😊 Qualquer coisa é só chamar.";
+        }
+
+        // 8a. Confirmação curta ("sim", "ok", "blz") sem contexto
+        if (t.length() <= 12 && contemAlguma(t, "sim", "ok", "perfeito", "show",
+                "beleza", "blz", "blzz", "otimo", "ótimo", "legal", "bacana", "uhum")) {
+            st.ultimaIntencao = "confirmacao";
+            return "Combinado! 👍 Qualquer dúvida é só chamar.";
         }
 
         // 9. Saudação / 1ª interação → apresenta o bot
         boolean ehSaudacao = contemAlguma(t, "oi", "ola", "ola ", "opa", "bom dia",
-                "boa tarde", "boa noite", "hey", "eai", "e ai", "tudo bem");
+                "boa tarde", "boa noite", "hey", "eai", "e ai", "tudo bem", "td bem", "salve");
         if (!st.saudou || ehSaudacao) {
-            return montarApresentacao(r);
+            st.ultimaIntencao = "saudacao";
+            return montarApresentacao(r, st);
         }
 
-        // 10. Fallback: já saudou e não entendeu — mostra menu curto
+        // 10. Anti-loop: muitas msgs sem ajuda real → sugere atendente
+        if (st.totalMensagens >= 5 && !"sugeriu_humano".equals(st.ultimaIntencao)) {
+            st.ultimaIntencao = "sugeriu_humano";
+            return "Hmm, parece que não consegui te ajudar direito 😅\n\n"
+                    + "Que tal eu te transferir pra alguém da equipe? "
+                    + "Digite *atendente* que já te coloco em contato com a equipe do "
+                    + r.getNome() + ".";
+        }
+
+        // 11. Fallback: menu curto
+        st.ultimaIntencao = "menu";
         return montarMenuCurto(r);
+    }
+
+    // ── Helpers de personalização ──
+
+    /** Saudação contextual pelo horário ("Bom dia, João!" ou só "Olá!"). */
+    private String primeiroNomeSaudacao(EstadoNumero st) {
+        int hora = java.time.LocalTime.now().getHour();
+        String sauda = hora < 12 ? "Bom dia"
+                     : hora < 18 ? "Boa tarde"
+                     :             "Boa noite";
+        if (st != null && st.pushName != null) {
+            return sauda + ", " + st.pushName + "!";
+        }
+        return sauda + "!";
+    }
+
+    /** Montagem da resposta de formas de pagamento. Lê ConfiguracaoRestaurante
+     *  pra saber se aceita PIX antecipado, cartão online, dinheiro etc.
+     *  Quando configuração não disponível, dá resposta genérica e segura. */
+    private String montarRespostaPagamento(Restaurante r, ConfiguracaoRestaurante cfg) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Formas de pagamento aceitas no ").append(r.getNome()).append(" 💳\n\n");
+        sb.append("• Dinheiro (na entrega/retirada)\n");
+        sb.append("• PIX\n");
+        sb.append("• Cartão de crédito ou débito\n");
+        if (Boolean.TRUE.equals(r.getExigirPixAntecipado())) {
+            sb.append("\n📌 Pra pedidos pelo cardápio digital, o pagamento por PIX é feito *antes* — "
+                    + "é só seguir as instruções na hora do checkout.");
+        } else {
+            sb.append("\nVocê escolhe na hora de fechar o pedido pelo cardápio 👉 ").append(montarLinkCardapio(r));
+        }
+        return sb.toString();
     }
 
     // ── builders de resposta ──
@@ -258,11 +415,20 @@ public class WhatsappBotService {
     }
 
     private String montarApresentacao(Restaurante r) {
+        return montarApresentacao(r, null);
+    }
+
+    /** Overload com EstadoNumero pra personalizar saudação com nome do cliente
+     *  e horário do dia ("Bom dia, João!" em vez de "Olá!"). */
+    private String montarApresentacao(Restaurante r, EstadoNumero st) {
         String link = montarLinkCardapio(r);
         boolean aberto = Boolean.TRUE.equals(r.getAberto());
 
+        // Saudação contextual: horário + nome (se disponível).
+        String sauda = (st != null) ? primeiroNomeSaudacao(st) : "Olá!";
+
         StringBuilder sb = new StringBuilder();
-        sb.append("Olá! 👋 Aqui é da *").append(r.getNome()).append("*.\n\n");
+        sb.append(sauda).append(" 👋 Aqui é da *").append(r.getNome()).append("*.\n\n");
 
         // Se loja fechada, sinaliza ANTES do menu — não induz compra.
         if (!aberto) {
@@ -606,5 +772,13 @@ public class WhatsappBotService {
         LocalDateTime silencioAte;
         boolean saudou;
         boolean pediuAtendente;
+        /** Primeiro nome do cliente (do pushName WhatsApp). Null se não detectado. */
+        String pushName;
+        /** Última intenção respondida pelo bot. Pra evitar repetir info e dar
+         *  follow-up natural ("Quer que eu te ajude com mais alguma coisa?"). */
+        String ultimaIntencao;
+        /** Contador de mensagens nessa conversa. Saudação só na 1ª; pós 5ª sem
+         *  match real, sugere atendente humano pra não frustrar. */
+        int totalMensagens;
     }
 }

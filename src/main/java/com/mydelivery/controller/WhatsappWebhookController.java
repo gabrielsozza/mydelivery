@@ -35,6 +35,25 @@ public class WhatsappWebhookController {
     private final WhatsappService whatsappService;
     private final WhatsappBotService botService;
 
+    /**
+     * Pool dedicado pra processamento assíncrono de mensagens recebidas.
+     * Antes: tratarMensagem era SÍNCRONO — webhook só devolvia 200 depois que
+     * o bot decidia + chamava Evolution outbound (~1-3s). Isso fazia 2 coisas
+     * ruins: (a) Evolution podia timeoutar e retentar, gerando msg duplicada;
+     * (b) bloqueava o thread do Tomcat por toda a duração.
+     * Agora: devolve 200 em <50ms, processamento corre em pool separado.
+     * Pool fixo de 4 threads — suficiente pra dezenas de restaurantes,
+     * já que processamento real é ~100ms quando warm.
+     */
+    private static final java.util.concurrent.ExecutorService BOT_EXEC =
+            java.util.concurrent.Executors.newFixedThreadPool(
+                    4,
+                    r -> {
+                        Thread t = new Thread(r, "wa-bot-worker");
+                        t.setDaemon(true);
+                        return t;
+                    });
+
     /** Buffer in-memory dos últimos N webhooks recebidos, por instância.
      *  Serve pra diagnóstico ao vivo: "a Evolution está enviando mensagens
      *  ou não?". É memória volátil — perde no restart, mas pra debug serve. */
@@ -144,12 +163,29 @@ public class WhatsappWebhookController {
             return;
         }
 
+        // pushName do Evolution — usado pra resposta personalizada do bot.
+        // Vem em data.pushName (Evolution v2). Pode ser null se contato sem nome.
+        String pushName = null;
+        Object pn = dataMap.get("pushName");
+        if (pn != null) pushName = pn.toString().trim();
+
         log.info("[WA-Webhook] msg recebida — instância={}, de={}***, len={}",
                 inst.getInstanceName(),
                 remoteJid.length() > 5 ? remoteJid.substring(0, 5) : remoteJid,
                 texto.length());
 
-        botService.processar(inst, remoteJid, texto);
+        // ASYNC: webhook devolve 200 imediato; bot processa em pool dedicado.
+        // Evita timeout do Evolution (que retentava e gerava mensagem duplicada)
+        // e desbloqueia o thread do Tomcat.
+        final String pushNameFinal = pushName;
+        final String remoteJidFinal = remoteJid;
+        BOT_EXEC.submit(() -> {
+            try {
+                botService.processar(inst, remoteJidFinal, texto, pushNameFinal);
+            } catch (Exception e) {
+                log.error("[WA-Webhook] erro assíncrono processando msg: {}", e.getMessage(), e);
+            }
+        });
     }
 
     /**

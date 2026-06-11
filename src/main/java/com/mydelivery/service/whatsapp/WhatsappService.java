@@ -93,54 +93,37 @@ public class WhatsappService {
             return inst; // nada a fazer
         }
 
-        // Busca/renova QR — com 1 retry curto pra cobrir Evolution v2.x que
-        // frequentemente responde {"count":0} na 1ª chamada e cospe o QR
-        // 800-1500ms depois. Mudança CIRÚRGICA pra reduzir caso "QR demora a
-        // aparecer". Mantém a lógica antiga de fallback via webhook.
-        try {
-            String qr = tentarObterQrAgora(inst.getInstanceName());
-            if (qr != null) {
-                inst.setQrCode(qr);
-                inst.setQrExpiraEm(LocalDateTime.now().plusSeconds(60));
+        // POST /conectar (clique do usuário em "Conectar" ou "Gerar novo QR"):
+        //
+        // Se criarNova() acima JÁ trouxe QR pelo body do /instance/create
+        // (qrcode=true), aproveitamos esse QR. Caso contrário, fazemos
+        // EXATAMENTE 1 chamada ao /connect — sem retry, sem loop.
+        //
+        // Por que 1 chamada só: cada chamada ao /connect REGENERA o QR na
+        // Evolution v2.x. Múltiplas chamadas seguidas invalidavam QR que
+        // o usuário estava escaneando (causa raiz do "fica conectando
+        // eternamente").
+        boolean qrJaTem = inst.getQrCode() != null && !inst.getQrCode().isBlank();
+        if (!qrJaTem) {
+            try {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> resp = evolutionClient.conectar(inst.getInstanceName());
+                String qr = extrairQrCode(resp);
+                if (qr != null) {
+                    inst.setQrCode(qr);
+                    inst.setQrExpiraEm(LocalDateTime.now().plusSeconds(60));
+                }
+                // Se QR não veio no body, webhook QRCODE_UPDATED chegará em
+                // alguns segundos e popula via salvarQrCode().
+            } catch (RuntimeException e) {
+                log.error("[WhatsApp] Erro ao gerar QR pra {}: {}", inst.getInstanceName(), e.getMessage());
+                inst.setStatus(WhatsappInstance.Status.ERRO);
+                return repo.save(inst);
             }
-            // Em Evolution v2.1.x o /connect às vezes responde {"count":0} sem QR
-            // — ele chega depois via webhook QRCODE_UPDATED. Marcamos AGUARDANDO_QR
-            // de qualquer forma pra o frontend começar o polling em /status.
-            inst.setStatus(WhatsappInstance.Status.AGUARDANDO_QR);
-        } catch (RuntimeException e) {
-            log.error("[WhatsApp] Erro ao gerar QR pra {}: {}", inst.getInstanceName(), e.getMessage());
-            inst.setStatus(WhatsappInstance.Status.ERRO);
         }
+        inst.setStatus(WhatsappInstance.Status.AGUARDANDO_QR);
 
         return repo.save(inst);
-    }
-
-    /**
-     * Tenta obter QR da Evolution com até 4 chamadas espaçadas de 500ms.
-     *
-     * Por que insistir tanto: Evolution v2.x frequentemente responde
-     * {"count":0} sem QR nas 1ª/2ª chamadas e cospe o QR só na 3ª/4ª
-     * (~1-1.5s depois). Pra maximizar a chance do dono receber o QR
-     * imediatamente ao clicar "Conectar", insistimos até 2s antes de
-     * desistir e cair pro fluxo via webhook.
-     *
-     * Custo: +2s no pior caso na resposta do POST /conectar. Tradeoff
-     * vale muito a pena vs ter que esperar 5-10s pelo webhook depois.
-     */
-    @SuppressWarnings("unchecked")
-    private String tentarObterQrAgora(String instanceName) {
-        for (int i = 0; i < 4; i++) {
-            Map<String, Object> resp = evolutionClient.conectar(instanceName);
-            String qr = extrairQrCode(resp);
-            if (qr != null) return qr;
-            if (i < 3) {
-                try { Thread.sleep(500L); } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                    return null;
-                }
-            }
-        }
-        return null;
     }
 
     /**
@@ -151,23 +134,20 @@ public class WhatsappService {
     public void salvarQrCode(WhatsappInstance inst, String qrBase64) {
         if (qrBase64 == null || qrBase64.isBlank()) return;
 
-        // ESTABILIDADE DO QR (Jun/2026): ignora webhook se acabamos de salvar
-        // QR há menos de 10s. A Evolution v2.x emite QRCODE_UPDATED a cada
-        // ~25-30s automaticamente (comportamento Baileys padrão) e isso fazia
-        // o QR mudar embaixo do dono enquanto ele tentava escanear — celular
-        // dava erro "QR inválido" e tinha que apontar de novo.
-        // Janela de 10s dá tempo do scan completar antes do QR ser refrescado.
+        // ESTABILIDADE DO QR — não sobrescreve QR atual ENQUANTO ainda
+        // está válido. A Evolution v2.x emite QRCODE_UPDATED a cada ~25-30s
+        // automaticamente (comportamento Baileys padrão). Se sobrescrevermos
+        // o QR atual antes dele expirar, o celular do dono tenta escanear
+        // QR que já não vale mais → "QR inválido", reinicia o ciclo.
+        //
+        // Regra: só aceita QR novo se o atual já expirou (passou de qrExpiraEm).
+        // Cobre scan ativo de até 60s (que é o TTL do QR salvo).
         if (inst.getQrCode() != null && !inst.getQrCode().isBlank()
-                && inst.getQrExpiraEm() != null) {
-            // qrExpiraEm = momento do save + 60s → momento do save = qrExpiraEm - 60s
-            LocalDateTime ultimoSave = inst.getQrExpiraEm().minusSeconds(60);
-            long segundosDesde = java.time.Duration.between(ultimoSave,
-                    LocalDateTime.now()).getSeconds();
-            if (segundosDesde >= 0 && segundosDesde < 10) {
-                log.debug("[WhatsApp] QR webhook ignorado pra {} (atualizado ha {}s)",
-                        inst.getInstanceName(), segundosDesde);
-                return;
-            }
+                && inst.getQrExpiraEm() != null
+                && LocalDateTime.now().isBefore(inst.getQrExpiraEm())) {
+            log.debug("[WhatsApp] QR webhook ignorado pra {} (QR atual ainda valido ate {})",
+                    inst.getInstanceName(), inst.getQrExpiraEm());
+            return;
         }
 
         inst.setQrCode(qrBase64);
@@ -190,130 +170,20 @@ public class WhatsappService {
         }
         atualizarStatusDaEvolution(inst);
 
-        // AUTO-RECOVERY: usuário relatava QR ficando eternamente em spinner. Causa:
-        // Evolution às vezes não dispara QRCODE_UPDATED depois de /connect numa
-        // instância recém-criada (webhook não chega, ou sessão fica em "connecting"
-        // sem emitir QR). Se passamos do tempo de expiração esperado SEM QR válido,
-        // re-disparamos /connect — Evolution gera QR novo e o webhook deve cuspir.
+        // POLLING DO /status — MUDANÇA CRÍTICA Jun/2026:
         //
-        // CRITICAL: tudo aqui dentro precisa rodar 1 thread por vez por restaurante,
-        // senão o polling do frontend (4s) cria múltiplas instâncias paralelas na
-        // Evolution e o webhook QR fica sendo descartado por nome inconsistente.
-        if (inst.getStatus() == WhatsappInstance.Status.AGUARDANDO_QR
-                || inst.getStatus() == WhatsappInstance.Status.NOVA) {
-            boolean qrAusente = inst.getQrCode() == null || inst.getQrCode().isBlank();
-            boolean qrExpirado = inst.getQrExpiraEm() != null
-                    && LocalDateTime.now().isAfter(inst.getQrExpiraEm());
-            if (qrAusente || qrExpirado) {
-                Object lock = autoRecoveryLocks.computeIfAbsent(restaurante.getId(), k -> new Object());
-                synchronized (lock) {
-                    // Re-fetch dentro do lock pra pegar atualização de outra thread que
-                    // acabou de terminar — evita disparar /connect logo após outra thread
-                    // ter setado o qrCode.
-                    WhatsappInstance fresh = repo.findByRestauranteId(restaurante.getId()).orElse(null);
-                    if (fresh != null) inst = fresh;
-                    qrAusente = inst.getQrCode() == null || inst.getQrCode().isBlank();
-                    qrExpirado = inst.getQrExpiraEm() != null
-                            && LocalDateTime.now().isAfter(inst.getQrExpiraEm());
-                    if (!qrAusente && !qrExpirado) {
-                        return repo.save(inst);
-                    }
-                try {
-                    log.info("[WhatsApp] QR ausente/expirado pra {} — forçando /connect novamente",
-                            inst.getInstanceName());
-                    @SuppressWarnings("unchecked")
-                    Map<String, Object> resp = evolutionClient.conectar(inst.getInstanceName());
-                    String qr = extrairQrCode(resp);
-                    if (qr != null) {
-                        inst.setQrCode(qr);
-                        inst.setQrExpiraEm(LocalDateTime.now().plusSeconds(60));
-                        inst.setStatus(WhatsappInstance.Status.AGUARDANDO_QR);
-                        log.info("[WhatsApp] QR re-obtido sincronamente pra {}", inst.getInstanceName());
-                    } else {
-                        // FALLBACK ANTI-WEBHOOK-PERDIDO: a Evolution v2.x responde
-                        // /connect com {"count":0} quando a sessão já está "connecting"
-                        // — espera-se que o QR chegue por webhook QRCODE_UPDATED. Se o
-                        // webhook foi perdido (Railway em deploy, instabilidade de rede,
-                        // Evolution não reemitir), o QR fica preso pra sempre — usuário
-                        // só consegue destravar via "Resetar e recomeçar" manualmente.
-                        // Solução: detectamos esse caso e fazemos o reset automático com
-                        // throttle de 25s pra não loopar. Renomeia a instância (sufixo
-                        // timestamp) pra obrigar Evolution a emitir QR fresh.
-                        // Throttle 60s (antes era 25s — agressivo demais).
-                        // Auto-reset com renomeação INVALIDA QR que o usuário está
-                        // tentando escanear naquele momento. Janela maior dá tempo
-                        // do dono encaixar a câmera sem o QR mudar embaixo.
-                        boolean podeAutoReset = inst.getUltimaTentativaReconexaoEm() == null
-                                || LocalDateTime.now().isAfter(
-                                        inst.getUltimaTentativaReconexaoEm().plusSeconds(60));
-                        if (podeAutoReset) {
-                            inst.setUltimaTentativaReconexaoEm(LocalDateTime.now());
-                            log.warn("[WhatsApp] /connect sem QR pra {} — forçando recriação com nome novo",
-                                    inst.getInstanceName());
-                            try { evolutionClient.logout(inst.getInstanceName()); }
-                            catch (RuntimeException ignore) { /* sessão pode já estar fechada */ }
-                            try { evolutionClient.deletar(inst.getInstanceName()); }
-                            catch (RuntimeException ignore) { /* idem */ }
-                            String nomeBase = inst.getInstanceName().replaceAll("-\\d+$", "");
-                            String novoNome = nomeBase + "-" + (System.currentTimeMillis() / 1000);
-                            String webhookUrl = props.getWebhookBaseUrl()
-                                    + "/api/webhooks/whatsapp/" + novoNome;
-                            try {
-                                @SuppressWarnings("unchecked")
-                                Map<String, Object> respNova = evolutionClient.criarInstancia(novoNome, webhookUrl);
-                                inst.setInstanceName(novoNome);
-                                String tk = extrairInstanceToken(respNova);
-                                if (tk != null) inst.setInstanceToken(tk);
-                                String qrNovo = extrairQrCode(respNova);
-                                if (qrNovo != null) {
-                                    inst.setQrCode(qrNovo);
-                                    inst.setQrExpiraEm(LocalDateTime.now().plusSeconds(60));
-                                    log.info("[WhatsApp] QR obtido na recriação forçada pra {}", novoNome);
-                                } else {
-                                    log.info("[WhatsApp] Recriação OK ({}). QR virá por webhook.", novoNome);
-                                }
-                                inst.setStatus(WhatsappInstance.Status.AGUARDANDO_QR);
-                            } catch (RuntimeException e2) {
-                                log.error("[WhatsApp] Recriação forçada falhou: {}", e2.getMessage());
-                            }
-                        }
-                    }
-                } catch (RuntimeException e) {
-                    String msg = e.getMessage() == null ? "" : e.getMessage().toLowerCase();
-                    log.warn("[WhatsApp] re-tentativa /connect falhou pra {}: {}",
-                            inst.getInstanceName(), e.getMessage());
-                    // Instância sumiu na Evolution (deletada manualmente, reset do servidor,
-                    // ou nunca foi criada com sucesso). Recria IN-PLACE no mesmo registro
-                    // — NÃO deleta a linha porque whatsapp_health_log tem FK pra cá sem
-                    // ON DELETE CASCADE, e DELETE quebraria com constraint violation.
-                    if (msg.contains("not found") || msg.contains("does not exist")
-                            || msg.contains("404")) {
-                        log.warn("[WhatsApp] instância {} sumiu da Evolution — recriando in-place",
-                                inst.getInstanceName());
-                        String webhookUrl = props.getWebhookBaseUrl()
-                                + "/api/webhooks/whatsapp/" + inst.getInstanceName();
-                        try {
-                            @SuppressWarnings("unchecked")
-                            Map<String, Object> resp2 = evolutionClient.criarInstancia(
-                                    inst.getInstanceName(), webhookUrl);
-                            String tk = extrairInstanceToken(resp2);
-                            if (tk != null) inst.setInstanceToken(tk);
-                            String qr2 = extrairQrCode(resp2);
-                            if (qr2 != null) {
-                                inst.setQrCode(qr2);
-                                inst.setQrExpiraEm(LocalDateTime.now().plusSeconds(60));
-                            }
-                            inst.setStatus(WhatsappInstance.Status.AGUARDANDO_QR);
-                            log.info("[WhatsApp] recriada in-place. QR={}", qr2 != null ? "ok" : "aguardando webhook");
-                        } catch (RuntimeException e2) {
-                            log.error("[WhatsApp] recriação in-place falhou: {}", e2.getMessage());
-                        }
-                    }
-                }
-                } // end synchronized (lock)
-            }
-        }
-
+        // Antes: a cada poll (4s), se QR estivesse ausente/expirado, chamávamos
+        // /connect AGRESSIVAMENTE — cada chamada REGENERA QR na Evolution v2.x,
+        // invalidando o QR que o usuário estava escaneando naquele momento.
+        // Tinha auto-reset com renomeação que piorava ainda mais (criava
+        // instâncias novas a cada minuto se webhook não chegasse).
+        //
+        // Agora: o /status SÓ atualiza o estado conhecido localmente. NÃO chama
+        // mais /connect aqui. Se o QR sumiu, o usuário clica "Gerar novo QR"
+        // (que chama o POST /conectar). Isso evita destruir o QR durante o scan.
+        //
+        // O webhook QRCODE_UPDATED continua salvando QR conforme a Evolution
+        // emite (com proteção de 10s pra não sobrescrever durante scan ativo).
         return repo.save(inst);
     }
 

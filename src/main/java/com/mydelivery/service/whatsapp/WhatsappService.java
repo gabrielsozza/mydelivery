@@ -93,19 +93,19 @@ public class WhatsappService {
             return inst; // nada a fazer
         }
 
-        // Busca/renova QR
+        // Busca/renova QR — com 1 retry curto pra cobrir Evolution v2.x que
+        // frequentemente responde {"count":0} na 1ª chamada e cospe o QR
+        // 800-1500ms depois. Mudança CIRÚRGICA pra reduzir caso "QR demora a
+        // aparecer". Mantém a lógica antiga de fallback via webhook.
         try {
-            @SuppressWarnings("unchecked")
-            Map<String, Object> resp = evolutionClient.conectar(inst.getInstanceName());
-            String qr = extrairQrCode(resp);
+            String qr = tentarObterQrAgora(inst.getInstanceName());
             if (qr != null) {
-                // Evolution v1.x devolveu QR direto no response
                 inst.setQrCode(qr);
                 inst.setQrExpiraEm(LocalDateTime.now().plusSeconds(60));
             }
-            // Em Evolution v2.1.x o /connect responde {"count":0} sem QR — ele chega
-            // depois via webhook QRCODE_UPDATED. Marcamos AGUARDANDO_QR de qualquer
-            // forma pra o frontend começar o polling em /status.
+            // Em Evolution v2.1.x o /connect às vezes responde {"count":0} sem QR
+            // — ele chega depois via webhook QRCODE_UPDATED. Marcamos AGUARDANDO_QR
+            // de qualquer forma pra o frontend começar o polling em /status.
             inst.setStatus(WhatsappInstance.Status.AGUARDANDO_QR);
         } catch (RuntimeException e) {
             log.error("[WhatsApp] Erro ao gerar QR pra {}: {}", inst.getInstanceName(), e.getMessage());
@@ -113,6 +113,30 @@ public class WhatsappService {
         }
 
         return repo.save(inst);
+    }
+
+    /**
+     * Tenta obter QR da Evolution com até 2 chamadas:
+     *  - 1ª chamada
+     *  - Se não veio QR, pausa 800ms e tenta de novo (Evolution v2.x cospe
+     *    o QR ~1s após o /connect inicial em instâncias recém-criadas)
+     *
+     * Total max ~1s adicional na resposta. Retorna null se nenhuma retornou QR
+     * (caller marca AGUARDANDO_QR e webhook QRCODE_UPDATED chega depois).
+     *
+     * Lança RuntimeException se a Evolution está fora do ar (caller cuida).
+     */
+    @SuppressWarnings("unchecked")
+    private String tentarObterQrAgora(String instanceName) {
+        Map<String, Object> resp = evolutionClient.conectar(instanceName);
+        String qr = extrairQrCode(resp);
+        if (qr != null) return qr;
+        try { Thread.sleep(800L); } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            return null;
+        }
+        resp = evolutionClient.conectar(instanceName);
+        return extrairQrCode(resp);
     }
 
     /**

@@ -46,14 +46,6 @@ public class WhatsappService {
      * localmente — descartando evento". Resultado: QR nunca chegava.
      */
     private static final ConcurrentHashMap<Long, Object> autoRecoveryLocks = new ConcurrentHashMap<>();
-
-    /**
-     * Throttle por nome de instância: última vez que chamamos /instance/connect
-     * pra buscar QR ativamente. Estratégia "busca ativa do QR" — não confia
-     * mais em webhook QRCODE_UPDATED, que falha intermitente.
-     * Map em memória — perde no restart, mas o frontend re-pollar reativa.
-     */
-    private static final ConcurrentHashMap<String, Long> ultimaBuscaQrPorInstancia = new ConcurrentHashMap<>();
     // Injeção via field pra evitar problema de ordem de bootstrap.
     // IncidenteService não depende de WhatsappService, então não há ciclo,
     // mas usar field aqui mantém o construtor enxuto e permite null safety.
@@ -101,31 +93,19 @@ public class WhatsappService {
             return inst; // nada a fazer
         }
 
-        // Busca/renova QR com até 3 tentativas curtas — Evolution v2.x
-        // frequentemente responde {"count":0} sem QR na 1ª chamada e cospe
-        // o QR ~1-2s depois. Em vez de devolver "nada" pro frontend (que
-        // ficaria girando enquanto poll), tentamos retry sincronicamente.
-        // Total max: ~1.5s extra na resposta — usuário aceita esperar isso.
+        // Busca/renova QR
         try {
-            String qr = null;
-            for (int tentativa = 1; tentativa <= 3 && qr == null; tentativa++) {
-                @SuppressWarnings("unchecked")
-                Map<String, Object> resp = evolutionClient.conectar(inst.getInstanceName());
-                qr = extrairQrCode(resp);
-                if (qr == null && tentativa < 3) {
-                    // espera curta pra Evolution gerar o pairing code
-                    try { Thread.sleep(500L); } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                        break;
-                    }
-                }
-            }
+            @SuppressWarnings("unchecked")
+            Map<String, Object> resp = evolutionClient.conectar(inst.getInstanceName());
+            String qr = extrairQrCode(resp);
             if (qr != null) {
+                // Evolution v1.x devolveu QR direto no response
                 inst.setQrCode(qr);
                 inst.setQrExpiraEm(LocalDateTime.now().plusSeconds(60));
             }
-            // Mesmo sem QR no retorno, marca AGUARDANDO_QR — o polling /status
-            // vai continuar buscando ativamente (estratégia nova de Jun/2026).
+            // Em Evolution v2.1.x o /connect responde {"count":0} sem QR — ele chega
+            // depois via webhook QRCODE_UPDATED. Marcamos AGUARDANDO_QR de qualquer
+            // forma pra o frontend começar o polling em /status.
             inst.setStatus(WhatsappInstance.Status.AGUARDANDO_QR);
         } catch (RuntimeException e) {
             log.error("[WhatsApp] Erro ao gerar QR pra {}: {}", inst.getInstanceName(), e.getMessage());
@@ -149,27 +129,7 @@ public class WhatsappService {
         log.info("[WhatsApp] QR atualizado via webhook pra {}", inst.getInstanceName());
     }
 
-    /**
-     * Polling do frontend pra detectar conexão.
-     *
-     * ESTRATÉGIA NOVA (Jun/2026): BUSCA ATIVA DO QR.
-     *
-     * Antes: backend dependia exclusivamente do webhook QRCODE_UPDATED da
-     * Evolution pra preencher inst.qrCode. Quando esse webhook não chegava
-     * (bug conhecido v2.1.x na 1ª conexão de instâncias recém-criadas,
-     * Railway em deploy, instabilidade de rede), o QR ficava eternamente
-     * null e o frontend "girava". Usuário só destravava com Reset manual.
-     *
-     * Agora: a cada polling /status do frontend, SE qrCode está vazio e
-     * status é AGUARDANDO_QR/NOVA, o backend chama ATIVAMENTE
-     * GET /instance/connect/{name} na Evolution — que devolve o QR no body
-     * da resposta. Não dependemos mais do webhook.
-     *
-     * Throttle de 2.5s entre chamadas pra mesma instância (memória local)
-     * evita martelar a Evolution caso o polling do frontend acelere.
-     * Mantém o synchronized pra evitar threads concorrentes que poderiam
-     * recriar instâncias paralelas.
-     */
+    /** Polling do frontend pra detectar conexão. Atualiza status local antes de devolver. */
     @Transactional
     public WhatsappInstance status(Restaurante restaurante) {
         WhatsappInstance inst = repo.findByRestauranteId(restaurante.getId()).orElse(null);
@@ -182,24 +142,21 @@ public class WhatsappService {
         }
         atualizarStatusDaEvolution(inst);
 
+        // AUTO-RECOVERY: usuário relatava QR ficando eternamente em spinner. Causa:
+        // Evolution às vezes não dispara QRCODE_UPDATED depois de /connect numa
+        // instância recém-criada (webhook não chega, ou sessão fica em "connecting"
+        // sem emitir QR). Se passamos do tempo de expiração esperado SEM QR válido,
+        // re-disparamos /connect — Evolution gera QR novo e o webhook deve cuspir.
+        //
+        // CRITICAL: tudo aqui dentro precisa rodar 1 thread por vez por restaurante,
+        // senão o polling do frontend (4s) cria múltiplas instâncias paralelas na
+        // Evolution e o webhook QR fica sendo descartado por nome inconsistente.
         if (inst.getStatus() == WhatsappInstance.Status.AGUARDANDO_QR
                 || inst.getStatus() == WhatsappInstance.Status.NOVA) {
             boolean qrAusente = inst.getQrCode() == null || inst.getQrCode().isBlank();
             boolean qrExpirado = inst.getQrExpiraEm() != null
                     && LocalDateTime.now().isAfter(inst.getQrExpiraEm());
             if (qrAusente || qrExpirado) {
-                // Throttle por instância: max 1 chamada à Evolution a cada 2.5s.
-                // Frontend pode pollar a cada 4s, mas múltiplas abas/usuários
-                // podem multiplicar a carga — esse throttle protege a Evolution.
-                Long ultimaTentativa = ultimaBuscaQrPorInstancia.get(inst.getInstanceName());
-                long agora = System.currentTimeMillis();
-                if (ultimaTentativa != null && (agora - ultimaTentativa) < 2500L) {
-                    // Recente demais — devolve estado atual (QR ainda nulo) e
-                    // próximo poll do frontend (em 4s) já estará fora do throttle.
-                    return repo.save(inst);
-                }
-                ultimaBuscaQrPorInstancia.put(inst.getInstanceName(), agora);
-
                 Object lock = autoRecoveryLocks.computeIfAbsent(restaurante.getId(), k -> new Object());
                 synchronized (lock) {
                     // Re-fetch dentro do lock pra pegar atualização de outra thread que

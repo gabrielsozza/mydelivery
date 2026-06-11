@@ -34,6 +34,10 @@ public class WhatsappService {
     private final WhatsappHealthLogRepository healthLogRepo;
     private final EvolutionClient evolutionClient;
     private final EvolutionProperties props;
+    /** Pra commitar saves intermediários ANTES de chamar Evolution.
+     *  Sem isso, a transação @Transactional do conectar() mantém a inst
+     *  invisível pro webhook (que roda em outra request HTTP/thread). */
+    private final org.springframework.transaction.PlatformTransactionManager txManager;
 
     /**
      * Lock por restauranteId pra evitar que múltiplas threads do polling do
@@ -540,86 +544,63 @@ public class WhatsappService {
 
     @SuppressWarnings("unchecked")
     private WhatsappInstance criarNova(Restaurante restaurante) {
-        String nomeBase = nomeInstancia(restaurante);
-        // Se Evolution rejeitar com "already in use", tenta com sufixo timestamp.
-        // Acontece quando o /reset não conseguiu apagar a instância zumbi do lado
-        // da Evolution. Nome novo = instância nova de verdade (com proxy correto).
-        String nome = nomeBase;
-        String webhookUrl = props.getWebhookBaseUrl() + "/api/webhooks/whatsapp/" + nome;
-        Map<String, Object> resp = null;
+        // ── ESTRATÉGIA DEFINITIVA Jun/2026 ──
+        //
+        // Antes: chamávamos Evolution.criarInstancia ANTES de salvar no DB.
+        // Evolution emitia webhook imediatamente, chegava ANTES do save
+        // commitar, buscarPorNome retornava null e o webhook era descartado.
+        // Mesmo com retry no webhook controller, a janela de race continuava
+        // problemática quando o create falhava com "already in use" e ainda
+        // precisava de logout/delete (que também eram lentos/falhavam).
+        //
+        // Agora: SALVA NO DB ANTES de chamar Evolution. Usa transação
+        // separada (REQUIRES_NEW via TransactionTemplate) pra COMMITAR
+        // imediatamente. Quando Evolution emitir webhook, nossa linha
+        // já está no banco. Zero race condition.
+        //
+        // Usa sufixo timestamp direto — sem tentar reusar nome base que
+        // sabidamente está em uso. Evita sequência de erros logout/delete
+        // que viviam dando 500/400 na Evolution.
 
-        for (int tentativa = 0; tentativa < 2; tentativa++) {
-            log.info("[WhatsApp] Criando instância {} (webhook={})", nome, webhookUrl);
-            try {
-                resp = evolutionClient.criarInstancia(nome, webhookUrl);
-                break;
-            } catch (RuntimeException e) {
-                String msg = e.getMessage() == null ? "" : e.getMessage();
-                if (tentativa == 0 && msg.toLowerCase().contains("already in use")) {
-                    // CAUSA RAIZ JUN/2026:
-                    // Antes: bumpávamos com sufixo timestamp imediatamente. Isso
-                    // gerava nome novo, mas a Evolution emitia QRCODE_UPDATED
-                    // ANTES da nossa transação commitar — webhook chegava com
-                    // nome desconhecido pro DB e era descartado.
-                    //
-                    // Agora: tentamos LIMPAR a instância órfã na Evolution
-                    // primeiro (logout + delete). Se conseguir, reusa o nome
-                    // base — instância "limpa" no nosso DB com mesmo nome
-                    // que estava antes, sem race condition de nome novo.
-                    // Só usa sufixo timestamp como último recurso.
-                    log.warn("[WhatsApp] Nome em uso. Limpando órfão na Evolution antes de reusar nome", nome);
-                    try { evolutionClient.logout(nome); }
-                    catch (RuntimeException ignore) { /* já pode estar deslogada */ }
-                    try { evolutionClient.deletar(nome); }
-                    catch (RuntimeException ignore) { /* idem */ }
-                    // Tenta de novo com MESMO nome
-                    continue;
-                }
-                if (tentativa == 1 && msg.toLowerCase().contains("already in use")) {
-                    // Mesmo após cleanup, Evolution ainda diz "em uso". Aí sim
-                    // usa sufixo timestamp como fallback.
-                    nome = nomeBase + "-" + (System.currentTimeMillis() / 1000);
-                    webhookUrl = props.getWebhookBaseUrl() + "/api/webhooks/whatsapp/" + nome;
-                    log.warn("[WhatsApp] Limpeza não resolveu. Fallback com sufixo: {}", nome);
-                    try {
-                        resp = evolutionClient.criarInstancia(nome, webhookUrl);
-                    } catch (RuntimeException e3) {
-                        log.error("[WhatsApp] criarInstancia fallback falhou: {}", e3.getMessage());
-                        resp = Map.of();
-                    }
-                    break;
-                }
-                log.warn("[WhatsApp] criarInstancia falhou ({}). Tentando reusar via /connect.", msg);
-                resp = Map.of();
-                break;
-            }
+        String nome = nomeInstancia(restaurante) + "-" + (System.currentTimeMillis() / 1000);
+        String webhookUrl = props.getWebhookBaseUrl() + "/api/webhooks/whatsapp/" + nome;
+
+        // PASSO 1: cria a linha no DB e commita ANTES de mexer com Evolution.
+        final String nomeFinal = nome;
+        WhatsappInstance inst = new org.springframework.transaction.support.TransactionTemplate(txManager) {{
+            setPropagationBehavior(org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        }}.execute(s -> repo.save(WhatsappInstance.builder()
+                .restaurante(restaurante)
+                .instanceName(nomeFinal)
+                .status(WhatsappInstance.Status.NOVA)
+                .botAtivo(true)
+                .build()));
+
+        log.info("[WhatsApp] Linha pre-criada no DB ({}) — webhooks da Evolution agora encontram a instancia", nome);
+
+        // PASSO 2: chama Evolution. Webhook que chegar JÁ encontra a instância.
+        Map<String, Object> resp = Map.of();
+        try {
+            log.info("[WhatsApp] Criando instância {} na Evolution (webhook={})", nome, webhookUrl);
+            resp = evolutionClient.criarInstancia(nome, webhookUrl);
+        } catch (RuntimeException e) {
+            log.error("[WhatsApp] criarInstancia falhou: {}", e.getMessage());
+            // Marca ERRO mas DEIXA a linha — usuário pode tentar Reset.
+            inst.setStatus(WhatsappInstance.Status.ERRO);
+            return repo.save(inst);
         }
 
+        // PASSO 3: extrai dados retornados (token + QR se vier no body).
         String token = extrairInstanceToken(resp);
-        // Evolution v2.x já devolve o QR no body do /instance/create quando
-        // qrcode=true (ver EvolutionClient.criarInstancia). Aproveitar isso
-        // evita esperar 5-20s pelo webhook QRCODE_UPDATED, que às vezes
-        // demora ou nem chega (rede entre Evolution e nosso backend).
         String qrInicial = extrairQrCode(resp);
-        WhatsappInstance.Status statusInicial = qrInicial != null
-                ? WhatsappInstance.Status.AGUARDANDO_QR
-                : WhatsappInstance.Status.NOVA;
-        LocalDateTime qrExpira = qrInicial != null
-                ? LocalDateTime.now().plusSeconds(60)
-                : null;
+        if (token != null) inst.setInstanceToken(token);
         if (qrInicial != null) {
+            inst.setQrCode(qrInicial);
+            inst.setQrExpiraEm(LocalDateTime.now().plusSeconds(60));
             log.info("[WhatsApp] QR pré-extraído da resposta /instance/create para {}", nome);
         }
-
-        return repo.save(WhatsappInstance.builder()
-                .restaurante(restaurante)
-                .instanceName(nome)
-                .instanceToken(token)
-                .qrCode(qrInicial)
-                .qrExpiraEm(qrExpira)
-                .status(statusInicial)
-                .botAtivo(true)
-                .build());
+        inst.setStatus(WhatsappInstance.Status.AGUARDANDO_QR);
+        return repo.save(inst);
     }
 
     private String nomeInstancia(Restaurante r) {

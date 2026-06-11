@@ -726,6 +726,10 @@ public class PedidoService {
                 .divisaoPagamentos(extrairDivisaoDaSessao(p.getSessaoId()))
                 .incluiuServico(extrairServicoDaSessao(p.getSessaoId()))
                 .valorCobradoSessao(extrairValorCobradoDaSessao(p.getSessaoId()))
+                // Origem do pedido: MYDELIVERY (default) ou IFOOD. Frontend
+                // usa pra mostrar a logo no card/drawer.
+                .origem(p.getOrigem() == null ? "MYDELIVERY" : p.getOrigem().name())
+                .ifoodDisplayId(p.getIfoodDisplayId())
                 .itens(itens).build();
     }
 

@@ -154,6 +154,28 @@ public class Restaurante {
     @Column(name = "confirmacao_whatsapp_ativa")
     private Boolean confirmacaoWhatsappAtiva = false;
 
+    // ── Integração iFood ──
+    /**
+     * UUID da loja no iFood (merchantId). Preenchido quando o dono autoriza
+     * o aplicativo MyDelivery dentro do Gestor de Pedidos do iFood.
+     * Null = restaurante ainda não integrou com iFood.
+     * Usado pelo IfoodPollingJob pra saber quais merchants pollar.
+     */
+    @Column(name = "ifood_merchant_id", length = 60)
+    private String ifoodMerchantId;
+
+    /** Sinaliza se a integração está ativa (dono pode pausar sem desfazer
+     *  a autorização). Quando false, IfoodPollingJob ignora esse restaurante. */
+    @Builder.Default
+    @Column(name = "ifood_integracao_ativa")
+    private Boolean ifoodIntegracaoAtiva = false;
+
+    /** Última vez que o polling pegou eventos com sucesso pra esse merchant.
+     *  Usado no painel pra mostrar "Sincronizado há X minutos" e detectar
+     *  integração que parou de funcionar. */
+    @Column(name = "ifood_ultimo_polling_em")
+    private LocalDateTime ifoodUltimoPollingEm;
+
     // ── Horários de funcionamento ──
     // JSON serializado: { "seg": {"aberto":true,"abertura":"11:00","fechamento":"22:00"}, ... }
     // Guardado como TEXT pra evitar tabela separada — o front já trata como objeto.

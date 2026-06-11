@@ -72,6 +72,25 @@ public class Pedido {
     /** Nome ou senha pra chamar no balcão ("João", "47"). */
     @Column(name="nome_chamada", length=50) private String nomeChamada;
 
+    // ── Origem do pedido (integrações com marketplaces) ──
+    /** Canal onde o pedido foi criado. Default MYDELIVERY (criado pelo nosso
+     *  cardápio/painel). IFOOD significa que veio da Order API do iFood via polling. */
+    @Enumerated(EnumType.STRING)
+    @Column(name="origem", length=20)
+    @Builder.Default
+    private Origem origem = Origem.MYDELIVERY;
+
+    /** ID do pedido no sistema do iFood (UUID). Null pra pedidos não-iFood.
+     *  Único — evita duplicar se o polling pegar o mesmo evento 2x. */
+    @Column(name="ifood_order_id", length=40, unique = true)
+    private String ifoodOrderId;
+
+    /** displayId do iFood (ex: "1234") — número curto que o cliente vê no app
+     *  iFood. Útil pra suporte/atendimento referenciar o pedido pelo mesmo
+     *  número que o cliente final está vendo. */
+    @Column(name="ifood_display_id", length=20)
+    private String ifoodDisplayId;
+
     @OneToMany(mappedBy="pedido",cascade=CascadeType.ALL,orphanRemoval=true) private List<PedidoItem> itens=new ArrayList<>();
     @CreationTimestamp private LocalDateTime criadoEm;
     @UpdateTimestamp private LocalDateTime atualizadoEm;
@@ -91,4 +110,9 @@ public class Pedido {
     public enum FormaPagamento{PIX,DINHEIRO,CARTAO_MAQUININHA,CARTAO_CREDITO,CARTAO_DEBITO,APPLE_PAY,PENDENTE}
     /** ONLINE = paga agora pelo site. NA_ENTREGA = paga quando receber. */
     public enum ModoPagamento{ONLINE,NA_ENTREGA}
+
+    /** Canal de origem do pedido. Permite distinguir visualmente no painel
+     *  (badge com logo) e tratar fluxos específicos (ex.: pedido iFood já vem
+     *  pago, não precisa de "marcar como pago"). */
+    public enum Origem { MYDELIVERY, IFOOD }
 }

@@ -30,4 +30,8 @@ public interface PedidoRepository extends JpaRepository<Pedido, Long> {
 
     /** Todos os pedidos de uma sessão de mesa específica (Garçom). */
     List<Pedido> findBySessaoIdOrderByCriadoEmAsc(Long sessaoId);
+
+    /** Idempotência da integração iFood — evita criar duplicata caso o
+     *  polling pegue o mesmo PLC event 2x (acontece se ACK falhar). */
+    java.util.Optional<Pedido> findByIfoodOrderId(String ifoodOrderId);
 }

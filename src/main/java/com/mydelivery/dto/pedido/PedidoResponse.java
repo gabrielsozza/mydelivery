@@ -41,6 +41,16 @@ public class PedidoResponse {
      *  e da entidade Cliente. nomeCliente ja faz fallback pra ele, mas
      *  expor explicito ajuda telas que querem distinguir origem. */
     private String nomeChamada;
+
+    /** Canal onde o pedido foi criado. "MYDELIVERY" (default) ou "IFOOD".
+     *  Usado pelo frontend pra mostrar a logo correta no card e drawer. */
+    private String origem;
+
+    /** displayId curto do iFood (visível na resposta apenas pra pedidos IFOOD).
+     *  É o número que o cliente vê no app do iFood — útil pro restaurante
+     *  responder dúvida do cliente referenciando o mesmo número. */
+    private String ifoodDisplayId;
+
     private List<ItemPedidoResponse> itens;
 
     /**

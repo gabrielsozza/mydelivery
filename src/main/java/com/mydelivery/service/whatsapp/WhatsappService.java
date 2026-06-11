@@ -556,11 +556,38 @@ public class WhatsappService {
             } catch (RuntimeException e) {
                 String msg = e.getMessage() == null ? "" : e.getMessage();
                 if (tentativa == 0 && msg.toLowerCase().contains("already in use")) {
-                    // Bumpa nome com sufixo timestamp e tenta de novo
+                    // CAUSA RAIZ JUN/2026:
+                    // Antes: bumpávamos com sufixo timestamp imediatamente. Isso
+                    // gerava nome novo, mas a Evolution emitia QRCODE_UPDATED
+                    // ANTES da nossa transação commitar — webhook chegava com
+                    // nome desconhecido pro DB e era descartado.
+                    //
+                    // Agora: tentamos LIMPAR a instância órfã na Evolution
+                    // primeiro (logout + delete). Se conseguir, reusa o nome
+                    // base — instância "limpa" no nosso DB com mesmo nome
+                    // que estava antes, sem race condition de nome novo.
+                    // Só usa sufixo timestamp como último recurso.
+                    log.warn("[WhatsApp] Nome em uso. Limpando órfão na Evolution antes de reusar nome", nome);
+                    try { evolutionClient.logout(nome); }
+                    catch (RuntimeException ignore) { /* já pode estar deslogada */ }
+                    try { evolutionClient.deletar(nome); }
+                    catch (RuntimeException ignore) { /* idem */ }
+                    // Tenta de novo com MESMO nome
+                    continue;
+                }
+                if (tentativa == 1 && msg.toLowerCase().contains("already in use")) {
+                    // Mesmo após cleanup, Evolution ainda diz "em uso". Aí sim
+                    // usa sufixo timestamp como fallback.
                     nome = nomeBase + "-" + (System.currentTimeMillis() / 1000);
                     webhookUrl = props.getWebhookBaseUrl() + "/api/webhooks/whatsapp/" + nome;
-                    log.warn("[WhatsApp] Nome em uso na Evolution. Re-tentando com {}", nome);
-                    continue;
+                    log.warn("[WhatsApp] Limpeza não resolveu. Fallback com sufixo: {}", nome);
+                    try {
+                        resp = evolutionClient.criarInstancia(nome, webhookUrl);
+                    } catch (RuntimeException e3) {
+                        log.error("[WhatsApp] criarInstancia fallback falhou: {}", e3.getMessage());
+                        resp = Map.of();
+                    }
+                    break;
                 }
                 log.warn("[WhatsApp] criarInstancia falhou ({}). Tentando reusar via /connect.", msg);
                 resp = Map.of();

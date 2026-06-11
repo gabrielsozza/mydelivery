@@ -54,6 +54,60 @@ public class WhatsappWebhookController {
                         return t;
                     });
 
+    /**
+     * Scheduler pra retry de webhook quando a instância ainda não está no DB
+     * (race condition com a transação do /conectar). 2 tentativas: 2s e 6s.
+     */
+    private static final java.util.concurrent.ScheduledExecutorService WEBHOOK_RETRY_EXEC =
+            java.util.concurrent.Executors.newScheduledThreadPool(
+                    2,
+                    r -> {
+                        Thread t = new Thread(r, "wa-webhook-retry");
+                        t.setDaemon(true);
+                        return t;
+                    });
+
+    /** Retry máx por delay em segundos */
+    private static final int[] RETRY_DELAYS_SECONDS = { 2, 6 };
+
+    /**
+     * Reagenda processamento do webhook após N segundos. Usado quando a
+     * instância ainda não está no DB local por causa da race condition com
+     * a transação do /conectar. Tenta até 2 vezes (2s e 6s).
+     */
+    private void agendarRetryWebhook(String instanceName, Map<String, Object> payload, int tentativa) {
+        if (tentativa > RETRY_DELAYS_SECONDS.length) {
+            log.warn("[WA-Webhook] instância {} continua não encontrada após {} retries — desistindo",
+                    instanceName, RETRY_DELAYS_SECONDS.length);
+            return;
+        }
+        int delay = RETRY_DELAYS_SECONDS[tentativa - 1];
+        WEBHOOK_RETRY_EXEC.schedule(() -> {
+            try {
+                WhatsappInstance inst = whatsappService.buscarPorNome(instanceName);
+                if (inst == null) {
+                    // Ainda não chegou — agenda próximo retry
+                    agendarRetryWebhook(instanceName, payload, tentativa + 1);
+                    return;
+                }
+                log.info("[WA-Webhook] instância {} encontrada no retry #{} — processando agora",
+                        instanceName, tentativa);
+                // Re-executa o handler como se o webhook tivesse acabado de chegar
+                whatsappService.marcarMensagemRecebida(inst);
+                String event = strDe(payload, "event");
+                registrarEvento(instanceName, event, payload);
+                switch (event == null ? "" : event) {
+                    case "messages.upsert", "MESSAGES_UPSERT" -> tratarMensagem(inst, payload);
+                    case "connection.update", "CONNECTION_UPDATE" -> tratarConexao(inst, payload);
+                    case "qrcode.updated", "QRCODE_UPDATED" -> tratarQrCode(inst, payload);
+                    default -> { /* ignora */ }
+                }
+            } catch (Exception e) {
+                log.error("[WA-Webhook] erro no retry da instância {}: {}", instanceName, e.getMessage(), e);
+            }
+        }, delay, java.util.concurrent.TimeUnit.SECONDS);
+    }
+
     /** Buffer in-memory dos últimos N webhooks recebidos, por instância.
      *  Serve pra diagnóstico ao vivo: "a Evolution está enviando mensagens
      *  ou não?". É memória volátil — perde no restart, mas pra debug serve. */
@@ -93,7 +147,20 @@ public class WhatsappWebhookController {
 
         WhatsappInstance inst = whatsappService.buscarPorNome(instanceName);
         if (inst == null) {
-            log.warn("[WA-Webhook] instância {} não encontrada localmente — descartando evento", instanceName);
+            // CAUSA RAIZ HISTÓRICA do "QR carrega eternamente":
+            // Race condition. O POST /conectar é @Transactional. Quando ele
+            // chama Evolution.criarInstancia, a Evolution IMEDIATAMENTE começa
+            // a emitir webhook (QRCODE_UPDATED) ANTES da transação local
+            // commitar. Webhook chega aqui, buscarPorNome() não encontra
+            // (ainda não foi commitado), e descartávamos. Quando o próximo
+            // QRCODE_UPDATED chegava ~25s depois, o QR original já tinha
+            // expirado no celular do dono.
+            //
+            // Fix: agenda retry assíncrono em 2s e 6s antes de desistir.
+            // 99% dos casos resolvem na 1ª tentativa (transação commita
+            // em <500ms). 6s cobre cold start de DB pool.
+            log.warn("[WA-Webhook] instância {} não encontrada — agendando retry em 2s+6s", instanceName);
+            agendarRetryWebhook(instanceName, payload, 1);
             return ResponseEntity.ok().build();
         }
 

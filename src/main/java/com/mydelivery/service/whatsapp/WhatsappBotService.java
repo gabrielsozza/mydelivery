@@ -44,10 +44,12 @@ public class WhatsappBotService {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private WhatsappIncidenteService incidenteService;
 
-    /** Delay (ms) de "digitando…" antes da msg aparecer. Reduzido novamente
-     *  de 600 → 250 — meta apertada de ≤3s ponta a ponta. 250ms ainda dá
-     *  sensação de "humano digitando rápido", abaixo disso fica robótico. */
-    private static final int TYPING_DELAY_MS = 250;
+    /** Delay (ms) de "digitando…" antes da msg aparecer.
+     *  Aumentado pra 2000ms a pedido do operador — bot respondendo em ms
+     *  é sinal forte pro WhatsApp marcar como spam (shadow ban). 2s
+     *  simula tempo humano de digitação curta e protege a conta.
+     *  Tradeoff: cliente vê resposta um pouco depois, mas conta segue viva. */
+    private static final int TYPING_DELAY_MS = 2000;
 
     /** Cache em memória de ConfiguracaoRestaurante por restauranteId.
      *  Evita query DB no caminho crítico de cada mensagem. TTL curto (60s)
@@ -201,18 +203,31 @@ public class WhatsappBotService {
                     + "É só aguardar um instantinho que ele bate na sua porta! 🛵";
         }
 
-        // 1. Atendente humano — prioridade máxima
+        // 1. Atendente humano — PRIORIDADE MÁXIMA
+        // Lista ampliada cobrindo "tem alguem", "pra atender", etc.
+        // ATENÇÃO de ordem: precisa vir ANTES de regiões (que tinha "atende"
+        // genérico e capturava "atender" indevidamente).
         if (contemAlguma(t, "atendente", "humano", "pessoa", "falar com alguem",
-                "falar com voce", "atendimento humano", "operador")) {
+                "falar com voce", "atendimento humano", "operador",
+                "tem alguem", "tem alguém", "tem alguem ai", "tem alguém aí",
+                "alguem pra atender", "alguém pra atender", "pra atender",
+                "atender ai", "atender aí", "atende ai", "atende aí",
+                "alguem pode", "alguém pode", "tem gente")) {
             st.pediuAtendente = true;
             st.ultimaIntencao = "atendente";
             return "Sem problema! 👤 Vou transferir você pra um atendente humano da " + r.getNome() + ".\n\n"
                     + "Em instantes alguém da equipe responde aqui mesmo. 😊";
         }
 
-        // 2. Regiões / bairros atendidos
-        if (contemAlguma(t, "regiao", "regioes", "atende", "atendem", "atende aqui",
-                "entrega aqui", "bairro", "bairros", "atendido", "cobertura")) {
+        // 2. Regiões / bairros atendidos — FRASES ESPECÍFICAS
+        // Antes: "atende"/"atendem" sozinhos casavam com "atender" (humano)
+        // e o bot mostrava regiões em vez de transferir. Removidos.
+        if (contemAlguma(t, "regiao", "regioes", "região", "regiões",
+                "atendem aqui", "atendem ai", "atendem aí",
+                "atende aqui", "atende ai", "atende aí",
+                "atende em", "atende na", "atende no", "atendem em", "atendem na", "atendem no",
+                "entrega aqui", "entrega ai", "entrega aí", "entrega em", "entrega na",
+                "bairro", "bairros", "atendido", "cobertura", "qual area")) {
             st.ultimaIntencao = "regioes";
             return montarRespostaRegioes(r);
         }
@@ -236,9 +251,14 @@ public class WhatsappBotService {
             return montarRespostaTempo(r);
         }
 
-        // 6. Cardápio / quero pedir
-        if (contemAlguma(t, "cardapio", "menu", "produtos", "comprar", "pedir",
-                "fazer pedido", "fazer um pedido", "quero pedir", "vou pedir", "to pedindo")) {
+        // 6. Cardápio / quero pedir / "por onde faço o pedido"
+        if (contemAlguma(t, "cardapio", "cardápio", "menu", "produtos", "comprar",
+                "pedir", "fazer pedido", "fazer um pedido", "quero pedir", "vou pedir",
+                "to pedindo", "tô pedindo", "por onde", "onde faco", "onde faço",
+                "como faco", "como faço", "como peco", "como peço",
+                "onde peco", "onde peço", "como funciona o pedido",
+                "como pedir", "onde pedir", "fazer o pedido", "fazer meu pedido",
+                "quero fazer", "vou fazer pedido")) {
             st.ultimaIntencao = "cardapio";
             String link = montarLinkCardapio(r);
             if (!Boolean.TRUE.equals(r.getAberto())) {
@@ -248,6 +268,19 @@ public class WhatsappBotService {
             }
             return "Aqui está nosso cardápio 👉 " + link
                     + "\n\nÉ só escolher os itens e finalizar pelo site. 🍽️";
+        }
+
+        // 6e. "Consegue me ajudar?" / "Quais opções?" / "Como funciona?"
+        // Cliente quer saber o que o bot pode fazer — mostra o menu.
+        if (contemAlguma(t, "consegue me ajudar", "voce consegue", "você consegue",
+                "voce pode me ajudar", "você pode me ajudar", "pode me ajudar",
+                "consegue ajudar", "me ajudar", "me ajuda",
+                "quais opcoes", "quais opções", "com quais", "quais sao",
+                "o que voce faz", "o que vc faz", "o que você faz",
+                "como funciona", "como funciona o bot", "o que voce pode",
+                "o que pode fazer", "o que vc pode", "o que sabe")) {
+            st.ultimaIntencao = "como_ajuda";
+            return montarMenuCurto(r);
         }
 
         // 6a. Formas de pagamento aceitas
@@ -344,8 +377,10 @@ public class WhatsappBotService {
             return montarApresentacao(r, st);
         }
 
-        // 10. Anti-loop: muitas msgs sem ajuda real → sugere atendente
-        if (st.totalMensagens >= 5 && !"sugeriu_humano".equals(st.ultimaIntencao)) {
+        // 10. Anti-loop: 8 msgs sem casamento → sugere atendente
+        // Aumentado de 5 → 8 porque estava sugerindo humano cedo demais
+        // (depois de 4-5 mensagens normais o cliente já caia nessa msg).
+        if (st.totalMensagens >= 8 && !"sugeriu_humano".equals(st.ultimaIntencao)) {
             st.ultimaIntencao = "sugeriu_humano";
             return "Hmm, parece que não consegui te ajudar direito 😅\n\n"
                     + "Que tal eu te transferir pra alguém da equipe? "

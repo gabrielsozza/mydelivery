@@ -34,4 +34,40 @@ public interface PedidoRepository extends JpaRepository<Pedido, Long> {
     /** Idempotência da integração iFood — evita criar duplicata caso o
      *  polling pegue o mesmo PLC event 2x (acontece se ACK falhar). */
     java.util.Optional<Pedido> findByIfoodOrderId(String ifoodOrderId);
+
+    /**
+     * Pedidos esquecidos em SAIU_ENTREGA — restaurante saiu pra entregar e
+     * não voltou pra marcar ENTREGUE. Job auto-fecha após 2h30min de
+     * inatividade (parametrizável).
+     *
+     * Só DELIVERY/RETIRADA — mesa/balcão têm fluxo próprio.
+     * Só status SAIU_ENTREGA — é a única transição em que "esqueceu de
+     * marcar" faz sentido virar ENTREGUE automaticamente.
+     */
+    @Query("SELECT p FROM Pedido p " +
+           "WHERE p.status = com.mydelivery.model.Pedido.Status.SAIU_ENTREGA " +
+           "  AND p.tipo IN (com.mydelivery.model.Pedido.Tipo.DELIVERY, com.mydelivery.model.Pedido.Tipo.RETIRADA) " +
+           "  AND p.atualizadoEm < :limite")
+    List<Pedido> findEsquecidosParaEntregaAutomatica(LocalDateTime limite);
+
+    /**
+     * Último pedido NÃO-finalizado de um cliente identificado pelo telefone,
+     * dentro do restaurante específico. Usado pelo bot WhatsApp pra responder
+     * "cadê meu pedido" sem precisar transferir pra atendente.
+     *
+     * Filtra:
+     *  - Restaurante específico (multi-tenant)
+     *  - Telefone do cliente (limpo de máscara)
+     *  - Status ATIVO (não ENTREGUE/CANCELADO finais — mas se cliente perguntar
+     *    logo após entregar, ainda mostramos pelo período curto)
+     *  - Últimas 24h (pra não confundir com pedido antigo do mesmo cliente)
+     *  - Ordena por mais recente primeiro
+     */
+    @Query("SELECT p FROM Pedido p " +
+           "WHERE p.restaurante.id = :restauranteId " +
+           "  AND p.cliente.telefone = :telefone " +
+           "  AND p.criadoEm >= :desde " +
+           "ORDER BY p.criadoEm DESC")
+    List<Pedido> findUltimosDoTelefone(Long restauranteId, String telefone,
+                                       LocalDateTime desde);
 }

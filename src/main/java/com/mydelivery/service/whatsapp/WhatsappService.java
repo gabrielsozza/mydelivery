@@ -257,9 +257,14 @@ public class WhatsappService {
                 log.warn("[WhatsApp] Logout falhou (continua marcando DESCONECTADA): {}", e.getMessage());
             }
             inst.setStatus(WhatsappInstance.Status.DESCONECTADA);
+            // FLUXO NORMAL: dono clicou "Desconectar" no painel.
+            // Marca pra que health/job NÃO tentem reconectar nem gerem alerta.
+            inst.setDesconectadoManualmente(true);
+            inst.setTentativasReconexaoSeguidas(0);
             inst.setQrCode(null);
             inst.setQrExpiraEm(null);
             repo.save(inst);
+            log.info("[WhatsApp] Instância {} desconectada MANUALMENTE pelo dono", inst.getInstanceName());
         });
     }
 
@@ -363,7 +368,8 @@ public class WhatsappService {
      */
     public void enviarMensagem(WhatsappInstance inst, String numeroDestino, String texto, int delayMs) {
         if (inst.getStatus() != WhatsappInstance.Status.CONECTADA) {
-            log.warn("[WhatsApp] Pulando envio: instância {} não está conectada", inst.getInstanceName());
+            log.warn("[WhatsApp:SILENCIO] Pulando envio: instância {} status={} (precisa ser CONECTADA)",
+                    inst.getInstanceName(), inst.getStatus());
             return;
         }
         try {
@@ -475,9 +481,15 @@ public class WhatsappService {
     public void marcarMensagemRecebida(WhatsappInstance inst) {
         try {
             inst.setUltimaMensagemRecebidaEm(java.time.LocalDateTime.now());
-            if (inst.getTentativasReconexaoSeguidas() != null && inst.getTentativasReconexaoSeguidas() > 0) {
-                inst.setTentativasReconexaoSeguidas(0);
-            }
+            // BUG HISTÓRICO: antes resetávamos tentativasReconexaoSeguidas aqui.
+            // Mas esse método é chamado em QUALQUER evento Evolution (incluindo
+            // keep-alive periódico que ela manda sozinha). Resultado: contador
+            // zerava sem o bot funcionar de fato, e RECUPERACAO_ESGOTADA nunca
+            // disparava → loop infinito de restart silencioso.
+            //
+            // Agora: contador só zera em heartbeat FORTE (mensagem real do
+            // cliente em marcarMensagemClienteRecebida ou envio bem-sucedido
+            // em marcarRespostaEnviada).
             repo.save(inst);
         } catch (Exception e) {
             log.warn("[WhatsApp] Falha ao atualizar heartbeat fraco: {}", e.getMessage());
@@ -492,9 +504,32 @@ public class WhatsappService {
     public void marcarMensagemClienteRecebida(WhatsappInstance inst) {
         try {
             inst.setUltimaMensagemClienteEm(java.time.LocalDateTime.now());
+            // Heartbeat FORTE = bot REALMENTE recebeu msg de cliente. Esse é
+            // o único sinal confiável de que a sessão está funcional.
+            // Reseta contador de tentativas pra parar de tentar reconectar.
+            if (inst.getTentativasReconexaoSeguidas() != null
+                    && inst.getTentativasReconexaoSeguidas() > 0) {
+                log.info("[WhatsApp] msg de cliente recebida — resetando contador de tentativas ({}→0) em {}",
+                        inst.getTentativasReconexaoSeguidas(), inst.getInstanceName());
+                inst.setTentativasReconexaoSeguidas(0);
+            }
             repo.save(inst);
         } catch (Exception e) {
             log.warn("[WhatsApp] Falha ao atualizar heartbeat forte: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Marca mensagem recebida como lida no WhatsApp (anti-bot fingerprint).
+     * Tolerante a falha — Evolution antigas não suportam markRead.
+     */
+    public void marcarMsgComoLida(WhatsappInstance inst, String remoteJid, String messageId) {
+        if (inst == null || remoteJid == null || messageId == null) return;
+        try {
+            evolutionClient.marcarComoLida(inst.getInstanceName(), inst.getInstanceToken(),
+                    remoteJid, messageId, false);
+        } catch (Exception e) {
+            log.debug("[WhatsApp] markRead falhou (ignorado): {}", e.getMessage());
         }
     }
 
@@ -503,6 +538,12 @@ public class WhatsappService {
     public void marcarRespostaEnviada(WhatsappInstance inst) {
         try {
             inst.setUltimaRespostaEnviadaEm(java.time.LocalDateTime.now());
+            // Bot conseguiu ENVIAR mensagem com sucesso = sessão funcional.
+            // Reseta contador junto com o heartbeat forte de cliente.
+            if (inst.getTentativasReconexaoSeguidas() != null
+                    && inst.getTentativasReconexaoSeguidas() > 0) {
+                inst.setTentativasReconexaoSeguidas(0);
+            }
             repo.save(inst);
         } catch (Exception e) {
             log.warn("[WhatsApp] Falha ao atualizar heartbeat de envio: {}", e.getMessage());
@@ -516,6 +557,12 @@ public class WhatsappService {
         inst.setConectadoEm(LocalDateTime.now());
         inst.setQrCode(null);
         inst.setQrExpiraEm(null);
+        // Reset de flags de queda — qualquer histórico de queda anterior é
+        // resolvido quando reconecta com sucesso.
+        inst.setDesconectadoManualmente(false);
+        inst.setTentativasReconexaoSeguidas(0);
+        inst.setMotivoUltimaQueda(null);
+        // ultimaQuedaEm fica preservado pro histórico ("última queda" na UI)
         if (phone != null && !phone.isBlank()) inst.setPhone(phone);
         repo.save(inst);
         log.info("[WhatsApp] Instância {} CONECTADA (phone={})", inst.getInstanceName(), phone);
@@ -534,10 +581,39 @@ public class WhatsappService {
             return;
         }
         inst.setStatus(WhatsappInstance.Status.DESCONECTADA);
+        // QUEDA INESPERADA: webhook Evolution avisou state=close enquanto
+        // estávamos CONECTADA. Isso é o cenário que justifica alerta +
+        // auto-reconexão (a diferença do clique manual).
+        //
+        // ── DETECTOR DE QUEDA RECORRENTE ──
+        // Se a queda anterior foi há < 24h, abre incidente INSTANCIA_INSTAVEL
+        // (severidade ALTA). Padrão: 2+ quedas em 24h = shadow ban persistente
+        // ou problema de número/sessão. Pede atenção humana.
+        LocalDateTime quedaAnterior = inst.getUltimaQuedaEm();
+        boolean recorrente = quedaAnterior != null
+                && java.time.Duration.between(quedaAnterior, LocalDateTime.now()).toHours() < 24;
+
+        inst.setDesconectadoManualmente(false);
+        inst.setUltimaQuedaEm(LocalDateTime.now());
+        inst.setMotivoUltimaQueda("Webhook close (Evolution avisou state=close)");
         inst.setQrCode(null);
         inst.setQrExpiraEm(null);
         repo.save(inst);
-        log.info("[WhatsApp] Instância {} DESCONECTADA via webhook", inst.getInstanceName());
+        log.warn("[WhatsApp] Instância {} DESCONECTADA via webhook (QUEDA INESPERADA){}",
+                inst.getInstanceName(),
+                recorrente ? " — QUEDA RECORRENTE em <24h" : "");
+
+        if (recorrente && incidenteService != null) {
+            try {
+                long horas = java.time.Duration.between(quedaAnterior, LocalDateTime.now()).toHours();
+                incidenteService.abrirSe(inst,
+                        com.mydelivery.model.WhatsappIncidente.Tipo.INSTANCIA_INSTAVEL,
+                        com.mydelivery.model.WhatsappIncidente.Severidade.ALTA,
+                        "Instância caiu 2+ vezes em <24h (gap=" + horas + "h). "
+                                + "Possível shadow ban persistente — considerar trocar número ou aguardar 48h.",
+                        "{\"quedaAnterior\":\"" + quedaAnterior + "\",\"gapHoras\":" + horas + "}");
+            } catch (Exception ignore) { /* incidente é best-effort */ }
+        }
     }
 
     // ── privados ──

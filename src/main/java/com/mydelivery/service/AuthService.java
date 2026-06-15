@@ -26,6 +26,7 @@ public class AuthService {
     private final JwtUtil jwtUtil;
     private final AuthenticationManager authenticationManager;
     private final EmailService emailService;
+    private final com.mydelivery.service.meta.MetaCapiService metaCapiService;
 
     @Value("${app.trial.dias}")
     private int trialDias;
@@ -88,6 +89,15 @@ public class AuthService {
 
         String accessToken = jwtUtil.gerarToken(usuario.getEmail(), usuario.getRole().name());
         String refreshToken = jwtUtil.gerarRefreshToken(usuario.getEmail());
+
+        // ── Meta CAPI: CompleteRegistration (server-side) ──
+        // Dispara em paralelo ao Pixel do front (mesmo evento "Concluir
+        // inscrição"). Async + try-catch interno — nunca quebra o cadastro
+        // mesmo se Meta cair.
+        try {
+            metaCapiService.completeRegistration(usuario.getEmail(),
+                    usuario.getTelefone(), usuario.getNome());
+        } catch (Exception ignored) { /* fail-safe */ }
 
         return LoginResponse.builder()
                 .accessToken(accessToken)

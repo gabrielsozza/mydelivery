@@ -58,7 +58,23 @@ public class WhatsappHealthService {
 
     /** Calcula estado atual sem persistir. */
     public WhatsappHealthLog.Estado avaliarEstado(WhatsappInstance inst) {
+        // ── FLUXO NORMAL — NÃO é OFFLINE, não gera alerta ──
+        //
+        // Quando o usuário está configurando (NOVA, AGUARDANDO_QR) OU
+        // desligou explicitamente (DESCONECTADA + desconectadoManualmente=true),
+        // o estado é AGUARDANDO_CONEXAO. Antes esses casos viravam OFFLINE no
+        // gráfico e disparavam reconexão indevida.
+        WhatsappInstance.Status s = inst.getStatus();
+        if (s == WhatsappInstance.Status.NOVA
+                || s == WhatsappInstance.Status.AGUARDANDO_QR) {
+            return WhatsappHealthLog.Estado.AGUARDANDO_CONEXAO;
+        }
+        if (s == WhatsappInstance.Status.DESCONECTADA
+                && Boolean.TRUE.equals(inst.getDesconectadoManualmente())) {
+            return WhatsappHealthLog.Estado.AGUARDANDO_CONEXAO;
+        }
         if (inst.getStatus() != WhatsappInstance.Status.CONECTADA) {
+            // DESCONECTADA inesperada OU ERRO — ESSE sim é OFFLINE de verdade
             return WhatsappHealthLog.Estado.OFFLINE;
         }
         Integer minFraco = minutosSemEventoEvolution(inst);
@@ -116,6 +132,13 @@ public class WhatsappHealthService {
         r.put("minutosSemMensagem", minutosSemEventoEvolution(inst));
         r.put("tentativasReconexao", inst.getTentativasReconexaoSeguidas());
         r.put("botAtivo", inst.getBotAtivo());
+        // ── Campos novos pro novo monitoramento (manual vs queda) ──
+        r.put("desconectadoManualmente", Boolean.TRUE.equals(inst.getDesconectadoManualmente()));
+        r.put("ultimaQuedaEm",
+                inst.getUltimaQuedaEm() == null ? null : inst.getUltimaQuedaEm().toString());
+        r.put("motivoUltimaQueda", inst.getMotivoUltimaQueda());
+        r.put("conectadoEm",
+                inst.getConectadoEm() == null ? null : inst.getConectadoEm().toString());
         return r;
     }
 

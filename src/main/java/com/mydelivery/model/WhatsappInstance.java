@@ -109,6 +109,28 @@ public class WhatsappInstance {
     private LocalDateTime ultimaTentativaReconexaoEm;
 
     /**
+     * TRUE = dono clicou "Desconectar" no painel (fluxo normal — NÃO gera alerta
+     *        nem auto-reconexão).
+     * FALSE = queda inesperada (webhook close OU heartbeat morreu) — aí sim
+     *         registra incidente e tenta reconectar.
+     *
+     * Resetado pra false quando CONECTADA novamente.
+     */
+    @Column(name = "desconectado_manualmente", nullable = false)
+    @Builder.Default
+    private Boolean desconectadoManualmente = false;
+
+    /** Última vez que a sessão caiu inesperadamente (webhook close).
+     *  null se nunca caiu ou se está conectada. */
+    @Column(name = "ultima_queda_em")
+    private LocalDateTime ultimaQuedaEm;
+
+    /** Texto curto descrevendo o motivo da última queda inesperada.
+     *  Ex.: "Webhook close (Baileys)", "Heartbeat morto há 60min". */
+    @Column(name = "motivo_ultima_queda", length = 120)
+    private String motivoUltimaQueda;
+
+    /**
      * Toggle do bot: quando false, mensagens recebidas não disparam resposta
      * automática (mas continuam sendo persistidas pra histórico futuro).
      * Default true pra novo restaurante começar com bot ligado.

@@ -206,11 +206,14 @@ public class WhatsappWebhookController {
         Object key = dataMap.get("key");
         boolean fromMe = false;
         String remoteJid = null;
+        String messageId = null;
         if (key instanceof Map<?, ?> k) {
             Map<String, Object> kMap = (Map<String, Object>) k;
             fromMe = Boolean.TRUE.equals(kMap.get("fromMe"));
             Object rj = kMap.get("remoteJid");
             if (rj != null) remoteJid = rj.toString();
+            Object idObj = kMap.get("id");
+            if (idObj != null) messageId = idObj.toString();
         }
         if (fromMe) return; // Não processa mensagens que NÓS enviamos
         if (remoteJid == null) return;
@@ -219,6 +222,24 @@ public class WhatsappWebhookController {
         // de cliente. Só agora atualizamos o sinal que prova bot operacional.
         // (O heartbeat fraco já foi atualizado no entry point do webhook.)
         whatsappService.marcarMensagemClienteRecebida(inst);
+
+        // ── ANTI-BOT: marca como lida com delay aleatório 0.8-3s ──
+        // Bot que marca tudo como lido instantâneo é fingerprint forte.
+        // Humano demora 1-3s pra abrir conversa, ler e responder.
+        // Async + fail-safe — não bloqueia o bot e ignora se Evolution
+        // não suportar o endpoint.
+        if (messageId != null) {
+            final String midFinal = messageId;
+            final String jidFinal = remoteJid;
+            BOT_EXEC.submit(() -> {
+                try {
+                    Thread.sleep(com.mydelivery.service.whatsapp.BotVariations.randomReadDelayMs());
+                    whatsappService.marcarMsgComoLida(inst, jidFinal, midFinal);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                } catch (Exception ignored) { /* best-effort */ }
+            });
+        }
 
         // Texto: pode estar em message.conversation ou message.extendedTextMessage.text
         String texto = extrairTexto(dataMap);

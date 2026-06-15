@@ -206,6 +206,30 @@ public class EvolutionClient {
     }
 
     /**
+     * Marca uma mensagem específica como lida (anti-bot: humano não lê tudo
+     * instantâneo). Chama Evolution endpoint /chat/markMessageAsRead/.
+     *
+     * Tolerante a falha: se Evolution não suportar ou retornar erro, ignora.
+     * Marcar como lido é "nice to have" — não pode bloquear nem retentar.
+     */
+    @SuppressWarnings("unchecked")
+    public void marcarComoLida(String instanceName, String instanceToken,
+                               String remoteJid, String messageId, boolean fromMe) {
+        try {
+            java.util.Map<String, Object> msg = new java.util.HashMap<>();
+            msg.put("remoteJid", remoteJid);
+            msg.put("fromMe", fromMe);
+            msg.put("id", messageId);
+            java.util.Map<String, Object> body = new java.util.HashMap<>();
+            body.put("read_messages", java.util.List.of(msg));
+            String key = instanceToken != null && !instanceToken.isBlank() ? instanceToken : props.getApiKey();
+            executar("POST", "/chat/markMessageAsRead/" + instanceName, key, body, Map.class);
+        } catch (Exception ignored) {
+            // best-effort — versões antigas da Evolution não têm esse endpoint
+        }
+    }
+
+    /**
      * Devolve a configuração atual de webhook salva na Evolution pra essa instância.
      * Útil pra diagnosticar quando msgs não chegam no backend.
      * Resposta típica: { "enabled": true, "url": "https://.../api/webhooks/whatsapp/...", "events": [...] }

@@ -46,8 +46,15 @@ public class WhatsappHealthJob {
     /** Cooldown entre auto-reconexões da MESMA instância (anti-loop). */
     private static final int COOLDOWN_RECONEXAO_MIN = 15;
 
-    /** Máximo de tentativas consecutivas antes de desistir do auto-restart. */
-    private static final int MAX_TENTATIVAS_SEGUIDAS = 5;
+    /** Máximo de tentativas consecutivas antes de desistir do auto-restart.
+     *  Reduzido de 5 → 3: shadow ban persistente não resolve com restart,
+     *  insistir é só esforço inútil. Após 3 falhas, abre INSTANCIA_INSTAVEL
+     *  e respeita cooldown longo (6h) antes de tentar de novo. */
+    private static final int MAX_TENTATIVAS_SEGUIDAS = 3;
+
+    /** Após esgotar tentativas, espera N horas antes de tentar restart de
+     *  novo. Shadow ban tem que "esfriar" — restart imediato re-flagga. */
+    private static final int COOLDOWN_POS_ESGOTADO_HORAS = 6;
 
     @Scheduled(fixedRate = 5 * 60_000L, initialDelay = 60_000L) // 5min, espera 1min após boot
     public void tick() {
@@ -76,10 +83,37 @@ public class WhatsappHealthJob {
 
         // Auto-reconexão: só se ativa o bot, instância já foi conectada um dia,
         // está OFFLINE OU INSTÁVEL, e cooldown passou.
+        //
+        // CRITICAL: NÃO disparar reconexão se o dono desconectou manualmente
+        // (desconectadoManualmente=true) — esse é fluxo normal, ficaria
+        // reconectando contra a vontade do usuário.
+        // Também não dispara em AGUARDANDO_CONEXAO (instância nova esperando QR).
         boolean precisaIntervir = (estado == WhatsappHealthLog.Estado.OFFLINE
                 || estado == WhatsappHealthLog.Estado.INSTAVEL);
+        boolean foiManual = Boolean.TRUE.equals(inst.getDesconectadoManualmente());
+
+        // Se já esgotou tentativas, espera cooldown LONGO (6h) antes de
+        // tentar de novo. Loop infinito de restart re-flagga shadow ban
+        // — precisa dar tempo do WhatsApp "esfriar" o número.
+        boolean esgotouEPrecisaResfriar = false;
+        if (inst.getTentativasReconexaoSeguidas() != null
+                && inst.getTentativasReconexaoSeguidas() >= MAX_TENTATIVAS_SEGUIDAS) {
+            if (inst.getUltimaTentativaReconexaoEm() == null
+                    || Duration.between(inst.getUltimaTentativaReconexaoEm(), LocalDateTime.now()).toHours()
+                            < COOLDOWN_POS_ESGOTADO_HORAS) {
+                esgotouEPrecisaResfriar = true;
+            } else {
+                // Cooldown longo passou — zera contador e dá nova chance
+                log.info("[WAHealth] cooldown pós-esgotado ({}h) terminou pra {} — resetando contador pra nova tentativa",
+                        COOLDOWN_POS_ESGOTADO_HORAS, inst.getInstanceName());
+                inst.setTentativasReconexaoSeguidas(0);
+                instanceRepo.save(inst);
+            }
+        }
 
         if (precisaIntervir
+                && !foiManual
+                && !esgotouEPrecisaResfriar
                 && Boolean.TRUE.equals(inst.getBotAtivo())
                 && inst.getConectadoEm() != null
                 && cooldownOk(inst)

@@ -101,6 +101,44 @@ public class WhatsappHealthController {
     }
 
     /**
+     * Contadores ATUAIS por estado — pro topo do dashboard admin.
+     * Retorna { conectados, aguardandoConexao, comProblema, total }.
+     * Distingue fluxo NORMAL (esperando QR, manual) de PROBLEMA (queda inesperada).
+     */
+    @GetMapping("/api/admin-internal/whatsapp/contadores")
+    public ResponseEntity<Map<String, Object>> contadores(
+            @RequestHeader(value = "X-Admin-Secret", required = false) String secret) {
+        validarSecret(secret);
+        var todas = instanceRepo.findAll();
+        int conectados = 0;
+        int aguardandoQr = 0;
+        int desconectadosManual = 0;
+        int comProblema = 0;
+        for (var inst : todas) {
+            var estado = healthService.avaliarEstado(inst);
+            switch (estado) {
+                case OPERACIONAL -> conectados++;
+                case AGUARDANDO_CONEXAO -> {
+                    if (inst.getStatus() == WhatsappInstance.Status.AGUARDANDO_QR
+                            || inst.getStatus() == WhatsappInstance.Status.NOVA) {
+                        aguardandoQr++;
+                    } else {
+                        desconectadosManual++;
+                    }
+                }
+                case INSTAVEL, OFFLINE -> comProblema++;
+            }
+        }
+        Map<String, Object> out = new java.util.LinkedHashMap<>();
+        out.put("total", todas.size());
+        out.put("conectados", conectados);
+        out.put("aguardandoQr", aguardandoQr);
+        out.put("desconectadosManual", desconectadosManual);
+        out.put("comProblema", comProblema);
+        return ResponseEntity.ok(out);
+    }
+
+    /**
      * Saúde GLOBAL — agregado horário das últimas N horas (default 12),
      * mostrando quantos restaurantes estavam em cada estado por hora.
      * Usado pelo gráfico do dashboard admin.
@@ -168,6 +206,86 @@ public class WhatsappHealthController {
                 "instanceName", instanceName,
                 "mensagem", "Reset completo executado. Restaurante precisa escanear QR novo."
         ));
+    }
+
+    /**
+     * Diagnóstico completo: por que esse bot está calado AGORA?
+     *
+     * Devolve em JSON um veredito direto + checagens detalhadas:
+     *  - botAtivo: bot ligado/desligado
+     *  - status: CONECTADA / DESCONECTADA / AGUARDANDO_QR / ERRO
+     *  - heartbeats: minutos desde último evento Evolution + última msg cliente
+     *  - webhook na Evolution: URL configurada vs URL esperada
+     *  - últimos eventos no ring buffer (Evolution está MANDANDO algo?)
+     *
+     * Usado quando dono reclama "bot parou" — admin abre esse endpoint e em
+     * 1 olhada vê o motivo. Sem precisar abrir log do Railway.
+     */
+    @GetMapping("/api/admin-internal/whatsapp/{instanceName}/diagnostico-bot")
+    public ResponseEntity<Map<String, Object>> diagnosticoBot(
+            @PathVariable String instanceName,
+            @RequestHeader(value = "X-Admin-Secret", required = false) String secret) {
+        validarSecret(secret);
+        WhatsappInstance inst = instanceRepo.findByInstanceName(instanceName)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("instanceName", instanceName);
+        out.put("restauranteId", inst.getRestaurante() == null ? null : inst.getRestaurante().getId());
+        out.put("restauranteNome", inst.getRestaurante() == null ? null : inst.getRestaurante().getNome());
+
+        // ── Checagens ──
+        boolean botAtivo = Boolean.TRUE.equals(inst.getBotAtivo());
+        boolean conectada = inst.getStatus() == WhatsappInstance.Status.CONECTADA;
+        Integer minSemEvento = healthService.minutosSemEventoEvolution(inst);
+        Integer minSemCliente = healthService.minutosSemMensagemCliente(inst);
+
+        out.put("botAtivo", botAtivo);
+        out.put("status", inst.getStatus().name());
+        out.put("estadoHealth", healthService.avaliarEstado(inst).name());
+        out.put("minutosSemEventoEvolution", minSemEvento);
+        out.put("minutosSemMensagemCliente", minSemCliente);
+
+        // ── Webhook Evolution (URL salva lá vs esperada) ──
+        String urlEsperada = "/api/webhooks/whatsapp/" + instanceName;
+        try {
+            Map<String, Object> wh = whatsappService.diagWebhook(inst.getRestaurante());
+            String urlAtual = wh == null ? null : String.valueOf(wh.get("url"));
+            out.put("webhookEvolutionUrl", urlAtual);
+            out.put("webhookConfigurado", urlAtual != null && urlAtual.endsWith(urlEsperada));
+        } catch (Exception e) {
+            out.put("webhookEvolutionUrl", "ERRO: " + e.getMessage());
+            out.put("webhookConfigurado", false);
+        }
+
+        // ── Últimos eventos webhook (Evolution tá mandando algo?) ──
+        var eventos = WhatsappWebhookController.snapshotEventos(instanceName);
+        out.put("eventosRecentes", eventos.size());
+        if (!eventos.isEmpty()) {
+            out.put("ultimoEvento", eventos.get(0));
+        }
+
+        // ── VEREDITO ──
+        List<String> problemas = new java.util.ArrayList<>();
+        if (!botAtivo) problemas.add("Bot está DESLIGADO (botAtivo=false). Ligar no painel do restaurante.");
+        if (!conectada) problemas.add("Status NÃO é CONECTADA: " + inst.getStatus()
+                + ". Precisa de QR novo ou reset full.");
+        if (minSemEvento != null && minSemEvento > 60)
+            problemas.add("Evolution não manda evento há " + minSemEvento
+                    + " min — sessão ZUMBI. Forçar reconexão.");
+        if (eventos.isEmpty())
+            problemas.add("Zero eventos no buffer. Evolution nunca falou com este backend OU webhook URL errada.");
+        if (Boolean.FALSE.equals(out.get("webhookConfigurado")))
+            problemas.add("Webhook configurado na Evolution NÃO bate com a URL esperada — atualizar via /resetWebhook.");
+
+        if (problemas.isEmpty()) {
+            out.put("veredito", "✅ Bot deveria estar respondendo. Veja logs [Bot:SILENCIO] ou [WhatsApp:SILENCIO] no Railway pra detalhe da última mensagem.");
+        } else {
+            out.put("veredito", "❌ Problemas detectados: " + String.join(" | ", problemas));
+        }
+        out.put("problemas", problemas);
+
+        return ResponseEntity.ok(out);
     }
 
     /**

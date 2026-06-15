@@ -63,8 +63,10 @@ public class WhatsappHealthLog {
     private Boolean reconexaoDisparada = false;
 
     public enum Estado {
-        OPERACIONAL,    // tudo normal
-        INSTAVEL,       // conectada mas sem eventos há um tempo
-        OFFLINE         // não conectada ou zumbi confirmada
+        OPERACIONAL,         // tudo normal — CONECTADA + heartbeat fresco
+        INSTAVEL,            // CONECTADA mas sem eventos há tempo (suspeita)
+        OFFLINE,             // queda INESPERADA — gera alerta + tenta reconectar
+        AGUARDANDO_CONEXAO   // fluxo normal — NOVA, AGUARDANDO_QR ou desconectada manualmente
+                             // NÃO gera alerta nem auto-reconexão.
     }
 }

@@ -48,6 +48,7 @@ public class AssinaturaService {
     private final AssinaturaRepository assinaturaRepository;
     private final RestauranteRepository restauranteRepository;
     private final PlanoCatalogoService planoCatalogoService;
+    private final com.mydelivery.service.meta.MetaCapiService metaCapiService;
     private final com.mydelivery.repository.PagamentoMensalidadeRepository pagamentoMensalidadeRepository;
     private final EmailService emailService;
 
@@ -414,6 +415,20 @@ public class AssinaturaService {
         } catch (Exception e) {
             log.warn("[Pagamento] falha ao registrar PAGO: {}", e.getMessage());
         }
+
+        // ── Meta CAPI: Subscribe (golden event) ──
+        // Esse é o sinal que mais importa pra Meta otimizar campanhas e
+        // gerar Lookalike. Manda com event_id determinístico
+        // ("subscribe_{mpPaymentId}") pra dedup com Pixel se houver track
+        // futuro do mesmo evento no front. Async + fail-safe interno.
+        try {
+            if (r != null && r.getUsuario() != null) {
+                var u = r.getUsuario();
+                metaCapiService.subscribe(u.getEmail(), u.getTelefone(), u.getNome(),
+                        plano.getValor() == null ? null : plano.getValor().doubleValue(),
+                        mpPaymentId);
+            }
+        } catch (Exception ignored) { /* fail-safe */ }
     }
 
     /**

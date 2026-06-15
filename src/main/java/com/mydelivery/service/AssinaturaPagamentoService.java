@@ -47,6 +47,12 @@ public class AssinaturaPagamentoService {
     private final String adminPayerEmail;
     private final String publicBaseUrl;
 
+    /** Injeção opcional pra não quebrar testes legados. Se Meta CAPI estiver
+     *  desligado (mydelivery.meta-capi.ativo=false), o service ainda existe
+     *  mas internamente faz no-op. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.mydelivery.service.meta.MetaCapiService metaCapiService;
+
     public AssinaturaPagamentoService(
             MercadoPagoClient mpClient,
             @Value("${mydelivery.mercadopago.admin-access-token:${ADMIN_MP_ACCESS_TOKEN:}}") String adminAccessToken,
@@ -354,6 +360,19 @@ public class AssinaturaPagamentoService {
             out.put("externalReference", externalRef);
             log.info("[AssPag][CARTAO] preference criada — restaurante={}, plano={}, ref={}",
                     r.getId(), plano, externalRef);
+
+            // ── Meta CAPI: InitiateCheckout ──
+            // Cliente está realmente avançando no funil — preference criada
+            // significa intenção real (vai cair na tela de pagamento do MP).
+            // Fail-safe interno; não bloqueia retorno da preferência.
+            try {
+                if (metaCapiService != null && r.getUsuario() != null) {
+                    var u = r.getUsuario();
+                    metaCapiService.initiateCheckout(u.getEmail(), u.getTelefone(), u.getNome(),
+                            plano.getValor() == null ? null : plano.getValor().doubleValue());
+                }
+            } catch (Exception ignored) { /* fail-safe */ }
+
             return out;
         } catch (RestClientResponseException e) {
             log.error("[AssPag][CARTAO] MP /checkout/preferences falhou [{}]: {}",

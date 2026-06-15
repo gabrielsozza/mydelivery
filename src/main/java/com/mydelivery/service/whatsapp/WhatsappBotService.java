@@ -12,6 +12,7 @@ import org.springframework.stereotype.Service;
 
 import com.mydelivery.config.EvolutionProperties;
 import com.mydelivery.model.ConfiguracaoRestaurante;
+import com.mydelivery.model.Pedido;
 import com.mydelivery.model.Restaurante;
 import com.mydelivery.model.WhatsappInstance;
 import com.mydelivery.repository.ConfiguracaoRestauranteRepository;
@@ -43,13 +44,34 @@ public class WhatsappBotService {
     private final EvolutionProperties props;
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private WhatsappIncidenteService incidenteService;
+    /** Pra consulta de status de pedido por telefone do cliente. Opcional
+     *  pra não quebrar testes legados. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.mydelivery.repository.PedidoRepository pedidoRepo;
 
     /** Delay (ms) de "digitando…" antes da msg aparecer.
      *  Aumentado pra 2000ms a pedido do operador — bot respondendo em ms
      *  é sinal forte pro WhatsApp marcar como spam (shadow ban). 2s
      *  simula tempo humano de digitação curta e protege a conta.
-     *  Tradeoff: cliente vê resposta um pouco depois, mas conta segue viva. */
-    private static final int TYPING_DELAY_MS = 2000;
+     *  Tradeoff: cliente vê resposta um pouco depois, mas conta segue viva.
+     *
+     *  ── EVOLUÇÃO Jun/2026 ──
+     *  Tempo fixo de 2000ms criava PADRÃO DETECTÁVEL pelo WhatsApp
+     *  (constância de timing é fingerprint forte de bot). Agora randomizado
+     *  por mensagem entre TYPING_MIN_MS e TYPING_MAX_MS. Resultado: parece
+     *  humano variando velocidade de digitação. Resolve quedas recorrentes
+     *  em restaurantes de alto volume (alvo principal do shadow ban). */
+    private static final int TYPING_MIN_MS = 2000;
+    private static final int TYPING_MAX_MS = 4000;
+    private static final java.util.concurrent.ThreadLocalRandom RNG =
+            java.util.concurrent.ThreadLocalRandom.current();
+
+    /** Sorteia delay variável por chamada — quebra padrão constante que
+     *  WhatsApp usa pra detectar bot. */
+    private static int randomTypingDelay() {
+        return java.util.concurrent.ThreadLocalRandom.current()
+                .nextInt(TYPING_MIN_MS, TYPING_MAX_MS + 1);
+    }
 
     /** Cache em memória de ConfiguracaoRestaurante por restauranteId.
      *  Evita query DB no caminho crítico de cada mensagem. TTL curto (60s)
@@ -135,11 +157,16 @@ public class WhatsappBotService {
     }
 
     private void processarInterno(WhatsappInstance inst, String numero, String texto, String pushName) {
+        // ── Logs em INFO nos pontos de silêncio: antes eram DEBUG, bot calado
+        //    sumia silenciosamente do log de produção. Agora aparece no Railway. ──
         if (!Boolean.TRUE.equals(inst.getBotAtivo())) {
-            log.debug("[Bot] desligado pra instância {} — não responde", inst.getInstanceName());
+            log.info("[Bot:SILENCIO] desligado (botAtivo=false) — instância={}", inst.getInstanceName());
             return;
         }
-        if (texto == null || texto.isBlank()) return;
+        if (texto == null || texto.isBlank()) {
+            log.info("[Bot:SILENCIO] texto vazio — instância={}", inst.getInstanceName());
+            return;
+        }
 
         String numeroLimpo = limparNumero(numero);
         String chave = inst.getInstanceName() + ":" + numeroLimpo;
@@ -155,23 +182,31 @@ public class WhatsappBotService {
         // Assim, se cliente+atendente ficam X min em silêncio, o bot retoma sozinho.
         if (st.silencioAte != null && agora.isBefore(st.silencioAte)) {
             st.silencioAte = agora.plusMinutes(props.getBot().getSilencioMinutos());
-            log.debug("[Bot] em silêncio pra {} (renovado até {})", chave, st.silencioAte);
+            log.info("[Bot:SILENCIO] modo humano ativo (renovado até {}) — chave={}", st.silencioAte, chave);
             return;
         }
 
         // Throttle: evita flood se cliente mandar várias mensagens seguidas
         if (st.ultimaResposta != null
                 && Duration.between(st.ultimaResposta, agora).toSeconds() < props.getBot().getThrottleSegundos()) {
-            log.debug("[Bot] throttle ativo pra {}", chave);
+            log.info("[Bot:SILENCIO] throttle ativo (resta {}s) — chave={}",
+                    props.getBot().getThrottleSegundos() - Duration.between(st.ultimaResposta, agora).toSeconds(),
+                    chave);
             return;
         }
 
-        String resposta = decidirResposta(inst.getRestaurante(), texto, st);
+        String resposta = decidirResposta(inst.getRestaurante(), texto, st, numeroLimpo);
         if (resposta == null) {
-            return; // sem regra casando → silêncio
+            log.info("[Bot:SILENCIO] decidirResposta() retornou null — sem regra casando — texto='{}', instância={}",
+                    texto.length() > 60 ? texto.substring(0, 60) + "..." : texto,
+                    inst.getInstanceName());
+            return;
         }
 
-        whatsappService.enviarMensagem(inst, numeroLimpo, resposta, TYPING_DELAY_MS);
+        // Delay aleatório por chamada: 2000-4000ms. Cada mensagem tem
+        // tempo de "digitando" diferente, simulando humano variando velocidade.
+        int typingDelay = randomTypingDelay();
+        whatsappService.enviarMensagem(inst, numeroLimpo, resposta, typingDelay);
         st.ultimaResposta = agora;
         st.saudou = true;
 
@@ -186,7 +221,7 @@ public class WhatsappBotService {
     // ── decisão ──
 
     /** Retorna texto da resposta ou null pra ignorar a mensagem. */
-    private String decidirResposta(Restaurante r, String texto, EstadoNumero st) {
+    private String decidirResposta(Restaurante r, String texto, EstadoNumero st, String numeroCliente) {
         String t = normalizar(texto);
         // Cache TTL 60s — economiza ~300ms na primeira msg em cold start
         ConfiguracaoRestaurante cfg = carregarCfg(r.getId());
@@ -197,10 +232,11 @@ public class WhatsappBotService {
         if (mPed.find()) {
             String num = mPed.group(1);
             st.ultimaIntencao = "confirma_pedido";
-            return saudacaoHorario() + " 👋 Recebemos o seu pedido *#" + num + "* aqui no "
-                    + r.getNome() + ".\n\n"
+            return saudacaoHorario() + " " + BotVariations.emojiCumprimento()
+                    + " Recebemos o seu pedido *#" + num + "* aqui no "
+                    + r.getNome() + BotVariations.pontuacaoFim() + "\n\n"
                     + "Ele já está em preparo e vai sair fresquinho pra você. "
-                    + "É só aguardar um instantinho que ele bate na sua porta! 🛵";
+                    + "É só aguardar um instantinho que ele bate na sua porta " + BotVariations.emojiMoto();
         }
 
         // 1. Atendente humano — PRIORIDADE MÁXIMA
@@ -251,6 +287,23 @@ public class WhatsappBotService {
             return montarRespostaTempo(r);
         }
 
+        // 5b. Retirada no balcão — PRECISA VIR ANTES DO CARDÁPIO porque a
+        // frase tipo "consigo pedir e retirar?" tem "pedir" (que casaria
+        // com cardápio) E "retirar". A intenção real é PERGUNTAR sobre
+        // retirada, então essa regra ganha prioridade.
+        if (contemAlguma(t, "retirada", "retirar", "buscar ai", "buscar aí",
+                "vou buscar", "vou pegar", "vou retirar",
+                "posso buscar", "posso pegar", "posso retirar",
+                "tem retirada", "trabalham com retirada", "faz retirada",
+                "faz takeaway", "takeaway", "take away",
+                "ir ate ai", "ir até aí", "ir buscar", "ir retirar",
+                "pegar ai", "pegar aí", "pegar no local",
+                "passar ai", "passar aí", "passar pra pegar", "passar pra buscar",
+                "pedir e retirar", "pedir e buscar", "pedir e pegar")) {
+            st.ultimaIntencao = "retirada";
+            return montarRespostaRetirada(r);
+        }
+
         // 6. Cardápio / quero pedir / "por onde faço o pedido"
         if (contemAlguma(t, "cardapio", "cardápio", "menu", "produtos", "comprar",
                 "pedir", "fazer pedido", "fazer um pedido", "quero pedir", "vou pedir",
@@ -266,8 +319,8 @@ public class WhatsappBotService {
                         + "Mas você ainda pode dar uma olhada no cardápio 👉 " + link
                         + "\n\n" + montarLinhaHorarioHoje(r);
             }
-            return "Aqui está nosso cardápio 👉 " + link
-                    + "\n\nÉ só escolher os itens e finalizar pelo site. 🍽️";
+            return BotVariations.cardapioAqui() + " 👉 " + link
+                    + "\n\nÉ só escolher os itens e finalizar pelo site " + BotVariations.emojiComida();
         }
 
         // 6e. "Consegue me ajudar?" / "Quais opções?" / "Como funciona?"
@@ -293,14 +346,20 @@ public class WhatsappBotService {
         }
 
         // 6b. Status do pedido — cliente perguntando "cadê meu pedido"
+        // Tentamos PRIMEIRO buscar no DB por telefone do remetente. Se achar,
+        // respondemos status direto sem precisar de atendente. Se não acha,
+        // cai no fallback de transferir pra equipe.
         if (contemAlguma(t, "cade meu pedido", "cadê meu pedido", "meu pedido",
                 "ja saiu", "já saiu", "status pedido", "ta demorando",
                 "tá demorando", "to esperando", "tô esperando", "demora muito")) {
             st.ultimaIntencao = "status";
-            return saudacaoHorario() + " 🛵\n\n"
-                    + "Pra te dar status do seu pedido, vou te transferir pra equipe do "
-                    + r.getNome() + " — eles veem tudo na hora.\n\n"
-                    + "Digite *atendente* que já te coloco em contato.";
+            String respStatus = tentarResponderStatusPedido(r, numeroCliente);
+            if (respStatus != null) return respStatus;
+            // Sem pedido recente — fallback original
+            return saudacaoHorario() + " " + BotVariations.emojiMoto() + "\n\n"
+                    + "Não encontrei nenhum pedido recente pelo seu número aqui no "
+                    + r.getNome() + ".\n\n"
+                    + "Se você fez pelo balcão ou pelo telefone, posso te transferir pra equipe — digite *atendente*.";
         }
 
         // 6c. Preço de um produto específico — direciona pro cardápio
@@ -359,14 +418,16 @@ public class WhatsappBotService {
         if (contemAlguma(t, "obrigado", "obrigada", "valeu", "vlw", "thanks",
                 "agradeço", "agradecido", "muito obrigado", "muito obrigada")) {
             st.ultimaIntencao = "agradecimento";
-            return "Por nada! 😊 Qualquer coisa é só chamar.";
+            return BotVariations.porNada() + BotVariations.pontuacaoFim() + " " + BotVariations.emojiObrigado()
+                    + " " + BotVariations.qualquerDuvida() + ".";
         }
 
         // 8a. Confirmação curta ("sim", "ok", "blz") sem contexto
         if (t.length() <= 12 && contemAlguma(t, "sim", "ok", "perfeito", "show",
                 "beleza", "blz", "blzz", "otimo", "ótimo", "legal", "bacana", "uhum")) {
             st.ultimaIntencao = "confirmacao";
-            return "Combinado! 👍 Qualquer dúvida é só chamar.";
+            return BotVariations.combinado() + BotVariations.pontuacaoFim() + " "
+                    + BotVariations.emojiOk() + " " + BotVariations.qualquerDuvida() + ".";
         }
 
         // 9. Saudação / 1ª interação → apresenta o bot
@@ -395,14 +456,121 @@ public class WhatsappBotService {
 
     // ── Helpers de personalização ──
 
-    /** Saudação contextual pelo horário ("Bom dia!"/"Boa tarde!"/"Boa noite!").
-     *  Sem nome próprio — bot mantém tom impessoal pra evitar saudação
-     *  estranha com clientes que tem nome lixo no WhatsApp ("." ou emoji). */
+    /** Saudação contextual pelo horário — agora delega pro pool de variações
+     *  do {@link BotVariations}. Resposta varia entre 4-5 opções por período
+     *  do dia (anti-fingerprint). */
     private String saudacaoHorario() {
-        int hora = java.time.LocalTime.now().getHour();
-        if (hora < 12) return "Bom dia";
-        if (hora < 18) return "Boa tarde";
-        return "Boa noite";
+        return BotVariations.saudacao();
+    }
+
+    /**
+     * Responde sobre retirada baseado em {@code restaurante.getModos()}.
+     * Se "retirada" está na lista → confirma e manda pro cardápio.
+     * Se NÃO está → avisa que só faz delivery (sem fechar conversa).
+     *
+     * Resposta usa variações de saudação/emoji pra reduzir padrão.
+     */
+    private String montarRespostaRetirada(Restaurante r) {
+        boolean aceitaRetirada = false;
+        try {
+            java.util.List<String> modos = r.getModos();
+            if (modos != null) {
+                for (String m : modos) {
+                    if (m != null && m.equalsIgnoreCase("retirada")) {
+                        aceitaRetirada = true;
+                        break;
+                    }
+                }
+            }
+        } catch (Exception ignored) { /* fail-safe */ }
+
+        String link = montarLinkCardapio(r);
+
+        if (aceitaRetirada) {
+            StringBuilder sb = new StringBuilder();
+            sb.append("Sim, ").append(r.getNome()).append(" aceita retirada no balcão ")
+                    .append(BotVariations.emojiOk()).append("\n\n");
+            sb.append("É só fazer o pedido pelo cardápio 👉 ").append(link).append("\n\n");
+            sb.append("Na hora de fechar, escolhe a opção *Retirar no local* e a gente avisa quando estiver pronto " + BotVariations.emojiComida());
+            return sb.toString();
+        }
+
+        // Não aceita retirada
+        StringBuilder sb = new StringBuilder();
+        sb.append("Por enquanto o ").append(r.getNome()).append(" trabalha *só com delivery*, sem retirada no balcão ")
+                .append(BotVariations.emojiMoto()).append("\n\n");
+        sb.append("Mas você pode pedir tranquilo pelo cardápio que entregamos aí 👉 ").append(link);
+        return sb.toString();
+    }
+
+    /**
+     * Tenta resolver "cadê meu pedido" consultando o banco. Se cliente
+     * fez pedido nas últimas 24h pelo telefone dele, devolve status atual
+     * formatado. Senão, retorna null pra o caller cair no fallback de
+     * transferir pra atendente.
+     */
+    private String tentarResponderStatusPedido(Restaurante r, String numeroCliente) {
+        if (pedidoRepo == null || numeroCliente == null || numeroCliente.isBlank()) {
+            return null;
+        }
+        try {
+            // Normaliza pra ter chance de bater (cadastro pode ter telefone
+            // com ou sem máscara). Tenta o número limpo direto + variação
+            // com o "9" do celular brasileiro caso o telefone do cadastro
+            // venha em formato curto.
+            java.util.List<Pedido> pedidos = pedidoRepo.findUltimosDoTelefone(
+                    r.getId(), numeroCliente,
+                    java.time.LocalDateTime.now().minusHours(24));
+            if (pedidos == null || pedidos.isEmpty()) {
+                // Tenta variação SEM código do país (55)
+                if (numeroCliente.startsWith("55") && numeroCliente.length() > 4) {
+                    String semCodPais = numeroCliente.substring(2);
+                    pedidos = pedidoRepo.findUltimosDoTelefone(r.getId(), semCodPais,
+                            java.time.LocalDateTime.now().minusHours(24));
+                }
+            }
+            if (pedidos == null || pedidos.isEmpty()) return null;
+
+            Pedido p = pedidos.get(0); // mais recente
+            return formatarStatus(p);
+        } catch (Exception e) {
+            log.warn("[Bot] falha consultando status pelo telefone: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /** Formata status do pedido em mensagem amigável. */
+    private String formatarStatus(Pedido p) {
+        String horaPedido = p.getCriadoEm() == null ? ""
+                : p.getCriadoEm().format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"));
+        StringBuilder sb = new StringBuilder();
+        sb.append("Achei seu pedido aqui ").append(BotVariations.emojiOk()).append("\n\n");
+        sb.append("*Pedido #").append(p.getId()).append("*");
+        if (!horaPedido.isEmpty()) sb.append(" — feito às ").append(horaPedido);
+        sb.append("\n\n");
+
+        switch (p.getStatus()) {
+            case AGUARDANDO_PAGAMENTO -> sb.append("⏳ Aguardando confirmação do pagamento.\n\n")
+                    .append("Assim que cair, o pedido vai pra cozinha automaticamente.");
+            case PENDENTE -> sb.append("📥 Pedido recebido e na fila de confirmação.\n\n")
+                    .append("Em alguns minutos a cozinha começa.");
+            case CONFIRMADO -> sb.append("✅ Pedido confirmado e indo pra cozinha.\n\n")
+                    .append("Tempo estimado começa a contar agora.");
+            case EM_PREPARO -> sb.append("👨‍🍳 Seu pedido está sendo preparado agora mesmo.\n\n")
+                    .append("Logo mais sai pra entrega ").append(BotVariations.emojiMoto());
+            case PRONTO -> sb.append("🎯 Pedido pronto!\n\n")
+                    .append("Vai sair pra entrega em instantes ").append(BotVariations.emojiMoto());
+            case SAIU_ENTREGA -> sb.append("🛵 Já saiu pra entrega!\n\n")
+                    .append("O entregador deve chegar em breve. Fica de olho no WhatsApp dele se ligar.");
+            case ENTREGUE -> sb.append("✅ Pedido entregue.\n\n")
+                    .append("Espero que tenha gostado! ").append(BotVariations.emojiObrigado());
+            case CANCELADO -> sb.append("❌ Pedido cancelado.\n\n")
+                    .append("Se foi engano, é só fazer outro pelo cardápio.");
+            case NA_MESA -> sb.append("🍽️ Pedido na mesa.\n\n")
+                    .append("Aproveite!");
+            default -> sb.append("Status: ").append(p.getStatus().name());
+        }
+        return sb.toString();
     }
 
     /** Montagem da resposta de formas de pagamento. Lê ConfiguracaoRestaurante

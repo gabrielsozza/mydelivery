@@ -100,7 +100,10 @@ public class WhatsappIncidente {
         /** Auto-reconnect tentou 5x e desistiu. */
         RECUPERACAO_ESGOTADA,
         /** Logout chamado mas Evolution continua mostrando open. */
-        SESSAO_ZUMBI
+        SESSAO_ZUMBI,
+        /** Instância caiu 2+ vezes nas últimas 24h — provável shadow ban
+         *  persistente. Pede atenção humana (talvez trocar número). */
+        INSTANCIA_INSTAVEL
     }
 
     public enum Severidade {

@@ -51,6 +51,11 @@ public class PedidoService {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private WebPushService webPushService;
 
+    /** Opcional pra não quebrar testes. Usado pra mandar link de
+     *  acompanhamento pro cliente via WhatsApp logo após pedido criado. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.mydelivery.service.whatsapp.WhatsappBotService whatsappBotService;
+
     @Transactional
     public PedidoResponse criarPedido(NovoPedidoRequest request) {
         Restaurante restaurante = restauranteRepository.findBySlug(request.getSlug())
@@ -370,6 +375,18 @@ public class PedidoService {
                 webPushService.notificar(restaurante.getId(), titulo, corpo, url,
                         ehMesa ? "pedido-mesa" : "pedido-delivery");
             } catch (Exception ignored) {}
+        }
+
+        // ── WhatsApp: link de acompanhamento pro cliente ──
+        // Só DELIVERY/RETIRADA (mesa/balcão é presencial). Async + fail-safe
+        // — NUNCA propaga erro pra criação do pedido. 8 salvaguardas anti-
+        // shadowban implementadas dentro do método.
+        if (whatsappBotService != null && cliente != null) {
+            try {
+                String tipoPed = salvo.getTipo() == null ? null : salvo.getTipo().name();
+                whatsappBotService.notificarLinkAcompanhamentoAsync(
+                        restaurante, salvo.getId(), tipoPed, cliente.getTelefone());
+            } catch (Exception ignored) { /* fail-safe total */ }
         }
 
         return toResponse(salvo);

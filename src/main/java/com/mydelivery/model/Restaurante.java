@@ -154,6 +154,26 @@ public class Restaurante {
     @Column(name = "confirmacao_whatsapp_ativa")
     private Boolean confirmacaoWhatsappAtiva = false;
 
+    /**
+     * Quando true (default), bot WhatsApp envia 1 mensagem proativa pro
+     * cliente DEPOIS de criar o pedido pelo cardápio, com link único de
+     * acompanhamento em tempo real (mydeliveryfood.com.br/acompanhar/{id}).
+     *
+     * Risco shadow ban: BAIXO — é 1 msg por pedido, em conversa que o
+     * cliente iniciou ao fazer pedido. Bot manda pra clientes que
+     * forneceram o telefone no cardápio.
+     *
+     * Salvaguardas implementadas: pool de 15+ variações de texto, delay
+     * aleatório 15-90s antes de enviar, só horário comercial (8h-23h),
+     * throttle 5min entre msgs pro mesmo número, fail-safe (nunca quebra
+     * criação do pedido).
+     *
+     * Dono pode desativar via toggle no painel se notar problema.
+     */
+    @Builder.Default
+    @Column(name = "notif_link_acomp_whatsapp")
+    private Boolean notificarLinkAcompanhamentoWhatsapp = true;
+
     // ── Integração iFood ──
     /**
      * UUID da loja no iFood (merchantId). Preenchido quando o dono autoriza

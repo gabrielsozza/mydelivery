@@ -504,6 +504,91 @@ public class WhatsappBotService {
     }
 
     /**
+     * Throttle in-memory de notificações proativas: evita mandar mais de
+     * 1 msg pro mesmo número em <5min. Chave = telefone limpo.
+     */
+    private final Map<String, java.time.LocalDateTime> ultimaNotificacaoPorNumero =
+            new ConcurrentHashMap<>();
+    private static final int THROTTLE_NOTIFICACAO_MIN = 5;
+
+    /**
+     * Envia notificação proativa com link de acompanhamento APÓS pedido criado.
+     * Chamado pelo PedidoService logo após salvar o pedido novo.
+     *
+     * ── SALVAGUARDAS ANTI-SHADOWBAN ──
+     *  1. Async (não bloqueia criação do pedido).
+     *  2. Delay aleatório 15-90s antes de enviar.
+     *  3. Mensagem composta de 5 pools de variações (milhares de combinações).
+     *  4. Só horário comercial 8h-23h.
+     *  5. Throttle: 1 msg / número / 5min.
+     *  6. Só DELIVERY ou RETIRADA.
+     *  7. Fail-safe completo: NUNCA quebra criação do pedido.
+     *  8. Toggle no restaurante.
+     */
+    @org.springframework.scheduling.annotation.Async
+    public void notificarLinkAcompanhamentoAsync(
+            Restaurante restaurante,
+            Long pedidoId,
+            String tipo,
+            String telefoneCliente) {
+        try {
+            if (restaurante == null
+                    || !Boolean.TRUE.equals(restaurante.getNotificarLinkAcompanhamentoWhatsapp())) {
+                return;
+            }
+            if (tipo == null || !(tipo.equalsIgnoreCase("DELIVERY") || tipo.equalsIgnoreCase("RETIRADA"))) {
+                return;
+            }
+            if (telefoneCliente == null || telefoneCliente.isBlank()) return;
+            String numero = limparNumero(telefoneCliente);
+            if (numero.length() < 10) return;
+            if (!BotVariations.dentroHorarioNotificacao()) {
+                log.info("[Bot:Notif] fora do horário comercial — descartando pedido#{}", pedidoId);
+                return;
+            }
+            WhatsappInstance inst = whatsappService.buscar(restaurante);
+            if (inst == null
+                    || inst.getStatus() != WhatsappInstance.Status.CONECTADA
+                    || !Boolean.TRUE.equals(inst.getBotAtivo())) {
+                log.info("[Bot:Notif] WA não conectado/ativo — pulando pedido#{}", pedidoId);
+                return;
+            }
+            java.time.LocalDateTime agora = java.time.LocalDateTime.now();
+            java.time.LocalDateTime ultima = ultimaNotificacaoPorNumero.get(numero);
+            if (ultima != null
+                    && java.time.Duration.between(ultima, agora).toMinutes() < THROTTLE_NOTIFICACAO_MIN) {
+                log.info("[Bot:Notif] throttle ativo pra {} — pulando pedido#{}", numero, pedidoId);
+                return;
+            }
+
+            // Delay aleatório 15-90s — simula humano vendo pedido e indo avisar
+            int delayMs = BotVariations.randomNotificacaoDelayMs();
+            try {
+                Thread.sleep(delayMs);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+
+            // Reconfere horário após o sleep
+            if (!BotVariations.dentroHorarioNotificacao()) return;
+
+            String link = "https://mydeliveryfood.com.br/acompanhar.html?id=" + pedidoId;
+            String msg = BotVariations.montarMensagemAcompanhamento(pedidoId, link);
+            whatsappService.enviarMensagem(inst, numero, msg, randomTypingDelay());
+            ultimaNotificacaoPorNumero.put(numero, java.time.LocalDateTime.now());
+
+            log.info("[Bot:Notif] link de acompanhamento enviado — pedido#{}, rest={}, tel={}***, delay={}s",
+                    pedidoId, restaurante.getId(),
+                    numero.length() > 5 ? numero.substring(0, 5) : numero,
+                    delayMs / 1000);
+        } catch (Exception e) {
+            // CRÍTICO: nunca propagar — criação do pedido NÃO PODE depender disso.
+            log.warn("[Bot:Notif] falha enviando link — pedido#{}: {}", pedidoId, e.getMessage());
+        }
+    }
+
+    /**
      * Tenta resolver "cadê meu pedido" consultando o banco. Se cliente
      * fez pedido nas últimas 24h pelo telefone dele, devolve status atual
      * formatado. Senão, retorna null pra o caller cair no fallback de

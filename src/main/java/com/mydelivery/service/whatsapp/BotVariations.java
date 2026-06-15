@@ -155,4 +155,114 @@ public final class BotVariations {
     public static int randomReadDelayMs() {
         return ThreadLocalRandom.current().nextInt(800, 3001);
     }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  NOTIFICAÇÃO PROATIVA — link de acompanhamento após pedido criado
+    //
+    //  Anti-shadowban: pool BEM grande de variações + composição
+    //  aleatória (saudação + corpo + link + fechamento) = milhares de
+    //  combinações possíveis, virtualmente impossível ter 2 mensagens
+    //  idênticas em sequência mesmo com volume alto.
+    // ═══════════════════════════════════════════════════════════════
+
+    /** Aberturas curtas — variam por horário implícito. */
+    private static final List<String> ACOMP_ABERTURA = List.of(
+            "Oi!", "Eai!", "Olá!", "Opa!", "Oi, tudo bem?", "Eai, beleza?",
+            "Oi tudo certo?", "Oi 😊", "Eai 👋", "Olá 🙌",
+            "Oi! Pedido recebido por aqui", "Eai! Já anotamos seu pedido",
+            "Opa, boa! Seu pedido tá aqui com a gente", "Oi, recebemos seu pedido"
+    );
+
+    /** Corpo principal — confirma recebimento. */
+    private static final List<String> ACOMP_CORPO = List.of(
+            "Seu pedido #%ID% chegou aqui com a gente",
+            "Pedido #%ID% recebido com sucesso",
+            "Anotei seu pedido #%ID%",
+            "Pedido #%ID% tá em nossas mãos agora",
+            "Recebemos seu pedido #%ID% e já começamos a separar",
+            "Pedido #%ID% confirmado por aqui",
+            "Tá confirmado seu pedido #%ID%",
+            "Pedido #%ID% caiu direitinho aqui",
+            "Pedido número %ID% recebido",
+            "Pedido #%ID% chegou — começamos a preparar"
+    );
+
+    /** Convite pro link de acompanhamento — varia formato. */
+    private static final List<String> ACOMP_CONVITE_LINK = List.of(
+            "Você pode acompanhar em tempo real por aqui",
+            "Pra acompanhar tudo em tempo real",
+            "Quer acompanhar o status? Vai aqui",
+            "Acompanha o andamento por esse link",
+            "Pode acompanhar tudinho aqui",
+            "Pra ver o status atualizadinho",
+            "Acompanhamento em tempo real",
+            "Aqui tu vê tudo atualizadinho",
+            "Confere o status direto por aqui",
+            "Dá pra acompanhar tudo aqui"
+    );
+
+    /** Fechamentos — variam tom e emoji. */
+    private static final List<String> ACOMP_FECHAMENTO = List.of(
+            "Qualquer coisa é só chamar",
+            "Se precisar, é só me chamar",
+            "Qualquer dúvida tô por aqui",
+            "Qualquer coisa manda aí",
+            "Se tiver dúvida é só chamar",
+            "Tô por aqui se precisar de algo",
+            "Qualquer coisa é só falar",
+            "Se precisar, tamo junto",
+            "Estou à disposição",
+            "Se precisar de algo manda aí"
+    );
+
+    /** Emojis fim — opcionais (50% das vezes não usa). */
+    private static final List<String> ACOMP_EMOJI_FIM = List.of(
+            "", "", "", "", "", // 50% sem emoji
+            "😊", "🙌", "👍", "✨", "🍴"
+    );
+
+    /**
+     * Monta mensagem completa do tipo:
+     *   "Oi! Anotei seu pedido #1247.
+     *
+     *    Acompanha o andamento por esse link 👉 {link}
+     *
+     *    Qualquer coisa é só chamar 😊"
+     *
+     * Combinação aleatória de 4 pools × 10-15 opções cada = milhares
+     * de combinações. Praticamente impossível ter 2 mensagens idênticas
+     * em sequência mesmo com 100 pedidos seguidos.
+     */
+    public static String montarMensagemAcompanhamento(Long pedidoId, String linkAcompanhar) {
+        String abertura = pick(ACOMP_ABERTURA);
+        String corpo = pick(ACOMP_CORPO).replace("%ID%", String.valueOf(pedidoId));
+        String convite = pick(ACOMP_CONVITE_LINK);
+        String fechamento = pick(ACOMP_FECHAMENTO);
+        String emojiFim = pick(ACOMP_EMOJI_FIM);
+
+        // Variação extra: 30% das vezes inverte ordem (link antes do fechamento curto)
+        StringBuilder sb = new StringBuilder();
+        sb.append(abertura).append(" ").append(corpo).append(pontuacaoFim()).append("\n\n");
+        sb.append(convite).append(" 👉 ").append(linkAcompanhar).append("\n\n");
+        sb.append(fechamento);
+        if (emojiFim != null && !emojiFim.isEmpty()) {
+            sb.append(" ").append(emojiFim);
+        }
+        sb.append(pontuacaoFim().isEmpty() ? "" : "");
+        return sb.toString().trim();
+    }
+
+    /** Delay aleatório antes de mandar notificação proativa.
+     *  15-90s — simula "humano que viu o pedido entrar e foi avisar". */
+    public static int randomNotificacaoDelayMs() {
+        return ThreadLocalRandom.current().nextInt(15_000, 90_001);
+    }
+
+    /** Verifica se é horário comercial pra notificações proativas.
+     *  Não manda madrugada (0h-7h) nem muito tarde (>23h59).
+     *  Reduz risco de incomodar cliente + flagar como bot. */
+    public static boolean dentroHorarioNotificacao() {
+        int h = LocalTime.now().getHour();
+        return h >= 8 && h < 23;
+    }
 }

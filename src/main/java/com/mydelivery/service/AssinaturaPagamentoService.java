@@ -197,10 +197,20 @@ public class AssinaturaPagamentoService {
                         .toList());
             throw new RuntimeException("Token do cartão ausente.");
         }
-        // Assinatura mensal NÃO parcela — força 1 sempre, ignora o que veio do front.
-        // Antes, o Brick mostrava até 12x e o backend respeitava — semanticamente errado
-        // pra mensalidade (cada mês é uma cobrança separada).
-        int installments = 1;
+        // Parcelamento: Mensal=1x, Semestral=até 6x, Anual=até 12x.
+        // Juros são repassados pro cliente (MP default — sem absorber).
+        // Front sempre passa installments aceitável pra duração do plano.
+        // Backend validate: max installments = duracaoMeses do plano.
+        Integer installmentsRaw = null;
+        Object instObj = formData.get("installments");
+        if (instObj instanceof Number n) installmentsRaw = n.intValue();
+        else if (instObj instanceof String s && !s.isBlank()) {
+            try { installmentsRaw = Integer.parseInt(s); } catch (Exception ignored) {}
+        }
+        int maxParcelas = Math.max(1, plano.getDuracaoMeses());
+        int installments = installmentsRaw != null
+                ? Math.min(Math.max(1, installmentsRaw), maxParcelas)
+                : 1;
         String paymentMethodId = (String) formData.getOrDefault("payment_method_id", null);
 
         // Payer info — vindo do Brick (email + identificação)

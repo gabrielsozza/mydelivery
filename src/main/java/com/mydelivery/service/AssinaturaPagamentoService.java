@@ -118,7 +118,12 @@ public class AssinaturaPagamentoService {
         customerBody.put("email", email);
         customerBody.put("first_name", safeFirst(r.getNome()));
         customerBody.put("last_name", "MyDelivery");
-        customerBody.put("description", "Restaurante #" + r.getId() + " — " + r.getNome());
+        // Description sanitizado: só letras, números, espaços. MP rejeita
+        // caracteres como '—', '#', acentos longos com erro 116
+        // "the description is invalid".
+        String descSan = ("Restaurante " + r.getId()).replaceAll("[^a-zA-Z0-9 ]", "");
+        if (descSan.length() > 60) descSan = descSan.substring(0, 60);
+        customerBody.put("description", descSan);
 
         Map<String, Object> customer;
         try {

@@ -90,8 +90,25 @@ public class AssinaturaPagamentoService {
     @SuppressWarnings("unchecked")
     public Map<String, Object> salvarCartaoParaTrial(Restaurante r, Plano plano, Map<String, Object> formData) {
         exigirCredenciais();
+        // LOG DIAGNÓSTICO TEMPORÁRIO — investigando "Token do cartão ausente"
+        // Não exibe valor real do token, só preview (primeiros 6 + tamanho).
         String token = (String) formData.get("token");
-        if (token == null || token.isBlank()) throw new RuntimeException("Token do cartão ausente.");
+        log.info("[DIAG-CARTAO][TRIAL] restaurante={} | formData keys={} | token presente={} | tokenLen={} | tokenPreview={}",
+                r.getId(),
+                formData.keySet(),
+                token != null,
+                token == null ? 0 : token.length(),
+                token == null || token.length() < 6 ? "N/A" : token.substring(0, 6) + "...");
+        if (token == null || token.isBlank()) {
+            log.warn("[DIAG-CARTAO][TRIAL] TOKEN AUSENTE — formData completo (mascarado): {}",
+                    formData.entrySet().stream()
+                        .map(e -> e.getKey() + "=" + (
+                            "token".equals(e.getKey()) ? "<MASK>"
+                            : e.getValue() == null ? "null"
+                            : String.valueOf(e.getValue()).length() > 50 ? "<longo>" : e.getValue()))
+                        .toList());
+            throw new RuntimeException("Token do cartão ausente.");
+        }
 
         Map<String, Object> payerRaw = (Map<String, Object>) formData.getOrDefault("payer", Map.of());
         String email = (String) payerRaw.getOrDefault("email", adminPayerEmail);
@@ -162,8 +179,22 @@ public class AssinaturaPagamentoService {
      */
     public Map<String, Object> pagarCartao(Restaurante r, Plano plano, Map<String, Object> formData) {
         exigirCredenciais();
+        // LOG DIAGNÓSTICO TEMPORÁRIO
         String token = (String) formData.get("token");
+        log.info("[DIAG-CARTAO][PAGAR] restaurante={} | formData keys={} | token presente={} | tokenLen={} | tokenPreview={}",
+                r.getId(),
+                formData.keySet(),
+                token != null,
+                token == null ? 0 : token.length(),
+                token == null || token.length() < 6 ? "N/A" : token.substring(0, 6) + "...");
         if (token == null || token.isBlank()) {
+            log.warn("[DIAG-CARTAO][PAGAR] TOKEN AUSENTE — formData completo (mascarado): {}",
+                    formData.entrySet().stream()
+                        .map(e -> e.getKey() + "=" + (
+                            "token".equals(e.getKey()) ? "<MASK>"
+                            : e.getValue() == null ? "null"
+                            : String.valueOf(e.getValue()).length() > 50 ? "<longo>" : e.getValue()))
+                        .toList());
             throw new RuntimeException("Token do cartão ausente.");
         }
         // Assinatura mensal NÃO parcela — força 1 sempre, ignora o que veio do front.

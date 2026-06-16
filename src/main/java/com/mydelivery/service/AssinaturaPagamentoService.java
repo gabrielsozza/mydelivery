@@ -246,6 +246,52 @@ public class AssinaturaPagamentoService {
             idMap.put("type", docType); idMap.put("number", docNumber);
             payerInfo.put("identification", idMap);
         }
+
+        // ─── MELHORIA INTEGRACAO MP — score 51 → 75+ ───
+        // Painel "Qualidade da Integração" do MP exige additional_info.payer
+        // completo. Score baixo bloqueia tokenização em prod ("Preencha todos
+        // os dados" genérico). Phone + address + registration_date = ~8 pts.
+
+        // 1) Phone (formato MP: {area_code: "27", number: "999999999"})
+        String telefoneDono = null;
+        try {
+            if (r.getUsuario() != null && r.getUsuario().getTelefone() != null) {
+                telefoneDono = r.getUsuario().getTelefone();
+            } else if (r.getTelefone() != null) {
+                telefoneDono = r.getTelefone();
+            }
+        } catch (Exception ignored) {}
+        if (telefoneDono != null) {
+            String soDigitos = telefoneDono.replaceAll("\\D", "");
+            if (soDigitos.startsWith("55") && soDigitos.length() > 10) {
+                soDigitos = soDigitos.substring(2);
+            }
+            if (soDigitos.length() >= 10) {
+                Map<String, Object> phone = new LinkedHashMap<>();
+                phone.put("area_code", soDigitos.substring(0, 2));
+                phone.put("number", soDigitos.substring(2));
+                payerInfo.put("phone", phone);
+            }
+        }
+
+        // 2) Address (formato MP: {zip_code, street_name, street_number})
+        if (r.getCep() != null && !r.getCep().isBlank()
+                && r.getRua() != null && !r.getRua().isBlank()) {
+            Map<String, Object> address = new LinkedHashMap<>();
+            address.put("zip_code", r.getCep().replaceAll("\\D", ""));
+            address.put("street_name", r.getRua());
+            address.put("street_number", r.getNumero() != null ? r.getNumero() : "S/N");
+            payerInfo.put("address", address);
+        }
+
+        // 3) Registration date (ISO 8601 — quando user criou conta)
+        try {
+            if (r.getUsuario() != null && r.getUsuario().getCriadoEm() != null) {
+                payerInfo.put("registration_date",
+                        r.getUsuario().getCriadoEm().toString());
+            }
+        } catch (Exception ignored) {}
+
         Map<String, Object> additionalInfo = new LinkedHashMap<>();
         additionalInfo.put("items", java.util.List.of(item));
         additionalInfo.put("payer", payerInfo);

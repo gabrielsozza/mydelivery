@@ -49,12 +49,12 @@ public class IfoodPollingJob {
                initialDelay = 30_000L)
     public void poll() {
         if (!props.isPollingAtivo()) {
-            log.debug("[iFood-Polling] desligado (pollingAtivo=false)");
+            log.info("[iFood-Polling] DESLIGADO (mydelivery.ifood.polling-ativo=false)");
             return;
         }
         if (props.getClientId() == null || props.getClientId().isBlank()
                 || props.getClientSecret() == null || props.getClientSecret().isBlank()) {
-            log.debug("[iFood-Polling] credenciais não configuradas — pulando");
+            log.info("[iFood-Polling] credenciais NAO configuradas (clientId/clientSecret vazios)");
             return;
         }
 
@@ -62,9 +62,10 @@ public class IfoodPollingJob {
         List<com.mydelivery.model.Restaurante> ativos =
                 restauranteRepo.findByIfoodIntegracaoAtivaTrueAndIfoodMerchantIdIsNotNull();
         if (ativos.isEmpty()) {
-            log.debug("[iFood-Polling] nenhum restaurante ativo");
+            log.info("[iFood-Polling] NENHUM restaurante com integracao ativa + merchantId");
             return;
         }
+        log.info("[iFood-Polling] tick start — restaurantes ativos={}", ativos.size());
 
         long inicio = System.currentTimeMillis();
         List<Map<String, Object>> eventos;
@@ -78,7 +79,7 @@ public class IfoodPollingJob {
             // Atualiza timestamp de last polling pra mostrar "tudo OK" no painel
             for (var r : ativos) r.setIfoodUltimoPollingEm(LocalDateTime.now());
             restauranteRepo.saveAll(ativos);
-            log.debug("[iFood-Polling] sem eventos pendentes");
+            log.info("[iFood-Polling] OK — sem eventos pendentes (autenticado, polling rodando)");
             return;
         }
 

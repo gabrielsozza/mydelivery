@@ -54,7 +54,17 @@ public class IfoodPollingJob {
         }
         if (props.getClientId() == null || props.getClientId().isBlank()
                 || props.getClientSecret() == null || props.getClientSecret().isBlank()) {
-            log.info("[iFood-Polling] credenciais NAO configuradas (clientId/clientSecret vazios)");
+            // DIAG: descobrir por que está vazio
+            String envClientId = System.getenv("IFOOD_CLIENT_ID");
+            String envSecret = System.getenv("IFOOD_CLIENT_SECRET");
+            log.info("[iFood-Polling-DIAG] props.clientId='{}' (len={}) | props.clientSecret.len={} | env.IFOOD_CLIENT_ID={} (len={}) | env.IFOOD_CLIENT_SECRET.len={} | pollingAtivo={}",
+                    props.getClientId() == null ? "NULL" : props.getClientId(),
+                    props.getClientId() == null ? -1 : props.getClientId().length(),
+                    props.getClientSecret() == null ? -1 : props.getClientSecret().length(),
+                    envClientId == null ? "NULL" : (envClientId.isBlank() ? "BLANK" : envClientId.substring(0, Math.min(8, envClientId.length())) + "..."),
+                    envClientId == null ? -1 : envClientId.length(),
+                    envSecret == null ? -1 : envSecret.length(),
+                    props.isPollingAtivo());
             return;
         }
 

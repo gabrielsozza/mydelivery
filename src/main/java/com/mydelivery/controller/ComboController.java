@@ -89,34 +89,53 @@ public class ComboController {
     public ResponseEntity<Map<String, Object>> criar(
             @AuthenticationPrincipal String email,
             @RequestBody Map<String, Object> body) {
+        // DIAGNÓSTICO: logamos o body recebido (sem dados sensíveis) pra
+        // facilitar achar o problema em prod quando o frontend reportar 400.
+        log.info("[Combo:criar] email={} body.keys={} itens.size={}",
+                email,
+                body != null ? body.keySet() : null,
+                body != null && body.get("itens") instanceof List<?> l ? l.size() : 0);
+
         Restaurante r = meuRestaurante(email);
 
-        Produto combo = Produto.builder()
-                .restaurante(r)
-                .nome(strReq(body, "nome"))
-                .descricao(strOr(body, "descricao", null))
-                .preco(decOr(body, "preco", BigDecimal.ZERO))
-                .fotoUrl(strOr(body, "fotoUrl", null))
-                .ordem(intOr(body, "ordem", 0))
-                .disponivel(boolOr(body, "disponivel", true))
-                .destaque(boolOr(body, "destaque", false))
-                .tipo(Produto.Tipo.COMBO)
-                .build();
+        try {
+            Produto combo = Produto.builder()
+                    .restaurante(r)
+                    .nome(strReq(body, "nome"))
+                    .descricao(strOr(body, "descricao", null))
+                    .preco(decOr(body, "preco", BigDecimal.ZERO))
+                    .fotoUrl(strOr(body, "fotoUrl", null))
+                    .ordem(intOr(body, "ordem", 0))
+                    .disponivel(boolOr(body, "disponivel", true))
+                    .destaque(boolOr(body, "destaque", false))
+                    .tipo(Produto.Tipo.COMBO)
+                    .build();
 
-        // Categoria opcional — se vier, valida ownership do restaurante
-        Long catId = longOrNull(body, "categoriaId");
-        if (catId != null) {
-            var cat = categoriaRepo.findById(catId).orElse(null);
-            if (cat != null && cat.getRestaurante() != null
-                    && cat.getRestaurante().getId().equals(r.getId())) {
-                combo.setCategoria(cat);
+            // Categoria opcional — se vier, valida ownership do restaurante
+            Long catId = longOrNull(body, "categoriaId");
+            if (catId != null) {
+                var cat = categoriaRepo.findById(catId).orElse(null);
+                if (cat != null && cat.getRestaurante() != null
+                        && cat.getRestaurante().getId().equals(r.getId())) {
+                    combo.setCategoria(cat);
+                }
             }
+
+            combo = produtoRepo.saveAndFlush(combo);
+            log.info("[Combo:criar] produto combo salvo id={}", combo.getId());
+            salvarItensDoCombo(combo, r, body.get("itens"));
+            log.info("[Combo:criar] OK — combo id={} com {} itens", combo.getId(),
+                    comboItemRepo.findByComboIdOrderByOrdemAscIdAsc(combo.getId()).size());
+
+            return ResponseEntity.status(HttpStatus.CREATED).body(serializarCombo(combo, true));
+        } catch (ResponseStatusException e) {
+            log.warn("[Combo:criar] validação falhou: {} - {}", e.getStatusCode(), e.getReason());
+            throw e;
+        } catch (Exception e) {
+            log.error("[Combo:criar] FALHA inesperada", e);
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Erro ao salvar combo: " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
         }
-
-        combo = produtoRepo.saveAndFlush(combo);
-        salvarItensDoCombo(combo, r, body.get("itens"));
-
-        return ResponseEntity.status(HttpStatus.CREATED).body(serializarCombo(combo, true));
     }
 
     // ── ADMIN: editar ──

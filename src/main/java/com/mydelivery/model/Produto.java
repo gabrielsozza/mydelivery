@@ -72,11 +72,14 @@ public class Produto {
      *            Ignora os próprios grupos de complementos — quem manda
      *            são os grupos de cada filho do combo.
      *
-     * Default NORMAL pra retrocompatibilidade (produtos antigos não mudam).
+     * Default NORMAL pra retrocompatibilidade. Coluna nullable porque o
+     * Hibernate ddl-auto=update NÃO consegue adicionar NOT NULL em tabela
+     * com dados existentes (MySQL rejeita ALTER sem DEFAULT). Tratamos
+     * null como NORMAL nos services pra robustez.
      */
     @Builder.Default
     @Enumerated(EnumType.STRING)
-    @Column(nullable = false, length = 16)
+    @Column(length = 16)
     private Tipo tipo = Tipo.NORMAL;
 
     public enum Tipo { NORMAL, COMBO }

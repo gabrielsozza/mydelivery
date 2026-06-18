@@ -19,9 +19,15 @@ import org.springframework.web.server.ResponseStatusException;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.mydelivery.model.ComplementoGrupo;
+import com.mydelivery.model.ComplementoItem;
 import com.mydelivery.model.GrupoComplementoModelo;
+import com.mydelivery.model.Produto;
 import com.mydelivery.model.Restaurante;
+import com.mydelivery.repository.ComplementoGrupoRepository;
 import com.mydelivery.repository.GrupoComplementoModeloRepository;
+import com.mydelivery.repository.ProdutoRepository;
 import com.mydelivery.repository.RestauranteRepository;
 
 import lombok.RequiredArgsConstructor;
@@ -48,6 +54,8 @@ public class GrupoComplementoModeloController {
 
     private final GrupoComplementoModeloRepository repo;
     private final RestauranteRepository restauranteRepo;
+    private final ProdutoRepository produtoRepo;
+    private final ComplementoGrupoRepository grupoComplementoRepo;
     private final ObjectMapper json = new ObjectMapper();
 
     // ── LISTAR ──
@@ -109,6 +117,118 @@ public class GrupoComplementoModeloController {
         Map<String, Object> resp = new HashMap<>();
         resp.put("importados", total);
         resp.put("grupos", lista);
+        return ResponseEntity.ok(resp);
+    }
+
+    // ── APLICAR EM MASSA ──
+
+    /**
+     * Clona o grupo modelo em CADA produto informado, criando uma cópia
+     * dedicada (ComplementoGrupo + ComplementoItem) ligada ao produto.
+     *
+     * Comportamento de duplicata: se o produto já tem um grupo com mesmo
+     * nome (case+acento insensitive), pula esse produto pra não duplicar.
+     * Retorna lista de aplicados + pulados pro frontend mostrar feedback.
+     *
+     * Multi-tenant: só aceita produtos do restaurante do usuário logado.
+     * Body: { "produtoIds": [12, 13, 14] }
+     */
+    @PostMapping("/api/restaurante/grupos-modelo/{id}/aplicar")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    @Transactional
+    public ResponseEntity<Map<String, Object>> aplicarEmMassa(
+            @AuthenticationPrincipal String email,
+            @PathVariable Long id,
+            @RequestBody Map<String, Object> body) {
+        Restaurante r = meuRestaurante(email);
+        GrupoComplementoModelo modelo = repo.findById(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+        if (!modelo.getRestaurante().getId().equals(r.getId())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+        }
+
+        Object raw = body.get("produtoIds");
+        if (!(raw instanceof List<?> idsRaw) || idsRaw.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "produtoIds é obrigatório (lista não vazia)");
+        }
+
+        // Parse itens do JSON (uma vez só)
+        List<Map<String, Object>> itensModelo;
+        try {
+            itensModelo = (modelo.getItensJson() == null || modelo.getItensJson().isBlank())
+                    ? List.of()
+                    : json.readValue(modelo.getItensJson(),
+                            new TypeReference<List<Map<String, Object>>>() {});
+        } catch (Exception e) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR,
+                    "Falha lendo itens do modelo: " + e.getMessage());
+        }
+
+        String nomeModeloNorm = GrupoComplementoModelo.normalizar(modelo.getNome());
+        List<Long> aplicados = new java.util.ArrayList<>();
+        List<Map<String, Object>> pulados = new java.util.ArrayList<>();
+
+        for (Object idObj : idsRaw) {
+            Long produtoId;
+            try {
+                produtoId = idObj instanceof Number n ? n.longValue() : Long.parseLong(idObj.toString());
+            } catch (Exception e) {
+                continue;
+            }
+            Produto p = produtoRepo.findById(produtoId).orElse(null);
+            if (p == null || p.getRestaurante() == null
+                    || !p.getRestaurante().getId().equals(r.getId())) {
+                // Multi-tenant guard ou produto não existe — ignora silencioso
+                continue;
+            }
+
+            // Pula se produto já tem grupo com mesmo nome (evita duplicata)
+            var jaExistentes = grupoComplementoRepo.findByProdutoIdOrderByIdAsc(produtoId);
+            boolean duplicado = jaExistentes.stream().anyMatch(g ->
+                    GrupoComplementoModelo.normalizar(g.getNome()).equals(nomeModeloNorm));
+            if (duplicado) {
+                Map<String, Object> info = new HashMap<>();
+                info.put("produtoId", produtoId);
+                info.put("nome", p.getNome());
+                info.put("motivo", "ja_existe");
+                pulados.add(info);
+                continue;
+            }
+
+            // Clona o grupo modelo no produto
+            ComplementoGrupo novo = ComplementoGrupo.builder()
+                    .produto(p)
+                    .nome(modelo.getNome())
+                    .obrigatorio(Boolean.TRUE.equals(modelo.getObrigatorio()))
+                    .minEscolhas(modelo.getMinEscolhas() != null ? modelo.getMinEscolhas() : 0)
+                    .maxEscolhas(modelo.getMaxEscolhas() != null ? modelo.getMaxEscolhas() : 1)
+                    .itens(new java.util.ArrayList<>())
+                    .build();
+            for (Map<String, Object> it : itensModelo) {
+                if (it == null || it.get("nome") == null) continue;
+                java.math.BigDecimal preco = java.math.BigDecimal.ZERO;
+                Object pr = it.get("precoAdicional");
+                if (pr != null) {
+                    try { preco = new java.math.BigDecimal(pr.toString()); } catch (Exception ignore) {}
+                }
+                ComplementoItem ci = ComplementoItem.builder()
+                        .grupo(novo)
+                        .nome(it.get("nome").toString().trim())
+                        .precoAdicional(preco)
+                        .ativo(true)
+                        .build();
+                novo.getItens().add(ci);
+            }
+            grupoComplementoRepo.saveAndFlush(novo);
+            aplicados.add(produtoId);
+        }
+
+        Map<String, Object> resp = new HashMap<>();
+        resp.put("aplicados", aplicados);
+        resp.put("pulados", pulados);
+        resp.put("totalAplicados", aplicados.size());
+        resp.put("totalPulados", pulados.size());
         return ResponseEntity.ok(resp);
     }
 

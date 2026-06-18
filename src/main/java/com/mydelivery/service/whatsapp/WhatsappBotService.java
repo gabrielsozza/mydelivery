@@ -120,6 +120,19 @@ public class WhatsappBotService {
                     "\\[\\s*MyDelivery\\s*#\\s*PEDIDO[_\\s]*([0-9]+)\\s*\\]",
                     java.util.regex.Pattern.CASE_INSENSITIVE);
 
+    /**
+     * Cliente relata em texto livre que fez um pedido, citando o número.
+     * Padrões cobertos:
+     *   "fiz o pedido #411", "fiz pedido 411", "acabei de fazer o pedido #411",
+     *   "pedido número 411", "meu pedido é o 411", "pedido n° 411".
+     * Captura grupo 1 = número.
+     * Limita 1-6 dígitos pra evitar match em telefones / valores monetários.
+     */
+    private static final java.util.regex.Pattern PEDIDO_RELATADO_RX =
+            java.util.regex.Pattern.compile(
+                    "(?:fiz|acabei\\s+de\\s+fazer|finalizei|completei)\\s+(?:o\\s+)?pedido\\s+(?:n[ºo°]?\\s*|numero\\s*|n[uú]mero\\s*|#)?([0-9]{1,6})\\b",
+                    java.util.regex.Pattern.CASE_INSENSITIVE);
+
     /** Estado por número (key = instanceName + ":" + numero). */
     private final Map<String, EstadoNumero> estados = new ConcurrentHashMap<>();
 
@@ -236,7 +249,32 @@ public class WhatsappBotService {
                     + " Recebemos o seu pedido *#" + num + "* aqui no "
                     + r.getNome() + BotVariations.pontuacaoFim() + "\n\n"
                     + "Ele já está em preparo e vai sair fresquinho pra você. "
-                    + "É só aguardar um instantinho que ele bate na sua porta " + BotVariations.emojiMoto();
+                    + "É só aguardar um instantinho que ele bate na sua porta " + BotVariations.emojiMoto()
+                    + "\n\n🔗 Acompanhe em tempo real:\n"
+                    + "https://mydeliveryfood.com.br/acompanhar.html?id=" + num;
+        }
+
+        // 0b. Cliente relata pedido em texto livre — ex: "Acabei de fazer
+        // o pedido #411", "fiz pedido 411", "número 411". Detecta intenção
+        // e responde com link/status do pedido específico.
+        java.util.regex.Matcher mRel = PEDIDO_RELATADO_RX.matcher(texto != null ? texto : "");
+        if (mRel.find()) {
+            String num = mRel.group(1);
+            try {
+                Long pedidoId = Long.parseLong(num);
+                Pedido p = pedidoRepo == null ? null : pedidoRepo.findById(pedidoId).orElse(null);
+                // Só responde como "pedido específico" se o pedido existe
+                // E é do MESMO restaurante — evita vazar pedido alheio
+                if (p != null && p.getRestaurante() != null
+                        && r.getId().equals(p.getRestaurante().getId())) {
+                    st.ultimaIntencao = "relata_pedido";
+                    return formatarStatus(p);
+                }
+            } catch (NumberFormatException | NullPointerException ignore) {
+                // numero gigante ou inválido → ignora e segue fluxo
+            } catch (Exception e) {
+                log.warn("[Bot] falha consultando pedido relatado #{}: {}", num, e.getMessage());
+            }
         }
 
         // 1. Atendente humano — PRIORIDADE MÁXIMA
@@ -262,10 +300,13 @@ public class WhatsappBotService {
                 "atendem aqui", "atendem ai", "atendem aí",
                 "atende aqui", "atende ai", "atende aí",
                 "atende em", "atende na", "atende no", "atendem em", "atendem na", "atendem no",
-                "entrega aqui", "entrega ai", "entrega aí", "entrega em", "entrega na",
-                "bairro", "bairros", "atendido", "cobertura", "qual area")) {
+                "entrega aqui", "entrega ai", "entrega aí", "entrega em", "entrega na", "entrega no",
+                "entregam aqui", "entregam em", "entregam na", "entregam no",
+                "voces entregam", "vocês entregam", "vcs entregam",
+                "voces atendem", "vocês atendem", "vcs atendem",
+                "bairro", "bairros", "atendido", "cobertura", "qual area", "qual área")) {
             st.ultimaIntencao = "regioes";
-            return montarRespostaRegioes(r);
+            return montarRespostaRegioes(r, t);
         }
 
         // 3. Taxa de entrega
@@ -655,6 +696,16 @@ public class WhatsappBotService {
                     .append("Aproveite!");
             default -> sb.append("Status: ").append(p.getStatus().name());
         }
+
+        // Link de acompanhamento (não inclui em status finais onde o link
+        // perde o sentido — pedido já cancelado, entregue ou na mesa)
+        if (p.getStatus() != Pedido.Status.ENTREGUE
+                && p.getStatus() != Pedido.Status.CANCELADO
+                && p.getStatus() != Pedido.Status.NA_MESA) {
+            sb.append("\n\n🔗 Acompanhe em tempo real:\n")
+              .append("https://mydeliveryfood.com.br/acompanhar.html?id=")
+              .append(p.getId());
+        }
         return sb.toString();
     }
 
@@ -959,11 +1010,70 @@ public class WhatsappBotService {
     }
 
     private String montarRespostaRegioes(Restaurante r) {
+        return montarRespostaRegioes(r, null);
+    }
+
+    /**
+     * Overload que tenta identificar bairro específico mencionado pelo cliente.
+     * Se mensagem do tipo "vocês entregam em jardim capelinha?" e bairro
+     * estiver na lista atendida → responde SIM com taxa. Senão → responde NÃO.
+     * Se não cita bairro específico → lista geral como antes.
+     *
+     * @param textoNormalizado mensagem do cliente já normalizada (lowercase, sem acento)
+     */
+    private String montarRespostaRegioes(Restaurante r, String textoNormalizado) {
         var bairros = r.getBairrosAtendidos();
         if (bairros == null || bairros.isEmpty()) {
             return "Atendemos diversas regiões! 📍 Coloque seu endereço no cardápio pra ver se entregamos aí: "
                     + montarLinkCardapio(r);
         }
+
+        // 1. Tenta achar bairro específico citado na mensagem
+        if (textoNormalizado != null && !textoNormalizado.isBlank()) {
+            for (var b : bairros) {
+                if (b == null || b.getNome() == null || b.getNome().isBlank()) continue;
+                String nomeNormalizado = normalizar(b.getNome());
+                if (nomeNormalizado.isBlank()) continue;
+                // Match: nome do bairro inteiro está contido na mensagem
+                if (textoNormalizado.contains(nomeNormalizado)) {
+                    StringBuilder ok = new StringBuilder();
+                    ok.append("✅ Sim! Entregamos em *").append(b.getNome()).append("*");
+                    if (b.getTaxa() != null) {
+                        ok.append(".\n\n🛵 Taxa de entrega: *R$ ").append(formatar(b.getTaxa())).append("*");
+                    } else {
+                        ok.append(".");
+                    }
+                    ok.append("\n\nÉ só fazer o pedido pelo cardápio 👉 ").append(montarLinkCardapio(r));
+                    return ok.toString();
+                }
+            }
+
+            // Se a mensagem cita "entregam em X" / "atende em X" mas não bateu
+            // com nenhum bairro cadastrado → resposta negativa específica.
+            // Detecta padrão "em <algo>" / "no <algo>" / "na <algo>" depois de
+            // "entrega(m)" ou "atende(m)"
+            java.util.regex.Matcher mb = BAIRRO_CITADO_RX.matcher(textoNormalizado);
+            if (mb.find()) {
+                String bairroCitado = mb.group(2).trim();
+                if (!bairroCitado.isBlank() && bairroCitado.length() > 2) {
+                    StringBuilder ng = new StringBuilder();
+                    ng.append("❌ Não atendemos *").append(bairroCitado).append("* infelizmente 😕\n\n");
+                    ng.append("📍 *Regiões que atendemos:*\n");
+                    int maxN = Math.min(bairros.size(), 15);
+                    for (int i = 0; i < maxN; i++) {
+                        var b = bairros.get(i);
+                        if (b == null || b.getNome() == null) continue;
+                        ng.append("• ").append(b.getNome()).append("\n");
+                    }
+                    if (bairros.size() > maxN) {
+                        ng.append("• … e mais ").append(bairros.size() - maxN).append(" regiões\n");
+                    }
+                    return ng.toString();
+                }
+            }
+        }
+
+        // 2. Sem bairro específico → lista geral
         StringBuilder sb = new StringBuilder("📍 *Regiões atendidas:*\n\n");
         int max = Math.min(bairros.size(), 20); // evita msg gigante
         for (int i = 0; i < max; i++) {
@@ -979,6 +1089,13 @@ public class WhatsappBotService {
         sb.append("\nConfere o endereço completo no cardápio: ").append(montarLinkCardapio(r));
         return sb.toString();
     }
+
+    /** Captura nome do bairro citado em frases tipo "entregam em jardim capelinha"
+     *  ou "atende no centro". Grupo 2 = nome do bairro. */
+    private static final java.util.regex.Pattern BAIRRO_CITADO_RX =
+            java.util.regex.Pattern.compile(
+                    "(entregam?|atendem?)\\s+(?:em|na|no|aqui em|aqui na|aqui no)\\s+([a-z0-9 ]+?)(?:\\?|$|\\.|,)",
+                    java.util.regex.Pattern.CASE_INSENSITIVE);
 
     // ── atendimento humano (handoff) ──
 

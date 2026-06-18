@@ -4,6 +4,8 @@ import java.math.BigDecimal;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
@@ -50,7 +52,21 @@ public class FichaTecnicaItem {
     private Insumo insumo;
 
     // Quantidade do insumo consumida por 1 unidade do produto
-    // (na unidade definida no Insumo — ex: 0.150 KG de carne por hambúrguer)
+    // (na unidade definida abaixo em `unidadeReceita`, ou na do insumo
+    //  quando `unidadeReceita` for null — pra retrocompatibilidade).
     @Column(nullable = false, precision = 14, scale = 4)
     private BigDecimal quantidade;
+
+    /**
+     * Unidade da receita — pode ser diferente da unidade do insumo, desde
+     * que do mesmo grupo (volume ou massa). Ex: insumo "Açaí" cadastrado
+     * em LITROS, receita do produto "Açaí 300ml" usa ML.
+     *
+     * Quando NULL, o cálculo de viabilidade assume que `quantidade` está na
+     * mesma unidade do insumo — comportamento legado, mantém compat com
+     * fichas antigas que ainda não foram migradas.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "unidade_receita", length = 10)
+    private com.mydelivery.model.Insumo.Unidade unidadeReceita;
 }

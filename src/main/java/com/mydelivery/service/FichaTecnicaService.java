@@ -41,6 +41,12 @@ public class FichaTecnicaService {
             it.setInsumoNome(fi.getInsumo().getNome());
             it.setUnidade(fi.getInsumo().getUnidade() != null ? fi.getInsumo().getUnidade().name() : "UN");
             it.setQuantidade(fi.getQuantidade());
+            // Unidade da receita — se não cadastrada, eco da unidade do insumo
+            // pra que o frontend possa renderizar select com valor pré-selecionado.
+            var unR = fi.getUnidadeReceita() != null
+                    ? fi.getUnidadeReceita()
+                    : fi.getInsumo().getUnidade();
+            it.setUnidadeReceita(unR != null ? unR.name() : null);
             it.setSaldoAtualInsumo(fi.getInsumo().getSaldoAtual());
             itens.add(it);
         }
@@ -68,10 +74,29 @@ public class FichaTecnicaService {
                         .orElseThrow(() -> new RuntimeException("Insumo não encontrado: " + it.getInsumoId()));
                 if (!insumo.getRestaurante().getId().equals(restauranteId))
                     throw new RuntimeException("Insumo de outro restaurante");
+                // Resolve unidadeReceita do payload — valida que é compatível
+                // com o grupo do insumo (não pode passar KG pra um insumo em L).
+                com.mydelivery.model.Insumo.Unidade unidadeReceita = null;
+                if (it.getUnidadeReceita() != null && !it.getUnidadeReceita().isBlank()) {
+                    try {
+                        unidadeReceita = com.mydelivery.model.Insumo.Unidade
+                                .valueOf(it.getUnidadeReceita());
+                    } catch (Exception e) {
+                        throw new RuntimeException("Unidade da receita inválida: " + it.getUnidadeReceita());
+                    }
+                    if (!com.mydelivery.util.UnidadeConversor.podeConverter(
+                            insumo.getUnidade(), unidadeReceita)) {
+                        throw new RuntimeException(
+                                "Unidade da receita (" + unidadeReceita + ") incompatível com "
+                                + "a unidade do insumo " + insumo.getNome()
+                                + " (" + insumo.getUnidade() + ")");
+                    }
+                }
                 FichaTecnicaItem fi = FichaTecnicaItem.builder()
                         .produto(p)
                         .insumo(insumo)
                         .quantidade(it.getQuantidade())
+                        .unidadeReceita(unidadeReceita)
                         .build();
                 fichaRepository.save(fi);
             }

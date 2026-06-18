@@ -208,9 +208,22 @@ public class EstoqueService {
             if (ficha.isEmpty()) continue; // sem ficha cadastrada → não baixa
 
             for (FichaTecnicaItem fi : ficha) {
-                BigDecimal consumo = fi.getQuantidade().multiply(BigDecimal.valueOf(qtdVendida));
+                var insumo = fi.getInsumo();
+                if (insumo == null) continue;
+                // Converte o consumo pra unidade do insumo antes de descontar.
+                // Ex: insumo em LITROS, receita em ML(300) → 300ml × 5 vendas
+                // = 1500ml = 1.5 L pra debitar do saldo (que está em L).
+                // Sem essa conversão, o sistema debitaria 1500 LITROS,
+                // zerando saldo errado e disparando ruptura falsa.
+                var unInsumo = insumo.getUnidade();
+                var unReceita = fi.getUnidadeReceita() != null
+                        ? fi.getUnidadeReceita()
+                        : unInsumo;
+                BigDecimal consumoPorUnidade = com.mydelivery.util.UnidadeConversor
+                        .converter(fi.getQuantidade(), unReceita, unInsumo);
+                BigDecimal consumo = consumoPorUnidade.multiply(BigDecimal.valueOf(qtdVendida));
                 // SAIDA_VENDA é registrada com quantidade NEGATIVA
-                registrarMov(fi.getInsumo(), MovimentacaoEstoque.Tipo.SAIDA_VENDA,
+                registrarMov(insumo, MovimentacaoEstoque.Tipo.SAIDA_VENDA,
                         consumo.negate(), pedido.getId(),
                         "Venda do pedido #" + pedido.getId() + " (" + qtdVendida + "x " + it.getProduto().getNome() + ")");
             }
@@ -252,15 +265,31 @@ public class EstoqueService {
             int minUnidades = Integer.MAX_VALUE;
             String gargalo = null;
             for (FichaTecnicaItem fi : itens) {
-                BigDecimal saldo = fi.getInsumo().getSaldoAtual();
+                var insumo = fi.getInsumo();
+                if (insumo == null) continue;
                 BigDecimal porUnit = fi.getQuantidade();
                 if (porUnit == null || porUnit.signum() <= 0) continue;
-                int possiveis = saldo == null || saldo.signum() <= 0
+
+                // CRÍTICO: converter saldo e consumo pra mesma unidade BASE
+                // antes de dividir. Sem isso, insumo em LITRO consumido em ML
+                // (300) calcularia 10/300 = 0 (ruptura falsa). Agora:
+                // 10L = 10000ml ÷ 300ml = 33 unidades.
+                var unInsumo = insumo.getUnidade();
+                var unReceita = fi.getUnidadeReceita() != null
+                        ? fi.getUnidadeReceita()
+                        : unInsumo; // legado: receita assume unidade do insumo
+                BigDecimal saldoBase = com.mydelivery.util.UnidadeConversor
+                        .paraBase(insumo.getSaldoAtual(), unInsumo);
+                BigDecimal consumoBase = com.mydelivery.util.UnidadeConversor
+                        .paraBase(porUnit, unReceita);
+                if (consumoBase == null || consumoBase.signum() <= 0) continue;
+
+                int possiveis = saldoBase == null || saldoBase.signum() <= 0
                         ? 0
-                        : saldo.divide(porUnit, 0, RoundingMode.FLOOR).intValue();
+                        : saldoBase.divide(consumoBase, 0, RoundingMode.FLOOR).intValue();
                 if (possiveis < minUnidades) {
                     minUnidades = possiveis;
-                    gargalo = fi.getInsumo().getNome();
+                    gargalo = insumo.getNome();
                 }
             }
             if (minUnidades == Integer.MAX_VALUE) minUnidades = 0;

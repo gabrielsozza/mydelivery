@@ -573,10 +573,10 @@ public class WhatsappBotService {
             String tipo,
             String telefoneCliente) {
         try {
-            if (restaurante == null
-                    || !Boolean.TRUE.equals(restaurante.getNotificarLinkAcompanhamentoWhatsapp())) {
-                return;
-            }
+            if (restaurante == null) return;
+            // Notificação proativa é padrão sempre que o bot está ativo —
+            // não exige toggle do dono. As salvaguardas anti-shadowban
+            // (horário, throttle, WA conectado, botAtivo) continuam abaixo.
             if (tipo == null || !(tipo.equalsIgnoreCase("DELIVERY") || tipo.equalsIgnoreCase("RETIRADA"))) {
                 return;
             }

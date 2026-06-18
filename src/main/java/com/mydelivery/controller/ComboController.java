@@ -295,16 +295,16 @@ public class ComboController {
                 throw new ResponseStatusException(HttpStatus.FORBIDDEN,
                         "Produto filho não pertence ao seu restaurante");
             }
-            // Combo não pode conter outro combo (pra simplificar regra de preço)
-            if (filho.getTipo() == Produto.Tipo.COMBO) {
-                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                        "Combo não pode conter outro combo (" + filho.getNome() + ")");
-            }
-            // Combo não pode conter ele mesmo
+            // Combo não pode conter ele mesmo (loop infinito ao expandir)
             if (filho.getId().equals(combo.getId())) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                         "Combo não pode conter ele mesmo");
             }
+            // Combo dentro de combo agora é PERMITIDO. Ao expandir no cardápio
+            // o cliente vai ver o combo-filho como item único (não expande
+            // recursivamente) — pra simplificar a regra de preço, o preço
+            // do combo-filho não soma; o que vale é o preço tabelado do
+            // combo-pai. Se virar problema, restringir depois.
 
             int qtd = intOr(im, "quantidade", 1);
             if (qtd < 1) qtd = 1;

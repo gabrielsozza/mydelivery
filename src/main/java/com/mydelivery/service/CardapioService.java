@@ -290,6 +290,7 @@ public class CardapioService {
                 .categoriaId(p.getCategoria() != null ? p.getCategoria().getId() : null)
                 .categoriaNome(p.getCategoria() != null ? p.getCategoria().getNome() : null)
                 .ordem(p.getOrdem())
+                .tipo(p.getTipo() != null ? p.getTipo().name() : "NORMAL")
                 .build();
     }
 

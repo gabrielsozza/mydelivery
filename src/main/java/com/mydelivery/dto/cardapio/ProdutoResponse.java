@@ -25,4 +25,7 @@ public class ProdutoResponse {
     private String categoriaNome;
     /** Posição do produto dentro da categoria (menor = aparece primeiro). */
     private Integer ordem;
+    /** "NORMAL" (default) ou "COMBO". Painel e cardápio público usam pra
+     *  abrir o modal certo (combo abre fluxo com slots e grupos próprios). */
+    private String tipo;
 }

@@ -6,16 +6,21 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.mydelivery.dto.mercadopago.MpPaymentResponse;
+import com.mydelivery.model.Assinatura;
 import com.mydelivery.model.ConfiguracaoRestaurante;
 import com.mydelivery.model.MercadoPagoEventoProcessado;
 import com.mydelivery.model.Pagamento;
 import com.mydelivery.model.Pedido;
+import com.mydelivery.model.Plano;
+import com.mydelivery.model.Restaurante;
 import com.mydelivery.repository.ConfiguracaoRestauranteRepository;
 import com.mydelivery.repository.MercadoPagoEventoProcessadoRepository;
 import com.mydelivery.repository.PagamentoRepository;
 import com.mydelivery.repository.PedidoRepository;
+import com.mydelivery.repository.RestauranteRepository;
+import com.mydelivery.service.AssinaturaService;
 
-import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -31,7 +36,6 @@ import lombok.extern.slf4j.Slf4j;
  */
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class MercadoPagoWebhookService {
 
     private final PagamentoRepository pagamentoRepository;
@@ -40,6 +44,30 @@ public class MercadoPagoWebhookService {
     private final MercadoPagoEventoProcessadoRepository eventoRepo;
     private final MercadoPagoSignatureValidator signatureValidator;
     private final MercadoPagoClient mpClient;
+    private final RestauranteRepository restauranteRepository;
+    private final AssinaturaService assinaturaService;
+    private final String adminAccessToken;
+
+    public MercadoPagoWebhookService(
+            PagamentoRepository pagamentoRepository,
+            PedidoRepository pedidoRepository,
+            ConfiguracaoRestauranteRepository configRepo,
+            MercadoPagoEventoProcessadoRepository eventoRepo,
+            MercadoPagoSignatureValidator signatureValidator,
+            MercadoPagoClient mpClient,
+            RestauranteRepository restauranteRepository,
+            AssinaturaService assinaturaService,
+            @Value("${mydelivery.mercadopago.admin-access-token:${ADMIN_MP_ACCESS_TOKEN:}}") String adminAccessToken) {
+        this.pagamentoRepository = pagamentoRepository;
+        this.pedidoRepository = pedidoRepository;
+        this.configRepo = configRepo;
+        this.eventoRepo = eventoRepo;
+        this.signatureValidator = signatureValidator;
+        this.mpClient = mpClient;
+        this.restauranteRepository = restauranteRepository;
+        this.assinaturaService = assinaturaService;
+        this.adminAccessToken = adminAccessToken;
+    }
 
     /**
      * @return Resultado.OK → respondemos 200. INVALIDO → 401. ERRO → 500 (MP reentrega).
@@ -70,11 +98,15 @@ public class MercadoPagoWebhookService {
         // 2. Resolve tenant pelo Pagamento local
         Pagamento pagamento = pagamentoRepository.findByMpPaymentId(mpPaymentId).orElse(null);
         if (pagamento == null) {
-            // Pode ser webhook chegando antes do POST /v1/payments retornar — MP reentrega.
-            // Devolvemos 404 sutil (500 forçaria retry; 200 perderia o evento).
-            // Optamos por 200 + log: na prática o front faz polling, então mesmo perdendo
-            // um webhook a aprovação eventualmente acontece via consulta ativa.
-            log.warn("Webhook MP recebido pra payment {} sem Pagamento local correspondente — ignorando", mpPaymentId);
+            // Não encontrou pagamento de PEDIDO. Pode ser:
+            //   (a) Webhook chegou antes do POST /v1/payments retornar → MP reentrega
+            //   (b) Pagamento de ASSINATURA (PIX/Checkout Pro) — não passa por PagamentoRepository
+            //
+            // Pra (b): consulta MP com token ADMIN pra ler external_reference.
+            // Se começar com "assinatura-", processa como ativação de assinatura.
+            Resultado r = tentarProcessarComoAssinatura(mpPaymentId, input);
+            if (r != null) return r;
+            log.warn("Webhook MP recebido pra payment {} sem Pagamento local nem assinatura correspondente — ignorando", mpPaymentId);
             return Resultado.OK;
         }
 
@@ -170,6 +202,90 @@ public class MercadoPagoWebhookService {
                 .tipo(input.tipo())
                 .acao(input.acao())
                 .build());
+    }
+
+    /**
+     * Tenta interpretar o webhook como pagamento de ASSINATURA.
+     *
+     * Diferente de pedido, pagamento de assinatura NÃO passa por PagamentoRepository.
+     * Identificamos pelo external_reference, formato: "assinatura-{restauranteId}-{PLANO}-{timestamp}".
+     *
+     * Se identificar e o pagamento estiver APPROVED, ativa o plano via AssinaturaService.
+     * Retorna {@code null} quando não for assinatura — caller continua o fluxo padrão.
+     */
+    private Resultado tentarProcessarComoAssinatura(Long mpPaymentId, WebhookInput input) {
+        if (adminAccessToken == null || adminAccessToken.isBlank()) {
+            log.debug("[Webhook:Assinatura] ADMIN_MP_ACCESS_TOKEN não configurado — pulando fallback");
+            return null;
+        }
+        MpPaymentResponse atual;
+        try {
+            atual = mpClient.consultar(adminAccessToken, mpPaymentId);
+        } catch (Exception e) {
+            log.warn("[Webhook:Assinatura] consulta MP com token admin falhou pra payment {}: {}",
+                    mpPaymentId, e.getMessage());
+            return null;
+        }
+        String extRef = atual.getExternalReference();
+        if (extRef == null || !extRef.startsWith("assinatura-")) {
+            return null; // não é assinatura — caller segue fluxo padrão
+        }
+
+        // Parse: assinatura-{restauranteId}-{PLANO}-{timestamp}
+        String[] partes = extRef.split("-");
+        if (partes.length < 3) {
+            log.warn("[Webhook:Assinatura] external_reference em formato inesperado: {}", extRef);
+            registrarEvento(input, mpPaymentId);
+            return Resultado.OK;
+        }
+        Long restauranteId;
+        Plano plano;
+        try {
+            restauranteId = Long.valueOf(partes[1]);
+            plano = Plano.valueOf(partes[2]);
+        } catch (Exception e) {
+            log.warn("[Webhook:Assinatura] falha parseando external_reference '{}': {}", extRef, e.getMessage());
+            registrarEvento(input, mpPaymentId);
+            return Resultado.OK;
+        }
+
+        Restaurante r = restauranteRepository.findById(restauranteId).orElse(null);
+        if (r == null) {
+            log.warn("[Webhook:Assinatura] restaurante {} não encontrado (extRef={})", restauranteId, extRef);
+            registrarEvento(input, mpPaymentId);
+            return Resultado.OK;
+        }
+
+        String status = atual.getStatus() != null ? atual.getStatus().toLowerCase() : "";
+        log.info("[Webhook:Assinatura] payment {} restaurante={} plano={} status={}",
+                mpPaymentId, restauranteId, plano, status);
+
+        if ("approved".equals(status)) {
+            try {
+                Assinatura a = assinaturaService.ativarPlano(r, plano, "PIX_MP",
+                        String.valueOf(mpPaymentId));
+                try {
+                    assinaturaService.registrarPagamentoOk(r, plano, "PIX_MP", mpPaymentId);
+                } catch (Exception e) {
+                    log.warn("[Webhook:Assinatura] registrarPagamentoOk falhou (não-crítico): {}", e.getMessage());
+                }
+                log.info("✅ [Webhook:Assinatura] plano ativado — restaurante={}, plano={}, validaAte={}",
+                        restauranteId, plano, a.getValidaAte());
+            } catch (Exception e) {
+                log.error("[Webhook:Assinatura] FALHA ao ativar plano restaurante={}, plano={}: {}",
+                        restauranteId, plano, e.getMessage(), e);
+                return Resultado.ERRO; // MP reentrega
+            }
+        } else if ("rejected".equals(status) || "cancelled".equals(status)) {
+            log.info("[Webhook:Assinatura] pagamento {} status={} — sem ativação", mpPaymentId, status);
+            // Status final negativo — não ativa, mas registra evento pra não reprocessar
+        } else {
+            // pending, in_process, etc — aguarda próximo webhook
+            log.info("[Webhook:Assinatura] payment {} ainda pendente (status={}) — aguardando", mpPaymentId, status);
+        }
+
+        registrarEvento(input, mpPaymentId);
+        return Resultado.OK;
     }
 
     /** Input normalizado do webhook — parsing fica no controller. */

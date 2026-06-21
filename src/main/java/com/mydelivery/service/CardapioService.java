@@ -32,6 +32,7 @@ public class CardapioService {
     private final com.mydelivery.repository.BannerRepository bannerRepository;
     private final com.mydelivery.repository.ComplementoGrupoRepository complementoGrupoRepository;
     private final com.mydelivery.repository.ComboItemRepository comboItemRepository;
+    private final com.mydelivery.repository.ComboGrupoRepository comboGrupoRepository;
 
     // ─── CARDÁPIO PÚBLICO ────────────────────────────────────────────────
 
@@ -168,6 +169,10 @@ public class CardapioService {
         //    ainda não foi criada pelo Hibernate ddl-auto.
         try { comboItemRepository.deleteByComboId(produto.getId()); } catch (Exception ignore) {}
         try { comboItemRepository.deleteByProdutoFilhoId(produto.getId()); } catch (Exception ignore) {}
+        // 6) Combo grupos — se produto é combo, tem linhas em combo_grupos
+        //    (ligando o combo a templates GrupoComplementoModelo). FK obriga
+        //    apagar antes. Try-catch caso a tabela ainda não exista.
+        try { comboGrupoRepository.deleteByComboId(produto.getId()); } catch (Exception ignore) {}
     }
 
     // ─── PRODUTOS ────────────────────────────────────────────────────────

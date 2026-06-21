@@ -41,6 +41,11 @@ public class PedidoItem {
     @Column(nullable = false, precision = 10, scale = 2)
     private BigDecimal subtotal;
 
+    /** TEXT (não VARCHAR 255). Combos geram obs hierárquica longa:
+     *  "📦 Combo: Combo Inauguração ▸ Açaí 500ml #1 ▸ Cobertura: leite condensado
+     *   ▸ Complementos: leite em pó, granola, frozen ▸ Açaí 500ml #2 ▸ ..."
+     *  passa de 255 fácil — antes estourava "Data too long for column". */
+    @Column(columnDefinition = "TEXT")
     private String observacao;
 
     @OneToMany(mappedBy = "pedidoItem", cascade = CascadeType.ALL)

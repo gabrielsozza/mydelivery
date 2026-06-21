@@ -24,11 +24,17 @@ import com.mydelivery.model.ComboItem;
 import com.mydelivery.model.ComplementoGrupo;
 import com.mydelivery.model.Produto;
 import com.mydelivery.model.Restaurante;
+import com.mydelivery.model.ComboGrupo;
+import com.mydelivery.model.GrupoComplementoModelo;
 import com.mydelivery.repository.CategoriaRepository;
+import com.mydelivery.repository.ComboGrupoRepository;
 import com.mydelivery.repository.ComboItemRepository;
 import com.mydelivery.repository.ComplementoGrupoRepository;
+import com.mydelivery.repository.GrupoComplementoModeloRepository;
 import com.mydelivery.repository.ProdutoRepository;
 import com.mydelivery.repository.RestauranteRepository;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -77,9 +83,12 @@ public class ComboController {
 
     private final ProdutoRepository produtoRepo;
     private final ComboItemRepository comboItemRepo;
+    private final ComboGrupoRepository comboGrupoRepo;
     private final ComplementoGrupoRepository grupoComplementoRepo;
+    private final GrupoComplementoModeloRepository grupoModeloRepo;
     private final CategoriaRepository categoriaRepo;
     private final RestauranteRepository restauranteRepo;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     // ── ADMIN: criar ──
 
@@ -124,8 +133,12 @@ public class ComboController {
             combo = produtoRepo.saveAndFlush(combo);
             log.info("[Combo:criar] produto combo salvo id={}", combo.getId());
             salvarItensDoCombo(combo, r, body.get("itens"));
-            log.info("[Combo:criar] OK — combo id={} com {} itens", combo.getId(),
-                    comboItemRepo.findByComboIdOrderByOrdemAscIdAsc(combo.getId()).size());
+            // NOVO: salva grupos selecionados pelo dono (item 2 do refactor)
+            salvarGruposDoCombo(combo, r, body.get("gruposIds"));
+            log.info("[Combo:criar] OK — combo id={} com {} itens e {} grupos",
+                    combo.getId(),
+                    comboItemRepo.findByComboIdOrderByOrdemAscIdAsc(combo.getId()).size(),
+                    comboGrupoRepo.findByComboIdOrderByOrdemAscIdAsc(combo.getId()).size());
 
             return ResponseEntity.status(HttpStatus.CREATED).body(serializarCombo(combo, true));
         } catch (ResponseStatusException e) {
@@ -174,6 +187,11 @@ public class ComboController {
             comboItemRepo.deleteByComboId(combo.getId());
             salvarItensDoCombo(combo, r, body.get("itens"));
         }
+        // Substituição completa dos grupos selecionados
+        if (body.containsKey("gruposIds")) {
+            comboGrupoRepo.deleteByComboId(combo.getId());
+            salvarGruposDoCombo(combo, r, body.get("gruposIds"));
+        }
 
         return ResponseEntity.ok(serializarCombo(combo, true));
     }
@@ -208,6 +226,7 @@ public class ComboController {
         if (!combo.getRestaurante().getId().equals(r.getId())) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN);
         }
+        comboGrupoRepo.deleteByComboId(combo.getId());
         comboItemRepo.deleteByComboId(combo.getId());
         produtoRepo.delete(combo);
         return ResponseEntity.noContent().build();
@@ -236,6 +255,19 @@ public class ComboController {
         out.put("fotoUrl", combo.getFotoUrl());
         out.put("tipo", "COMBO");
 
+        // NOVO: grupos do combo escolhidos pelo dono (item 2 do refactor).
+        // Se houver, eles se aplicam a TODOS os slots. Senão, fallback retrocompat:
+        // cada slot herda os grupos do próprio filho (comportamento anterior).
+        var gruposDoCombo = comboGrupoRepo.findByComboIdOrderByOrdemAscIdAsc(combo.getId());
+        List<Map<String, Object>> gruposGlobais = null;
+        if (!gruposDoCombo.isEmpty()) {
+            gruposGlobais = new ArrayList<>();
+            for (var cg : gruposDoCombo) {
+                Map<String, Object> g = serializarGrupoModeloComoPublico(cg.getGrupoModelo());
+                if (g != null) gruposGlobais.add(g);
+            }
+        }
+
         // Expandir filhos respeitando quantidade — pra frontend criar 1 bloco
         // de complementos por unidade (ex: 2x Açaí 500ml vira 2 blocos).
         List<Map<String, Object>> slots = new ArrayList<>();
@@ -244,10 +276,13 @@ public class ComboController {
             Produto filho = ci.getProdutoFilho();
             if (filho == null) continue;
             int qtd = ci.getQuantidade() != null && ci.getQuantidade() > 0 ? ci.getQuantidade() : 1;
-            // Grupos do filho (lê só ativos, mesma serialização do cardápio normal)
-            List<Map<String, Object>> grupos = grupoComplementoRepo
-                    .findByProdutoIdOrderByIdAsc(filho.getId())
-                    .stream().map(g -> serializarGrupoPublico(g)).toList();
+            // Decide qual fonte de grupos usar — grupos do combo (novo) ou
+            // herdados do filho (retrocompat).
+            List<Map<String, Object>> grupos = gruposGlobais != null
+                    ? gruposGlobais
+                    : grupoComplementoRepo
+                        .findByProdutoIdOrderByIdAsc(filho.getId())
+                        .stream().map(g -> serializarGrupoPublico(g)).toList();
 
             for (int n = 1; n <= qtd; n++) {
                 Map<String, Object> slot = new HashMap<>();
@@ -272,6 +307,36 @@ public class ComboController {
     private Restaurante meuRestaurante(String email) {
         return restauranteRepo.findByUsuarioEmail(email)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED));
+    }
+
+    /**
+     * Salva as ligações combo → grupos modelo escolhidos pelo dono.
+     * gruposIds: List<Long> com os IDs dos GrupoComplementoModelo (Fase 1).
+     * Multi-tenant: só aceita grupos do mesmo restaurante.
+     */
+    private void salvarGruposDoCombo(Produto combo, Restaurante r, Object gruposIdsRaw) {
+        if (!(gruposIdsRaw instanceof List<?> ll) || ll.isEmpty()) return;
+        int ordemAuto = 0;
+        for (Object o : ll) {
+            Long gid = longOrNull(java.util.Map.of("id", o), "id");
+            if (gid == null) continue;
+            GrupoComplementoModelo gm = grupoModeloRepo.findById(gid).orElse(null);
+            if (gm == null) {
+                log.warn("[Combo:grupos] modelo id={} não existe — pulando", gid);
+                continue;
+            }
+            if (gm.getRestaurante() == null
+                    || !gm.getRestaurante().getId().equals(r.getId())) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                        "Grupo modelo não pertence ao seu restaurante");
+            }
+            ComboGrupo cg = ComboGrupo.builder()
+                    .combo(combo)
+                    .grupoModelo(gm)
+                    .ordem(ordemAuto++)
+                    .build();
+            comboGrupoRepo.save(cg);
+        }
     }
 
     private void salvarItensDoCombo(Produto combo, Restaurante r, Object itensRaw) {
@@ -350,6 +415,67 @@ public class ComboController {
             itensOut.add(mi);
         }
         out.put("itens", itensOut);
+
+        // NOVO: grupos selecionados pelo dono (item 2 do refactor).
+        // Devolve só os IDs e nomes — frontend pode listar e marcar checkbox.
+        List<Map<String, Object>> gruposOut = new ArrayList<>();
+        for (var cg : comboGrupoRepo.findByComboIdOrderByOrdemAscIdAsc(combo.getId())) {
+            var gm = cg.getGrupoModelo();
+            if (gm == null) continue;
+            Map<String, Object> g = new HashMap<>();
+            g.put("id", gm.getId());
+            g.put("nome", gm.getNome());
+            g.put("ordem", cg.getOrdem());
+            gruposOut.add(g);
+        }
+        out.put("grupos", gruposOut);
+        out.put("gruposIds", gruposOut.stream().map(g -> g.get("id")).toList());
+
+        return out;
+    }
+
+    /**
+     * Converte um GrupoComplementoModelo (template salvo da Fase 1) no mesmo
+     * formato JSON que o frontend público espera ({id, nome, obrigatorio,
+     * minEscolhas, maxEscolhas, itens:[{id, nome, precoAdicional}]}).
+     *
+     * O modelo guarda os itens como JSON em coluna TEXT (formato:
+     * [{nome, precoAdicional}, ...]). Aqui fazemos parse e atribuímos IDs
+     * derivados (gid:idx) pra ficar único no DOM do frontend.
+     */
+    private Map<String, Object> serializarGrupoModeloComoPublico(GrupoComplementoModelo gm) {
+        if (gm == null) return null;
+        Map<String, Object> out = new HashMap<>();
+        out.put("id", gm.getId());
+        out.put("nome", gm.getNome());
+        out.put("obrigatorio", Boolean.TRUE.equals(gm.getObrigatorio()));
+        out.put("minEscolhas", gm.getMinEscolhas() != null ? gm.getMinEscolhas() : 0);
+        out.put("maxEscolhas", gm.getMaxEscolhas() != null ? gm.getMaxEscolhas() : 1);
+        List<Map<String, Object>> itens = new ArrayList<>();
+        if (gm.getItensJson() != null && !gm.getItensJson().isBlank()) {
+            try {
+                List<Map<String, Object>> raw = objectMapper.readValue(
+                        gm.getItensJson(),
+                        new TypeReference<List<Map<String, Object>>>() {});
+                int idx = 0;
+                for (Map<String, Object> it : raw) {
+                    if (it == null || it.get("nome") == null) continue;
+                    Map<String, Object> mi = new HashMap<>();
+                    mi.put("id", gm.getId() * 1000 + (idx++)); // ID sintético único
+                    mi.put("nome", it.get("nome").toString());
+                    BigDecimal preco = BigDecimal.ZERO;
+                    Object pr = it.get("precoAdicional");
+                    if (pr != null) {
+                        try { preco = new BigDecimal(pr.toString()); } catch (Exception ignore) {}
+                    }
+                    mi.put("precoAdicional", preco);
+                    itens.add(mi);
+                }
+            } catch (Exception e) {
+                log.warn("[Combo] itens_json corrompido grupo modelo id={}: {}", gm.getId(), e.getMessage());
+            }
+        }
+        out.put("itens", itens);
         return out;
     }
 

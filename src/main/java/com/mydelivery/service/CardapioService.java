@@ -31,6 +31,7 @@ public class CardapioService {
     private final PedidoItemRepository pedidoItemRepository;
     private final com.mydelivery.repository.BannerRepository bannerRepository;
     private final com.mydelivery.repository.ComplementoGrupoRepository complementoGrupoRepository;
+    private final com.mydelivery.repository.ComboItemRepository comboItemRepository;
 
     // ─── CARDÁPIO PÚBLICO ────────────────────────────────────────────────
 
@@ -159,6 +160,14 @@ public class CardapioService {
         //    cascade=ALL + orphanRemoval=true em ComplementoGrupo.itens arrasta os itens.
         var grupos = complementoGrupoRepository.findByProdutoIdOrderByIdAsc(produto.getId());
         if (!grupos.isEmpty()) complementoGrupoRepository.deleteAll(grupos);
+        // 5) Combo itens — duas situações possíveis:
+        //    (a) produto É um combo → apaga TODOS os filhos vinculados (combo_id = produto.id)
+        //    (b) produto é filho em algum combo → apaga essas ligações (produto_filho_id = produto.id)
+        //    Sem isso, FK constraint estoura 409 Conflict ao tentar deletar.
+        //    Try-catch só pra robustez em ambientes onde a tabela combo_itens
+        //    ainda não foi criada pelo Hibernate ddl-auto.
+        try { comboItemRepository.deleteByComboId(produto.getId()); } catch (Exception ignore) {}
+        try { comboItemRepository.deleteByProdutoFilhoId(produto.getId()); } catch (Exception ignore) {}
     }
 
     // ─── PRODUTOS ────────────────────────────────────────────────────────

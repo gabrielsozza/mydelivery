@@ -2,6 +2,7 @@ package com.mydelivery.job;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -55,6 +56,29 @@ public class WhatsappHealthJob {
     /** Após esgotar tentativas, espera N horas antes de tentar restart de
      *  novo. Shadow ban tem que "esfriar" — restart imediato re-flagga. */
     private static final int COOLDOWN_POS_ESGOTADO_HORAS = 6;
+
+    /** Janela mínima entre QUALQUER auto-reconexão no sistema inteiro.
+     *  Antes: 5 instâncias podiam reconectar simultaneamente no mesmo tick,
+     *  estouravam /instance/restart em paralelo no Evolution, ele engasgava
+     *  e derrubava todas em cascata (exatamente o padrão visto às 22:16 com
+     *  5 lojas em BAILEYS_TRAVADO no MESMO timestamp). Com 90s de spacing
+     *  global, no MÁXIMO 1 restart por tick — as outras esperam o próximo
+     *  tick (5min). Pior caso: instância em problema espera ~5min em vez
+     *  de derrubar o sistema inteiro. */
+    private static final int THROTTLE_GLOBAL_SEGUNDOS = 90;
+
+    /** Timestamp da última auto-reconexão disparada por este job em qualquer
+     *  instância. Static = compartilhado entre threads. AtomicReference
+     *  garante leitura/escrita coerente sem lock. */
+    private static final AtomicReference<LocalDateTime> ULTIMA_RECONEXAO_GLOBAL =
+            new AtomicReference<>(null);
+
+    /** Cooldown longo aplicado quando a causa raiz é SHADOW_BAN_SUSPEITO.
+     *  Restart durante shadow ban PIORA: o Baileys re-conecta com novo
+     *  fingerprint e o WhatsApp re-flagga, então vira loop. Em vez disso,
+     *  damos tempo do número "esfriar" no lado deles. Em 4h os algoritmos
+     *  costumam reavaliar a sessão. */
+    private static final int COOLDOWN_SHADOW_BAN_HORAS = 4;
 
     @Scheduled(fixedRate = 5 * 60_000L, initialDelay = 60_000L) // 5min, espera 1min após boot
     public void tick() {
@@ -111,9 +135,44 @@ public class WhatsappHealthJob {
             }
         }
 
+        // GUARD 1 — SHADOW BAN: se a causa raiz é número silenciado pelo WA,
+        // restart só piora (Baileys re-conecta, WA re-flagga, vira loop).
+        // Espera 4h antes de tentar — janela do algoritmo deles esfriar.
+        boolean temShadowBanAberto = false;
+        try {
+            temShadowBanAberto = incidenteRepo
+                    .findFirstByInstanceIdAndTipoAndResolvidoEmIsNull(
+                            inst.getId(),
+                            com.mydelivery.model.WhatsappIncidente.Tipo.SHADOW_BAN_SUSPEITO)
+                    .isPresent();
+        } catch (Exception e) {
+            log.debug("[WAHealth] check shadow ban falhou: {}", e.getMessage());
+        }
+        boolean emCooldownShadowBan = false;
+        if (temShadowBanAberto) {
+            LocalDateTime ult = inst.getUltimaTentativaReconexaoEm();
+            if (ult == null || Duration.between(ult, LocalDateTime.now()).toHours() < COOLDOWN_SHADOW_BAN_HORAS) {
+                emCooldownShadowBan = true;
+                log.info("[WAHealth] {} em SHADOW_BAN — pulando auto-reconexão ({}h cooldown). Restart só re-flagga.",
+                        inst.getInstanceName(), COOLDOWN_SHADOW_BAN_HORAS);
+            }
+        }
+
+        // GUARD 2 — THROTTLE GLOBAL: no máximo 1 auto-reconexão a cada 90s
+        // no sistema inteiro. Evita cascata onde 5 instâncias estouram
+        // /instance/restart simultaneamente no Evolution e derrubam tudo.
+        boolean throttleGlobalBloqueado = false;
+        LocalDateTime ultGlobal = ULTIMA_RECONEXAO_GLOBAL.get();
+        if (ultGlobal != null
+                && Duration.between(ultGlobal, LocalDateTime.now()).getSeconds() < THROTTLE_GLOBAL_SEGUNDOS) {
+            throttleGlobalBloqueado = true;
+        }
+
         if (precisaIntervir
                 && !foiManual
                 && !esgotouEPrecisaResfriar
+                && !emCooldownShadowBan
+                && !throttleGlobalBloqueado
                 && Boolean.TRUE.equals(inst.getBotAtivo())
                 && inst.getConectadoEm() != null
                 && cooldownOk(inst)
@@ -121,6 +180,9 @@ public class WhatsappHealthJob {
 
             log.warn("[WAHealth] instância {} em {} — disparando auto-reconexão",
                     inst.getInstanceName(), estado);
+            // Marca o throttle ANTES do restart pra evitar race nas threads
+            // do tick (loop sequencial, mas defensivo).
+            ULTIMA_RECONEXAO_GLOBAL.set(LocalDateTime.now());
             reconectou = healthService.tentarReconectar(inst);
 
             // Registra a tentativa pra histórico auditável. Vincula ao incidente
@@ -139,6 +201,9 @@ public class WhatsappHealthJob {
                     reconectou ? WhatsappAcaoAutomatica.Resultado.OK
                               : WhatsappAcaoAutomatica.Resultado.FALHA,
                     "tentativa #" + inst.getTentativasReconexaoSeguidas());
+        } else if (precisaIntervir && throttleGlobalBloqueado) {
+            log.info("[WAHealth] {} precisaria reconectar mas throttle global ({}s) ativo — aguardando próximo tick",
+                    inst.getInstanceName(), THROTTLE_GLOBAL_SEGUNDOS);
         }
 
         healthService.registrarSnapshot(inst, reconectou);

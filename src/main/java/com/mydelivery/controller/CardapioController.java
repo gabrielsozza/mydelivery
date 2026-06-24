@@ -140,6 +140,19 @@ public class CardapioController {
         return ResponseEntity.ok(cardapioService.duplicarCategoria(restauranteId, id));
     }
 
+    /** Duplica um produto único (com complementos). Produto novo nasce
+     *  INATIVO e na MESMA categoria do original. Mesma lógica do
+     *  duplicar categoria mas em escala unitária. */
+    @PostMapping("/api/restaurante/{slug}/produtos/{id}/duplicar")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<ProdutoResponse> duplicarProduto(
+            @PathVariable String slug,
+            @AuthenticationPrincipal String email,
+            @PathVariable Long id) {
+        Long restauranteId = getRestauranteId(email);
+        return ResponseEntity.ok(cardapioService.duplicarProduto(restauranteId, id));
+    }
+
     @GetMapping("/api/restaurante/{slug}/categorias/{categoriaId}/produtos")
     @PreAuthorize("hasRole('RESTAURANTE')")
     public ResponseEntity<List<ProdutoResponse>> getProdutosPorCategoria(

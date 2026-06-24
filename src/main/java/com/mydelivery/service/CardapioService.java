@@ -164,49 +164,74 @@ public class CardapioService {
         // 3) Duplica produtos (com complementos)
         var produtosOrigem = produtoRepository.findByCategoriaId(categoriaId);
         for (Produto orig : produtosOrigem) {
-            Produto p = new Produto();
-            p.setRestaurante(orig.getRestaurante());
-            p.setCategoria(nova);
-            p.setNome(orig.getNome());
-            p.setDescricao(orig.getDescricao());
-            p.setPreco(orig.getPreco());
-            p.setPrecoOriginal(orig.getPrecoOriginal());
-            p.setFotoUrl(orig.getFotoUrl()); // mesma URL Cloudinary (sem custo extra)
-            p.setDestaque(Boolean.FALSE);    // não herda destaque
-            p.setDisponivel(Boolean.FALSE);  // INATIVO até dono revisar
-            p.setOrdem(orig.getOrdem());
-            // tipo preservado (NORMAL/COMBO). COMBO sem combo_itens fica vazio
-            // até dono recadastrar — evita FK cruzada com produto antigo.
-            try { p.setTipo(orig.getTipo()); } catch (Exception ignore) {}
-            Produto produtoSalvo = produtoRepository.save(p);
-
-            // Clona grupos de complementos do produto original
-            var gruposOrig = complementoGrupoRepository.findByProdutoIdOrderByIdAsc(orig.getId());
-            for (ComplementoGrupo gOrig : gruposOrig) {
-                ComplementoGrupo gNovo = ComplementoGrupo.builder()
-                        .produto(produtoSalvo)
-                        .nome(gOrig.getNome())
-                        .obrigatorio(gOrig.getObrigatorio())
-                        .minEscolhas(gOrig.getMinEscolhas())
-                        .maxEscolhas(gOrig.getMaxEscolhas())
-                        .itens(new java.util.ArrayList<>())
-                        .build();
-                if (gOrig.getItens() != null) {
-                    for (ComplementoItem itOrig : gOrig.getItens()) {
-                        ComplementoItem itNovo = ComplementoItem.builder()
-                                .grupo(gNovo)
-                                .nome(itOrig.getNome())
-                                .precoAdicional(itOrig.getPrecoAdicional())
-                                .ativo(itOrig.getAtivo())
-                                .build();
-                        gNovo.getItens().add(itNovo);
-                    }
-                }
-                complementoGrupoRepository.save(gNovo);
-            }
+            clonarProdutoInternal(orig, nova, orig.getNome());
         }
 
         return nova;
+    }
+
+    /**
+     * Duplica um produto único (com complementos). Vai pra MESMA categoria do
+     * original. Nome vira "Cópia de X" pra evitar confusão visual no painel.
+     * Inativo até dono revisar.
+     */
+    @Transactional
+    public ProdutoResponse duplicarProduto(Long restauranteId, Long produtoId) {
+        Produto orig = produtoRepository.findById(produtoId)
+                .orElseThrow(() -> new RuntimeException("Produto não encontrado"));
+        validarPropriedade(orig.getRestaurante().getId(), restauranteId);
+        Produto clone = clonarProdutoInternal(orig, orig.getCategoria(), "Cópia de " + orig.getNome());
+        return toProdutoResponse(clone);
+    }
+
+    /**
+     * Núcleo do clone — usado por duplicarCategoria (para cada produto, mantém
+     * nome original) e duplicarProduto (prefixa "Cópia de "). Cria produto novo
+     * inativo, com mesma foto/preço/descrição, e clona grupos+itens de
+     * complemento.
+     */
+    private Produto clonarProdutoInternal(Produto orig, Categoria categoriaDestino, String nomeNovo) {
+        Produto p = new Produto();
+        p.setRestaurante(orig.getRestaurante());
+        p.setCategoria(categoriaDestino);
+        p.setNome(nomeNovo);
+        p.setDescricao(orig.getDescricao());
+        p.setPreco(orig.getPreco());
+        p.setPrecoOriginal(orig.getPrecoOriginal());
+        p.setFotoUrl(orig.getFotoUrl()); // mesma URL Cloudinary (sem custo extra)
+        p.setDestaque(Boolean.FALSE);    // não herda destaque
+        p.setDisponivel(Boolean.FALSE);  // INATIVO até dono revisar
+        p.setOrdem(orig.getOrdem());
+        // tipo preservado (NORMAL/COMBO). COMBO sem combo_itens fica vazio
+        // até dono recadastrar — evita FK cruzada com produto antigo.
+        try { p.setTipo(orig.getTipo()); } catch (Exception ignore) {}
+        Produto produtoSalvo = produtoRepository.save(p);
+
+        // Clona grupos de complementos do produto original
+        var gruposOrig = complementoGrupoRepository.findByProdutoIdOrderByIdAsc(orig.getId());
+        for (ComplementoGrupo gOrig : gruposOrig) {
+            ComplementoGrupo gNovo = ComplementoGrupo.builder()
+                    .produto(produtoSalvo)
+                    .nome(gOrig.getNome())
+                    .obrigatorio(gOrig.getObrigatorio())
+                    .minEscolhas(gOrig.getMinEscolhas())
+                    .maxEscolhas(gOrig.getMaxEscolhas())
+                    .itens(new java.util.ArrayList<>())
+                    .build();
+            if (gOrig.getItens() != null) {
+                for (ComplementoItem itOrig : gOrig.getItens()) {
+                    ComplementoItem itNovo = ComplementoItem.builder()
+                            .grupo(gNovo)
+                            .nome(itOrig.getNome())
+                            .precoAdicional(itOrig.getPrecoAdicional())
+                            .ativo(itOrig.getAtivo())
+                            .build();
+                    gNovo.getItens().add(itNovo);
+                }
+            }
+            complementoGrupoRepository.save(gNovo);
+        }
+        return produtoSalvo;
     }
 
     @Transactional

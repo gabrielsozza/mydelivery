@@ -174,7 +174,6 @@ public class CardapioService {
             p.setFotoUrl(orig.getFotoUrl()); // mesma URL Cloudinary (sem custo extra)
             p.setDestaque(Boolean.FALSE);    // não herda destaque
             p.setDisponivel(Boolean.FALSE);  // INATIVO até dono revisar
-            p.setMaisDe18(orig.getMaisDe18());
             p.setOrdem(orig.getOrdem());
             // tipo preservado (NORMAL/COMBO). COMBO sem combo_itens fica vazio
             // até dono recadastrar — evita FK cruzada com produto antigo.

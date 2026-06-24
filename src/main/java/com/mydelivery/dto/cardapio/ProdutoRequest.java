@@ -27,4 +27,13 @@ public class ProdutoRequest {
     private String fotoUrl;
     private Boolean disponivel = true;
     private Boolean destaque = false;
+
+    /** Quando true, o preço é só REFERENCIAL (vitrine). O valor real cobrado
+     *  vem dos complementos (porções). Exemplo: feijão tropeiro R$ 59,99/kg
+     *  — cliente escolhe porção 250g/500g/1kg via complemento. */
+    private Boolean precoVitrine = false;
+
+    /** Unidade exibida com o preço quando precoVitrine=true.
+     *  Valores típicos: kg, g, 100g, L, ml, un, porção. */
+    private String unidadePreco;
 }

@@ -73,9 +73,15 @@ public class BalcaoService {
         Pedido.FormaPagamento fp = parseFormaPag(formaPagamentoStr);
         p.setFormaPagamento(fp);
         p.setModoPagamento(Pedido.ModoPagamento.NA_ENTREGA);
-        // pago = false (default no model). Quando o dono finalmente cobrar (forma
-        // PENDENTE ou nao), o endpoint /balcao/pedido/{id}/cobrar marca pago=true
-        // + grava a forma real escolhida na hora do pagamento.
+        // Se o caixa JÁ escolheu a forma de pagamento real (Dinheiro/PIX/Cartão),
+        // o cliente está pagando AGORA — marca pago=true e dispensa o botão
+        // "Cobrar" no painel. Só fica pendente quando o caixa explicitamente
+        // marca "Cobrar depois" (forma=PENDENTE) — aí o /cobrar endpoint
+        // resolve depois.
+        if (fp != Pedido.FormaPagamento.PENDENTE) {
+            p.setPago(true);
+            p.setPagoEm(java.time.LocalDateTime.now());
+        }
         p.setNomeChamada(nomeChamada.trim());
         p.setObservacao(observacao);
         p.setTaxaEntrega(BigDecimal.ZERO);

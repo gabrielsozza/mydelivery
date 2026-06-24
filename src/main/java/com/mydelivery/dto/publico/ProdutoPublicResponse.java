@@ -19,4 +19,9 @@ public class ProdutoPublicResponse {
     /** Tipo do produto: "NORMAL" ou "COMBO" — frontend usa pra renderizar
      *  card especial e abrir modal de slots em vez do modal padrão. */
     private String tipo;
+    /** Quando true, o preço é só vitrine (referencial). Cliente paga o valor
+     *  da porção escolhida nos complementos. Card mostra "R$ X/{unidade}". */
+    private Boolean precoVitrine;
+    /** Sufixo de unidade exibido no card ("kg", "100g", "L", "un"). */
+    private String unidadePreco;
 }

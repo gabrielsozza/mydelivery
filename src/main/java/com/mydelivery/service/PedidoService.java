@@ -253,8 +253,28 @@ public class PedidoService {
             //
             //  Sanity check anti-fraude: nunca aceita preço menor que o base,
             //  nunca aceita complemento > 10× o base (cliente malicioso).
-            BigDecimal limiteMax = precoUnit.multiply(BigDecimal.valueOf(10));
-            if (itemReq.getPreco() != null
+            //
+            // CASO ESPECIAL — produto com preço VITRINE (kg, porção variável):
+            //  o preço base é referencial, não cobrado. O cliente paga só o
+            //  valor das porções escolhidas. Aqui usamos o `preco` vindo do
+            //  frontend (que já somou os complementos) com limite mais aberto:
+            //  100x do preço base. Ex: feijão R$ 59,99/kg, cliente pega 250g
+            //  = R$ 15 (menor que base, ainda válido pra vitrine).
+            boolean ehVitrine = Boolean.TRUE.equals(produto.getPrecoVitrine());
+            BigDecimal limiteMax = precoUnit.multiply(BigDecimal.valueOf(ehVitrine ? 100 : 10));
+            if (ehVitrine) {
+                // Vitrine: preço cobrado vem 100% do frontend (porção escolhida).
+                // Não soma com base. Aceita qualquer valor > 0 e <= limiteMax.
+                BigDecimal pf = itemReq.getPreco();
+                if (pf != null && pf.compareTo(BigDecimal.ZERO) > 0
+                        && pf.compareTo(limiteMax) <= 0) {
+                    precoUnit = pf;
+                } else {
+                    // Fallback: extrai dos complementos na obs.
+                    BigDecimal extras = extrairValorComplementosDaObs(itemReq.getObs());
+                    precoUnit = extras.compareTo(limiteMax) <= 0 ? extras : limiteMax;
+                }
+            } else if (itemReq.getPreco() != null
                     && itemReq.getPreco().compareTo(precoUnit) > 0
                     && itemReq.getPreco().compareTo(limiteMax) <= 0) {
                 precoUnit = itemReq.getPreco();

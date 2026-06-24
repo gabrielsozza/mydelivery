@@ -110,6 +110,8 @@ public class PublicController {
                             .imgUrl(p.getFotoUrl())
                             .destaque(Boolean.TRUE.equals(p.getDestaque()))
                             .tipo(p.getTipo() != null ? p.getTipo().name() : "NORMAL")
+                            .precoVitrine(Boolean.TRUE.equals(p.getPrecoVitrine()))
+                            .unidadePreco(p.getUnidadePreco())
                             .build())
                             .toList();
 

@@ -28,4 +28,9 @@ public class ProdutoResponse {
     /** "NORMAL" (default) ou "COMBO". Painel e cardápio público usam pra
      *  abrir o modal certo (combo abre fluxo com slots e grupos próprios). */
     private String tipo;
+    /** Quando true, o preço é só referencial (vitrine "R$ X/kg"). Cliente paga
+     *  pelo valor das porções escolhidas nos complementos, não pelo preço base. */
+    private Boolean precoVitrine;
+    /** Unidade exibida com o preço (ex: "kg", "100g", "un", "porção"). */
+    private String unidadePreco;
 }

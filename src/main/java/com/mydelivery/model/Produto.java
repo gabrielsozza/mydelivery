@@ -84,6 +84,32 @@ public class Produto {
 
     public enum Tipo { NORMAL, COMBO }
 
+    /**
+     * Quando true, o campo `preco` é apenas REFERENCIAL (vitrine) — usado pra
+     * exibição "R$ X/{unidade}" no cardápio. O valor que o cliente paga vem
+     * dos complementos (porções com preço real).
+     *
+     * Caso de uso: feijão tropeiro vendido por kg. Card mostra "R$ 59,99/kg".
+     * Cliente seleciona porção (250g=R$15, 500g=R$30, 1kg=R$59,99) via
+     * complemento obrigatório, e o checkout só conta o preço da porção.
+     *
+     * Default false pra retrocompatibilidade — produtos antigos seguem como
+     * sempre (preço somado aos complementos).
+     */
+    // nullable porque Hibernate ddl-auto=update NÃO consegue adicionar coluna
+    // NOT NULL em tabela com dados. Tratamos null como false nos services.
+    @Builder.Default
+    @Column(name = "preco_vitrine")
+    private Boolean precoVitrine = false;
+
+    /**
+     * Unidade exibida ao lado do preço quando precoVitrine=true.
+     * Valores típicos: "kg", "g", "100g", "L", "ml", "un", "porção".
+     * Null = sem sufixo de unidade.
+     */
+    @Column(name = "unidade_preco", length = 16)
+    private String unidadePreco;
+
     @CreationTimestamp
     private LocalDateTime criadoEm;
 }

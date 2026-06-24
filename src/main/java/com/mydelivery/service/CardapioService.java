@@ -332,6 +332,8 @@ public class CardapioService {
         produto.setFotoUrl(request.getFotoUrl());
         produto.setDisponivel(request.getDisponivel());
         produto.setDestaque(request.getDestaque());
+        if (request.getPrecoVitrine() != null) produto.setPrecoVitrine(request.getPrecoVitrine());
+        if (request.getUnidadePreco() != null) produto.setUnidadePreco(request.getUnidadePreco());
 
         if (request.getCategoriaId() != null) {
             Categoria cat = categoriaRepository.findById(request.getCategoriaId())
@@ -365,6 +367,8 @@ public class CardapioService {
         if (request.getFotoUrl() != null)      produto.setFotoUrl(request.getFotoUrl());
         if (request.getDisponivel() != null)   produto.setDisponivel(request.getDisponivel());
         if (request.getDestaque() != null)     produto.setDestaque(request.getDestaque());
+        if (request.getPrecoVitrine() != null) produto.setPrecoVitrine(request.getPrecoVitrine());
+        if (request.getUnidadePreco() != null) produto.setUnidadePreco(request.getUnidadePreco());
 
         if (request.getCategoriaId() != null) {
             Categoria cat = categoriaRepository.findById(request.getCategoriaId())
@@ -422,6 +426,8 @@ public class CardapioService {
                 .categoriaNome(p.getCategoria() != null ? p.getCategoria().getNome() : null)
                 .ordem(p.getOrdem())
                 .tipo(p.getTipo() != null ? p.getTipo().name() : "NORMAL")
+                .precoVitrine(Boolean.TRUE.equals(p.getPrecoVitrine()))
+                .unidadePreco(p.getUnidadePreco())
                 .build();
     }
 

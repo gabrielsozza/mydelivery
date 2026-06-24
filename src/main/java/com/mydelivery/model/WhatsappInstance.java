@@ -125,6 +125,22 @@ public class WhatsappInstance {
     @Column(name = "ultima_queda_em")
     private LocalDateTime ultimaQuedaEm;
 
+    /**
+     * Chave do pool de proxy residencial usado pela instância na criação.
+     * Mapeia em {@code mydelivery.evolution.pools.<KEY>} pra distribuir N lojas
+     * em vários IPs (reduz densidade por IP, divide banda mensal, isola
+     * lojas em shadow ban num pool dedicado).
+     *
+     * Valores típicos: "A", "B", "C", "D". {@code null} = usa o proxy global
+     * legado (fallback pra retrocompat com instâncias criadas antes desse campo).
+     *
+     * Atribuído ao criar instância. Pra mudar o pool de uma instância existente
+     * é necessário deletar+recriar (Evolution só aceita proxy no /instance/create)
+     * — fluxo de QR novo é exigido.
+     */
+    @Column(name = "proxy_pool", length = 4)
+    private String proxyPool;
+
     /** Texto curto descrevendo o motivo da última queda inesperada.
      *  Ex.: "Webhook close (Baileys)", "Heartbeat morto há 60min". */
     @Column(name = "motivo_ultima_queda", length = 120)

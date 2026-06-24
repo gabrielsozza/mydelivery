@@ -61,6 +61,17 @@ public class EvolutionClient {
      */
     @SuppressWarnings("unchecked")
     public Map<String, Object> criarInstancia(String instanceName, String webhookUrl) {
+        return criarInstancia(instanceName, webhookUrl, null);
+    }
+
+    /**
+     * Cria instância na Evolution. Se {@code proxyPool} for não-null e existir
+     * em {@code mydelivery.evolution.pools.<key>}, usa esse proxy específico;
+     * senão cai no proxy global legado. Pra retrocompat o overload sem pool
+     * continua funcionando.
+     */
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> criarInstancia(String instanceName, String webhookUrl, String proxyPool) {
         // Body mutável porque a chave "proxy" só entra se estiver configurada
         java.util.Map<String, Object> body = new java.util.HashMap<>();
         body.put("instanceName", instanceName);
@@ -83,19 +94,30 @@ public class EvolutionClient {
                 )
         ));
 
-        // Proxy residencial (Proxy-Seller) — só inclui se configurado. Evita que
-        // o Baileys conecte direto pelo IP da VPS (datacenter), que é banido
-        // rapidamente pelo WhatsApp.
-        if (props.getProxy().isAtivo()) {
+        // Resolve o proxy: primeiro tenta o pool especifico (A/B/C/D), depois
+        // cai no proxy global legado. Evita que o Baileys conecte direto pelo
+        // IP da VPS (datacenter), que é banido rapidamente pelo WhatsApp.
+        EvolutionProperties.Proxy proxyEscolhido = null;
+        String origem = "global";
+        if (proxyPool != null && !proxyPool.isBlank()) {
+            proxyEscolhido = props.resolverPool(proxyPool);
+            origem = "pool:" + proxyPool;
+        }
+        if (proxyEscolhido == null && props.getProxy().isAtivo()) {
+            proxyEscolhido = props.getProxy();
+            origem = "global";
+        }
+
+        if (proxyEscolhido != null) {
             body.put("proxy", Map.of(
-                    "host", props.getProxy().getHost(),
-                    "port", props.getProxy().getPort(),
-                    "protocol", props.getProxy().getProtocol(),
-                    "username", props.getProxy().getUsername(),
-                    "password", props.getProxy().getPassword()
+                    "host", proxyEscolhido.getHost(),
+                    "port", proxyEscolhido.getPort(),
+                    "protocol", proxyEscolhido.getProtocol(),
+                    "username", proxyEscolhido.getUsername(),
+                    "password", proxyEscolhido.getPassword()
             ));
-            log.info("[Evolution] criando instância {} com proxy {}:{}",
-                    instanceName, props.getProxy().getHost(), props.getProxy().getPort());
+            log.info("[Evolution] criando instância {} com proxy {} ({}:{})",
+                    instanceName, origem, proxyEscolhido.getHost(), proxyEscolhido.getPort());
         } else {
             log.warn("[Evolution] criando instância {} SEM proxy (risco de ban pelo WhatsApp)", instanceName);
         }

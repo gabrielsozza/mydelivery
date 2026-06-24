@@ -641,8 +641,14 @@ public class WhatsappService {
         String nome = nomeInstancia(restaurante) + "-" + (System.currentTimeMillis() / 1000);
         String webhookUrl = props.getWebhookBaseUrl() + "/api/webhooks/whatsapp/" + nome;
 
+        // Distribui round-robin entre os pools configurados pra reduzir
+        // densidade de números por IP (menos suspeita de bot farm pelo WA).
+        // Se nenhum pool configurado, cai no proxy global legado.
+        String poolEscolhido = escolherProxyPool();
+
         // PASSO 1: cria a linha no DB e commita ANTES de mexer com Evolution.
         final String nomeFinal = nome;
+        final String poolFinal = poolEscolhido;
         WhatsappInstance inst = new org.springframework.transaction.support.TransactionTemplate(txManager) {{
             setPropagationBehavior(org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         }}.execute(s -> repo.save(WhatsappInstance.builder()
@@ -650,15 +656,16 @@ public class WhatsappService {
                 .instanceName(nomeFinal)
                 .status(WhatsappInstance.Status.NOVA)
                 .botAtivo(true)
+                .proxyPool(poolFinal)
                 .build()));
 
-        log.info("[WhatsApp] Linha pre-criada no DB ({}) — webhooks da Evolution agora encontram a instancia", nome);
+        log.info("[WhatsApp] Linha pre-criada no DB ({}, pool={}) — webhooks da Evolution agora encontram a instancia", nome, poolEscolhido);
 
         // PASSO 2: chama Evolution. Webhook que chegar JÁ encontra a instância.
         Map<String, Object> resp = Map.of();
         try {
-            log.info("[WhatsApp] Criando instância {} na Evolution (webhook={})", nome, webhookUrl);
-            resp = evolutionClient.criarInstancia(nome, webhookUrl);
+            log.info("[WhatsApp] Criando instância {} na Evolution (webhook={}, pool={})", nome, webhookUrl, poolEscolhido);
+            resp = evolutionClient.criarInstancia(nome, webhookUrl, poolEscolhido);
         } catch (RuntimeException e) {
             log.error("[WhatsApp] criarInstancia falhou: {}", e.getMessage());
             // Marca ERRO mas DEIXA a linha — usuário pode tentar Reset.
@@ -681,6 +688,62 @@ public class WhatsappService {
 
     private String nomeInstancia(Restaurante r) {
         return "mydelivery-rest-" + r.getId();
+    }
+
+    /**
+     * Escolhe qual pool de proxy residencial atribuir pra uma nova instância.
+     *
+     * Estratégia: distribui round-robin entre os pools EXISTENTES no mapa
+     * {@code mydelivery.evolution.pools.*}, baseado no menor número de
+     * instâncias ativas em cada pool. Resultado: a carga fica balanceada
+     * mesmo com lojas entrando/saindo ao longo do tempo.
+     *
+     * Por convenção, o pool "D" (se configurado) é RESERVADO pra isolamento
+     * manual — lojas em shadow ban persistente que o admin movimenta pra lá
+     * pra não contaminar números saudáveis. Round-robin só preenche A/B/C.
+     *
+     * Se nenhum pool configurado, retorna null → fallback pro proxy global
+     * (retrocompat com instalações antigas).
+     */
+    private String escolherProxyPool() {
+        var poolsConfig = props.getPools();
+        if (poolsConfig == null || poolsConfig.isEmpty()) return null;
+
+        // Pools elegíveis pra distribuição automática: tudo MENOS "D" (reserva).
+        // Ordem alfabética estável pra previsibilidade nos logs.
+        var elegiveis = poolsConfig.keySet().stream()
+                .filter(k -> k != null && !"D".equalsIgnoreCase(k))
+                .filter(k -> props.resolverPool(k) != null) // só pools válidos (URL OK)
+                .sorted()
+                .toList();
+        if (elegiveis.isEmpty()) {
+            // Se só tem "D" configurado, usa ele mesmo — melhor proxy ruim que sem.
+            return poolsConfig.keySet().stream()
+                    .filter(k -> props.resolverPool(k) != null).findFirst().orElse(null);
+        }
+
+        // Conta instâncias ativas por pool atual (ignora as descartadas).
+        var contagem = new java.util.HashMap<String, Long>();
+        elegiveis.forEach(p -> contagem.put(p, 0L));
+        try {
+            for (var inst : repo.findAll()) {
+                String p = inst.getProxyPool();
+                if (p == null) continue;
+                contagem.merge(p, 1L, Long::sum);
+            }
+        } catch (Exception e) {
+            log.warn("[WAPool] contagem falhou — caindo no primeiro pool elegível: {}", e.getMessage());
+            return elegiveis.get(0);
+        }
+
+        // Menor contagem ganha. Empate → ordem alfabética (já está sorted).
+        String escolhido = elegiveis.stream()
+                .min(java.util.Comparator
+                        .<String, Long>comparing(k -> contagem.getOrDefault(k, 0L))
+                        .thenComparing(java.util.Comparator.naturalOrder()))
+                .orElse(elegiveis.get(0));
+        log.info("[WAPool] distribuição atual={} → escolheu {}", contagem, escolhido);
+        return escolhido;
     }
 
     /**

@@ -32,8 +32,59 @@ public class EvolutionProperties {
      * agressivamente).
      *
      * Se {@code host} estiver vazio, o proxy é desabilitado pra todas as novas instâncias.
+     *
+     * @deprecated Use {@link #pools} pra distribuir N lojas em vários IPs residenciais.
+     *             Mantido aqui por retrocompat — fallback quando a instância não tem
+     *             proxyPool atribuído.
      */
+    @Deprecated
     private Proxy proxy = new Proxy();
+
+    /**
+     * Pool de proxies residenciais — distribui N instâncias em vários IPs pra
+     * reduzir densidade (menos números por IP = menos shadow ban) e dividir a
+     * banda mensal por mais "buckets".
+     *
+     * Formato da URL: {@code http://user:pass@host:port} (ou socks5://, https://).
+     * Spring converte env vars MYDELIVERY_EVOLUTION_POOLS_A automaticamente
+     * em {@code pools.get("A")}.
+     *
+     * Chave-padrão sugerida (mas livre): "A", "B", "C", "D"... cada uma com URL
+     * de um IP residencial diferente. A instância referencia o pool por
+     * {@code WhatsappInstance.proxyPool}.
+     */
+    private java.util.Map<String, String> pools = new java.util.HashMap<>();
+
+    /**
+     * Resolve a URL do pool e parseia em {@link Proxy}. Devolve {@code null}
+     * se a chave não existe ou a URL é inválida. Usado pelo EvolutionClient
+     * pra montar o body do /instance/create.
+     */
+    public Proxy resolverPool(String poolKey) {
+        if (poolKey == null || poolKey.isBlank()) return null;
+        String raw = pools.get(poolKey);
+        if (raw == null || raw.isBlank()) return null;
+        try {
+            java.net.URI u = java.net.URI.create(raw.trim());
+            String userInfo = u.getUserInfo();
+            String username = "";
+            String password = "";
+            if (userInfo != null && userInfo.contains(":")) {
+                int idx = userInfo.indexOf(':');
+                username = userInfo.substring(0, idx);
+                password = userInfo.substring(idx + 1);
+            }
+            Proxy p = new Proxy();
+            p.setHost(u.getHost());
+            p.setPort(u.getPort() > 0 ? u.getPort() : 80);
+            p.setProtocol(u.getScheme() != null ? u.getScheme() : "http");
+            p.setUsername(username);
+            p.setPassword(password);
+            return p.isAtivo() ? p : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
 
     @Data
     public static class Bot {

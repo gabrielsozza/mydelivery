@@ -126,6 +126,20 @@ public class CardapioController {
         return ResponseEntity.noContent().build();
     }
 
+    /** Duplica uma categoria com TODOS os produtos dentro (incluindo grupos
+     *  de complementos e itens). Atômico — se algum produto falhar, nada salva.
+     *  Útil pra restaurante criar variantes ("Açaí", "Açaí Promocional", etc)
+     *  sem refazer cadastro item por item. */
+    @PostMapping("/api/restaurante/{slug}/categorias/{id}/duplicar")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Categoria> duplicarCategoria(
+            @PathVariable String slug,
+            @AuthenticationPrincipal String email,
+            @PathVariable Long id) {
+        Long restauranteId = getRestauranteId(email);
+        return ResponseEntity.ok(cardapioService.duplicarCategoria(restauranteId, id));
+    }
+
     @GetMapping("/api/restaurante/{slug}/categorias/{categoriaId}/produtos")
     @PreAuthorize("hasRole('RESTAURANTE')")
     public ResponseEntity<List<ProdutoResponse>> getProdutosPorCategoria(

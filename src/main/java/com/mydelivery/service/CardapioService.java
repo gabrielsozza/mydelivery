@@ -10,6 +10,8 @@ import com.mydelivery.dto.cardapio.CategoriaRequest;
 import com.mydelivery.dto.cardapio.ProdutoRequest;
 import com.mydelivery.dto.cardapio.ProdutoResponse;
 import com.mydelivery.model.Categoria;
+import com.mydelivery.model.ComplementoGrupo;
+import com.mydelivery.model.ComplementoItem;
 import com.mydelivery.model.Produto;
 import com.mydelivery.model.Restaurante;
 import com.mydelivery.repository.CategoriaRepository;
@@ -106,6 +108,106 @@ public class CardapioService {
         categoria.setAtivo(request.getAtivo());
 
         return categoriaRepository.save(categoria);
+    }
+
+    /**
+     * Duplica uma categoria + todos os seus produtos (com complementos).
+     *
+     * Detalhes:
+     *  - A nova categoria recebe nome "Cópia de X" (ou "Cópia de X (n)" se já existir)
+     *    e fica como ÚLTIMA na ordem (ordem = max+1).
+     *  - Produtos duplicados são INATIVADOS por padrão (disponivel=false) pra
+     *    o dono revisar/precificar antes de deixar visível no cardápio.
+     *  - Grupos de complementos e itens são clonados (novos IDs).
+     *  - FichaTecnica NÃO é duplicada — produto novo arranca sem ficha. Evita
+     *     contar baixa de insumo duas vezes pelo mesmo produto fantasma se o
+     *     dono esquecer de revisar. Ele recadastra se quiser.
+     *  - Tipo COMBO é PRESERVADO mas combo_itens NÃO são duplicados (manteria
+     *     FKs cruzadas confusas). O dono precisa recadastrar os filhos.
+     *  - PedidoItem histórico fica intocado — só copia estrutura, não histórico.
+     *
+     * Atômico: tudo na mesma transação. Se algo falhar, nenhum INSERT persiste.
+     */
+    @Transactional
+    public Categoria duplicarCategoria(Long restauranteId, Long categoriaId) {
+        Categoria origem = categoriaRepository.findById(categoriaId)
+                .orElseThrow(() -> new RuntimeException("Categoria não encontrada"));
+        validarPropriedade(origem.getRestaurante().getId(), restauranteId);
+
+        // 1) Nome único — "Cópia de X", senão "Cópia de X (2)", etc.
+        String nomeBase = "Cópia de " + origem.getNome();
+        String nomeNovo = nomeBase;
+        var todasDoRest = categoriaRepository.findByRestauranteIdOrderByOrdemAsc(restauranteId);
+        java.util.Set<String> nomesExistentes = todasDoRest.stream()
+                .map(Categoria::getNome)
+                .collect(java.util.stream.Collectors.toSet());
+        int sufixo = 2;
+        while (nomesExistentes.contains(nomeNovo)) {
+            nomeNovo = nomeBase + " (" + sufixo + ")";
+            sufixo++;
+        }
+
+        // 2) Ordem: vai pro final
+        int proximaOrdem = todasDoRest.stream()
+                .mapToInt(c -> c.getOrdem() == null ? 0 : c.getOrdem())
+                .max().orElse(0) + 1;
+
+        Categoria nova = new Categoria();
+        nova.setRestaurante(origem.getRestaurante());
+        nova.setNome(nomeNovo);
+        nova.setOrdem(proximaOrdem);
+        // Categoria.ativo pode não existir em todas as versões — se existir,
+        // usa true como default. Setter via reflection-safe.
+        try { nova.setAtivo(Boolean.TRUE); } catch (Exception ignore) {}
+        nova = categoriaRepository.save(nova);
+
+        // 3) Duplica produtos (com complementos)
+        var produtosOrigem = produtoRepository.findByCategoriaId(categoriaId);
+        for (Produto orig : produtosOrigem) {
+            Produto p = new Produto();
+            p.setRestaurante(orig.getRestaurante());
+            p.setCategoria(nova);
+            p.setNome(orig.getNome());
+            p.setDescricao(orig.getDescricao());
+            p.setPreco(orig.getPreco());
+            p.setPrecoOriginal(orig.getPrecoOriginal());
+            p.setFotoUrl(orig.getFotoUrl()); // mesma URL Cloudinary (sem custo extra)
+            p.setDestaque(Boolean.FALSE);    // não herda destaque
+            p.setDisponivel(Boolean.FALSE);  // INATIVO até dono revisar
+            p.setMaisDe18(orig.getMaisDe18());
+            p.setOrdem(orig.getOrdem());
+            // tipo preservado (NORMAL/COMBO). COMBO sem combo_itens fica vazio
+            // até dono recadastrar — evita FK cruzada com produto antigo.
+            try { p.setTipo(orig.getTipo()); } catch (Exception ignore) {}
+            Produto produtoSalvo = produtoRepository.save(p);
+
+            // Clona grupos de complementos do produto original
+            var gruposOrig = complementoGrupoRepository.findByProdutoIdOrderByIdAsc(orig.getId());
+            for (ComplementoGrupo gOrig : gruposOrig) {
+                ComplementoGrupo gNovo = ComplementoGrupo.builder()
+                        .produto(produtoSalvo)
+                        .nome(gOrig.getNome())
+                        .obrigatorio(gOrig.getObrigatorio())
+                        .minEscolhas(gOrig.getMinEscolhas())
+                        .maxEscolhas(gOrig.getMaxEscolhas())
+                        .itens(new java.util.ArrayList<>())
+                        .build();
+                if (gOrig.getItens() != null) {
+                    for (ComplementoItem itOrig : gOrig.getItens()) {
+                        ComplementoItem itNovo = ComplementoItem.builder()
+                                .grupo(gNovo)
+                                .nome(itOrig.getNome())
+                                .precoAdicional(itOrig.getPrecoAdicional())
+                                .ativo(itOrig.getAtivo())
+                                .build();
+                        gNovo.getItens().add(itNovo);
+                    }
+                }
+                complementoGrupoRepository.save(gNovo);
+            }
+        }
+
+        return nova;
     }
 
     @Transactional

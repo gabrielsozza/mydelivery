@@ -113,6 +113,7 @@ public class ComboController {
                     .nome(strReq(body, "nome"))
                     .descricao(strOr(body, "descricao", null))
                     .preco(decOr(body, "preco", BigDecimal.ZERO))
+                    .precoOriginal(decOr(body, "precoOriginal", null))
                     .fotoUrl(strOr(body, "fotoUrl", null))
                     .ordem(intOr(body, "ordem", 0))
                     .disponivel(boolOr(body, "disponivel", true))
@@ -174,6 +175,7 @@ public class ComboController {
         if (body.containsKey("nome"))      combo.setNome(strReq(body, "nome"));
         if (body.containsKey("descricao")) combo.setDescricao(strOr(body, "descricao", null));
         if (body.containsKey("preco"))     combo.setPreco(decOr(body, "preco", combo.getPreco()));
+        if (body.containsKey("precoOriginal")) combo.setPrecoOriginal(decOr(body, "precoOriginal", null));
         if (body.containsKey("fotoUrl"))   combo.setFotoUrl(strOr(body, "fotoUrl", null));
         if (body.containsKey("disponivel")) combo.setDisponivel(boolOr(body, "disponivel", true));
         if (body.containsKey("destaque"))   combo.setDestaque(boolOr(body, "destaque", false));
@@ -252,21 +254,44 @@ public class ComboController {
         out.put("nome", combo.getNome());
         out.put("descricao", combo.getDescricao());
         out.put("preco", combo.getPreco());
+        out.put("precoOriginal", combo.getPrecoOriginal()); // pra mostrar "de R$ X / por R$ Y" no cliente
         out.put("fotoUrl", combo.getFotoUrl());
         out.put("tipo", "COMBO");
 
-        // Grupos do combo escolhidos pelo dono (item 2 do refactor + V2 granular).
-        // Se houver, cada grupo carrega filhosAplicaveis: null/vazio = todos
-        // os filhos, lista = só os produtos cujos IDs estão na lista.
-        // Senão, fallback retrocompat: cada slot herda os grupos do próprio filho.
+        // Grupos do combo escolhidos pelo dono. Cada grupo pode ter:
+        //  - filhosAplicaveis: vazio = todos / lista = só esses produtos
+        //  - preset (V3 combo fixo): se preenchido, marca itens pré-selecionados
+        //    pelo restaurante. Cliente NÃO escolhe e o preço do combo NÃO soma.
+        //    Frontend renderiza como "Inclui: ..." em vez de seletor.
         var gruposDoCombo = comboGrupoRepo.findByComboIdOrderByOrdemAscIdAsc(combo.getId());
-        // Cada entrada: { "grupo" = Map serializado, "filhos" = List<Long> filtrados (vazio=todos) }
+        // Cada entrada: { "grupo" = Map serializado, "filhos" = List<Long>, "preset" = List<Map> }
         List<Map<String, Object>> gruposGlobaisComFiltro = null;
         if (!gruposDoCombo.isEmpty()) {
             gruposGlobaisComFiltro = new ArrayList<>();
             for (var cg : gruposDoCombo) {
                 Map<String, Object> g = serializarGrupoModeloComoPublico(cg.getGrupoModelo());
                 if (g != null) {
+                    // Se tem preset, anexa pro frontend cliente renderizar como info
+                    var preset = parsePresetItens(cg.getPresetItensJson());
+                    if (!preset.isEmpty()) {
+                        // Resolve cada {i,q} pra {nome, preco, q} usando itens do grupo modelo
+                        @SuppressWarnings("unchecked")
+                        List<Map<String, Object>> itensDoGrupo = (List<Map<String, Object>>) g.get("itens");
+                        List<Map<String, Object>> presetResolvido = new ArrayList<>();
+                        for (var p : preset) {
+                            int idx = (int) p.get("i");
+                            int q = (int) p.get("q");
+                            if (idx >= 0 && idx < itensDoGrupo.size()) {
+                                var it = itensDoGrupo.get(idx);
+                                Map<String, Object> pr = new HashMap<>();
+                                pr.put("nome", it.get("nome"));
+                                pr.put("precoAdicional", it.get("precoAdicional"));
+                                pr.put("quantidade", q);
+                                presetResolvido.add(pr);
+                            }
+                        }
+                        g.put("preset", presetResolvido); // marca pro frontend
+                    }
                     Map<String, Object> wrap = new HashMap<>();
                     wrap.put("grupo", g);
                     wrap.put("filhos", parseFilhosAplicaveis(cg.getFilhosAplicaveisJson()));
@@ -389,14 +414,67 @@ public class ComboController {
                         .collect(java.util.stream.Collectors.joining(","))
                         + "]";
             }
+
+            // Preset de itens (combo fixo) — só extrai se veio no formato objeto
+            String presetJson = null;
+            if (o instanceof Map<?,?> m2) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> im2 = (Map<String, Object>) m2;
+                Object presetRaw = im2.get("preset");
+                if (presetRaw instanceof List<?> pl && !pl.isEmpty()) {
+                    StringBuilder sb = new StringBuilder("[");
+                    boolean first = true;
+                    for (Object pe : pl) {
+                        if (!(pe instanceof Map<?,?> pm)) continue;
+                        @SuppressWarnings("unchecked")
+                        Map<String, Object> pim = (Map<String, Object>) pm;
+                        Integer i = intOrNull(pim, "i");
+                        Integer q = intOrNull(pim, "q");
+                        if (i == null || q == null || i < 0 || q <= 0) continue;
+                        if (!first) sb.append(",");
+                        sb.append("{\"i\":").append(i).append(",\"q\":").append(q).append("}");
+                        first = false;
+                    }
+                    sb.append("]");
+                    if (sb.length() > 2) presetJson = sb.toString();
+                }
+            }
+
             ComboGrupo cg = ComboGrupo.builder()
                     .combo(combo)
                     .grupoModelo(gm)
                     .ordem(ordemAuto++)
                     .filhosAplicaveisJson(faJson)
+                    .presetItensJson(presetJson)
                     .build();
             comboGrupoRepo.save(cg);
         }
+    }
+
+    /** intOrNull tolerante a Number ou String. Devolve null se não conseguir. */
+    private Integer intOrNull(Map<String, Object> body, String key) {
+        Object v = body.get(key);
+        if (v == null) return null;
+        if (v instanceof Number n) return n.intValue();
+        try { return Integer.parseInt(v.toString().trim()); } catch (Exception e) { return null; }
+    }
+
+    /** Parse o preset JSON ([{"i":0,"q":1},...]) em List de Map.
+     *  Formato simples, parser manual. */
+    private List<Map<String, Object>> parsePresetItens(String json) {
+        if (json == null || json.isBlank()) return List.of();
+        List<Map<String, Object>> out = new ArrayList<>();
+        // Match { "i":N , "q":N } — simples regex porque o formato é fechado
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("\\{\\s*\"i\"\\s*:\\s*(\\d+)\\s*,\\s*\"q\"\\s*:\\s*(\\d+)\\s*\\}")
+                .matcher(json);
+        while (m.find()) {
+            Map<String, Object> ent = new HashMap<>();
+            ent.put("i", Integer.parseInt(m.group(1)));
+            ent.put("q", Integer.parseInt(m.group(2)));
+            out.add(ent);
+        }
+        return out;
     }
 
     /** Parse o JSON simples salvo em filhosAplicaveisJson → List&lt;Long&gt;.
@@ -466,6 +544,7 @@ public class ComboController {
         out.put("nome", combo.getNome());
         out.put("descricao", combo.getDescricao());
         out.put("preco", combo.getPreco());
+        out.put("precoOriginal", combo.getPrecoOriginal());
         out.put("fotoUrl", combo.getFotoUrl());
         out.put("disponivel", Boolean.TRUE.equals(combo.getDisponivel()));
         out.put("destaque", Boolean.TRUE.equals(combo.getDestaque()));
@@ -502,6 +581,7 @@ public class ComboController {
             g.put("nome", gm.getNome());
             g.put("ordem", cg.getOrdem());
             g.put("filhosAplicaveis", parseFilhosAplicaveis(cg.getFilhosAplicaveisJson()));
+            g.put("preset", parsePresetItens(cg.getPresetItensJson()));
             gruposOut.add(g);
         }
         out.put("grupos", gruposOut);

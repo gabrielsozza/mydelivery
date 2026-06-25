@@ -81,4 +81,22 @@ public class ComboGrupo {
      */
     @Column(name = "filhos_aplicaveis_json", columnDefinition = "TEXT")
     private String filhosAplicaveisJson;
+
+    /**
+     * Itens pré-selecionados pelo restaurante (modo combo "fixo").
+     * JSON formato: [{"i":0,"q":2},{"i":2,"q":1}]
+     *   i = index do item no GrupoComplementoModelo.itensJson (após parse)
+     *   q = quantidade fixa que vem no combo
+     *
+     * Quando preenchido → o cliente NÃO escolhe nem altera quantidade,
+     * o grupo aparece como "Inclui:" no cardápio + preço do combo NÃO soma
+     * extras (fica = combo.preco). Caso de uso: combo de comida onde dono
+     * já cadastra "vem 500g de Feijão + 500g de Maionese".
+     *
+     * Quando null/vazio → comportamento atual (cliente escolhe livre,
+     * complementos somam ao preço). Caso de uso: combo de açaí onde
+     * cliente escolhe coberturas.
+     */
+    @Column(name = "preset_itens_json", columnDefinition = "TEXT")
+    private String presetItensJson;
 }

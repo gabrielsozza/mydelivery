@@ -255,16 +255,23 @@ public class ComboController {
         out.put("fotoUrl", combo.getFotoUrl());
         out.put("tipo", "COMBO");
 
-        // NOVO: grupos do combo escolhidos pelo dono (item 2 do refactor).
-        // Se houver, eles se aplicam a TODOS os slots. Senão, fallback retrocompat:
-        // cada slot herda os grupos do próprio filho (comportamento anterior).
+        // Grupos do combo escolhidos pelo dono (item 2 do refactor + V2 granular).
+        // Se houver, cada grupo carrega filhosAplicaveis: null/vazio = todos
+        // os filhos, lista = só os produtos cujos IDs estão na lista.
+        // Senão, fallback retrocompat: cada slot herda os grupos do próprio filho.
         var gruposDoCombo = comboGrupoRepo.findByComboIdOrderByOrdemAscIdAsc(combo.getId());
-        List<Map<String, Object>> gruposGlobais = null;
+        // Cada entrada: { "grupo" = Map serializado, "filhos" = List<Long> filtrados (vazio=todos) }
+        List<Map<String, Object>> gruposGlobaisComFiltro = null;
         if (!gruposDoCombo.isEmpty()) {
-            gruposGlobais = new ArrayList<>();
+            gruposGlobaisComFiltro = new ArrayList<>();
             for (var cg : gruposDoCombo) {
                 Map<String, Object> g = serializarGrupoModeloComoPublico(cg.getGrupoModelo());
-                if (g != null) gruposGlobais.add(g);
+                if (g != null) {
+                    Map<String, Object> wrap = new HashMap<>();
+                    wrap.put("grupo", g);
+                    wrap.put("filhos", parseFilhosAplicaveis(cg.getFilhosAplicaveisJson()));
+                    gruposGlobaisComFiltro.add(wrap);
+                }
             }
         }
 
@@ -277,12 +284,26 @@ public class ComboController {
             if (filho == null) continue;
             int qtd = ci.getQuantidade() != null && ci.getQuantidade() > 0 ? ci.getQuantidade() : 1;
             // Decide qual fonte de grupos usar — grupos do combo (novo) ou
-            // herdados do filho (retrocompat).
-            List<Map<String, Object>> grupos = gruposGlobais != null
-                    ? gruposGlobais
-                    : grupoComplementoRepo
+            // herdados do filho (retrocompat). Pro novo, filtra por filhosAplicaveis:
+            // grupo só entra no slot se filhos==[] (todos) ou contém o filho.id.
+            List<Map<String, Object>> grupos;
+            if (gruposGlobaisComFiltro != null) {
+                grupos = new ArrayList<>();
+                for (var wrap : gruposGlobaisComFiltro) {
+                    @SuppressWarnings("unchecked")
+                    List<Long> filhosAplic = (List<Long>) wrap.get("filhos");
+                    boolean aplicaEmTodos = filhosAplic == null || filhosAplic.isEmpty();
+                    if (aplicaEmTodos || filhosAplic.contains(filho.getId())) {
+                        @SuppressWarnings("unchecked")
+                        Map<String, Object> g = (Map<String, Object>) wrap.get("grupo");
+                        grupos.add(g);
+                    }
+                }
+            } else {
+                grupos = grupoComplementoRepo
                         .findByProdutoIdOrderByIdAsc(filho.getId())
                         .stream().map(g -> serializarGrupoPublico(g)).toList();
+            }
 
             for (int n = 1; n <= qtd; n++) {
                 Map<String, Object> slot = new HashMap<>();
@@ -311,14 +332,44 @@ public class ComboController {
 
     /**
      * Salva as ligações combo → grupos modelo escolhidos pelo dono.
-     * gruposIds: List<Long> com os IDs dos GrupoComplementoModelo (Fase 1).
+     *
+     * Aceita 2 formatos no body, retrocompat:
+     *  1. Array de IDs (legado):
+     *     gruposIds: [1, 2, 3]
+     *     → todos os grupos aplicam em todos os filhos do combo.
+     *  2. Array de objetos (novo, granular por produto):
+     *     gruposIds: [
+     *       { "id": 1, "filhosAplicaveis": null },          // aplica em todos
+     *       { "id": 2, "filhosAplicaveis": [403, 402] },    // só nesses 2 filhos
+     *       { "id": 3 }                                     // null = aplica em todos
+     *     ]
+     *
      * Multi-tenant: só aceita grupos do mesmo restaurante.
      */
     private void salvarGruposDoCombo(Produto combo, Restaurante r, Object gruposIdsRaw) {
         if (!(gruposIdsRaw instanceof List<?> ll) || ll.isEmpty()) return;
         int ordemAuto = 0;
         for (Object o : ll) {
-            Long gid = longOrNull(java.util.Map.of("id", o), "id");
+            // Formato novo: objeto { id, filhosAplicaveis }
+            Long gid = null;
+            List<Long> filhosAplicaveis = null;
+            if (o instanceof Map<?,?> m) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> im = (Map<String, Object>) m;
+                gid = longOrNull(im, "id");
+                Object faRaw = im.get("filhosAplicaveis");
+                if (faRaw instanceof List<?> fl && !fl.isEmpty()) {
+                    filhosAplicaveis = new java.util.ArrayList<>();
+                    for (Object x : fl) {
+                        if (x instanceof Number n) filhosAplicaveis.add(n.longValue());
+                        else try { filhosAplicaveis.add(Long.parseLong(x.toString())); }
+                             catch (Exception ignore) {}
+                    }
+                }
+            } else {
+                // Formato legado: ID solto
+                gid = longOrNull(java.util.Map.of("id", o), "id");
+            }
             if (gid == null) continue;
             GrupoComplementoModelo gm = grupoModeloRepo.findById(gid).orElse(null);
             if (gm == null) {
@@ -330,13 +381,37 @@ public class ComboController {
                 throw new ResponseStatusException(HttpStatus.FORBIDDEN,
                         "Grupo modelo não pertence ao seu restaurante");
             }
+            // Serializa lista pra JSON simples (sem Jackson — formato é trivial)
+            String faJson = null;
+            if (filhosAplicaveis != null && !filhosAplicaveis.isEmpty()) {
+                faJson = "[" + filhosAplicaveis.stream()
+                        .map(String::valueOf)
+                        .collect(java.util.stream.Collectors.joining(","))
+                        + "]";
+            }
             ComboGrupo cg = ComboGrupo.builder()
                     .combo(combo)
                     .grupoModelo(gm)
                     .ordem(ordemAuto++)
+                    .filhosAplicaveisJson(faJson)
                     .build();
             comboGrupoRepo.save(cg);
         }
+    }
+
+    /** Parse o JSON simples salvo em filhosAplicaveisJson → List&lt;Long&gt;.
+     *  Retorna lista vazia se null/inválido. */
+    private List<Long> parseFilhosAplicaveis(String json) {
+        if (json == null || json.isBlank()) return List.of();
+        String s = json.trim();
+        if (s.startsWith("[")) s = s.substring(1);
+        if (s.endsWith("]")) s = s.substring(0, s.length() - 1);
+        if (s.isBlank()) return List.of();
+        List<Long> out = new java.util.ArrayList<>();
+        for (String tok : s.split(",")) {
+            try { out.add(Long.parseLong(tok.trim())); } catch (Exception ignore) {}
+        }
+        return out;
     }
 
     private void salvarItensDoCombo(Produto combo, Restaurante r, Object itensRaw) {
@@ -416,8 +491,8 @@ public class ComboController {
         }
         out.put("itens", itensOut);
 
-        // NOVO: grupos selecionados pelo dono (item 2 do refactor).
-        // Devolve só os IDs e nomes — frontend pode listar e marcar checkbox.
+        // Grupos selecionados pelo dono + granularidade por filho (V2 refactor).
+        // filhosAplicaveis = [] → aplica em todos. lista de IDs → só nesses filhos.
         List<Map<String, Object>> gruposOut = new ArrayList<>();
         for (var cg : comboGrupoRepo.findByComboIdOrderByOrdemAscIdAsc(combo.getId())) {
             var gm = cg.getGrupoModelo();
@@ -426,6 +501,7 @@ public class ComboController {
             g.put("id", gm.getId());
             g.put("nome", gm.getNome());
             g.put("ordem", cg.getOrdem());
+            g.put("filhosAplicaveis", parseFilhosAplicaveis(cg.getFilhosAplicaveisJson()));
             gruposOut.add(g);
         }
         out.put("grupos", gruposOut);

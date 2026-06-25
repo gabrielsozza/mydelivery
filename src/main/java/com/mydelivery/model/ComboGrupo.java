@@ -62,4 +62,23 @@ public class ComboGrupo {
     @Builder.Default
     @Column(nullable = false)
     private Integer ordem = 0;
+
+    /**
+     * JSON com lista de IDs dos produtos-filho do combo aos quais ESTE grupo
+     * se aplica. Quando NULL ou vazio → aplica em TODOS os filhos (default).
+     * Quando preenchido → aplica APENAS nos produtos cujos IDs estão na lista.
+     *
+     * Exemplo: combo tem [Açaí 500ml id=403, Açaí 300ml id=402]. Se o grupo
+     * "Coberturas premium" tem filhosAplicaveisJson="[403]", esse grupo só
+     * aparece nos slots do Açaí 500ml — o Açaí 300ml não recebe.
+     *
+     * Granularidade por PRODUTO (não por repetição): se combo tem 2× Açaí 500ml,
+     * marcar 403 aplica nas DUAS instâncias. Cobre 95% dos casos sem
+     * complexidade de slot-tracking.
+     *
+     * Default null pra retrocompat — combos antigos seguem aplicando todos
+     * os grupos em todos os filhos como sempre (comportamento anterior).
+     */
+    @Column(name = "filhos_aplicaveis_json", columnDefinition = "TEXT")
+    private String filhosAplicaveisJson;
 }

@@ -197,6 +197,24 @@ public class IfoodClient {
     /** Marca como despachado (saiu pra entrega — entrega própria). */
     public void despachado(String orderId) { postStatus(orderId, "dispatch", Map.of()); }
 
+    /**
+     * Marca como entregue (CONCLUDED). Usado quando a entrega é própria do
+     * restaurante (logistic=MERCHANT) E o iFood não gera CON automático.
+     *
+     * Pra logística iFood/Loggi, o CON é gerado automaticamente pelo iFood
+     * via polling — nesse caso essa chamada falha com 400/409 (que ignoramos
+     * pra não bloquear a transição local). É idempotente.
+     */
+    public void entregue(String orderId) {
+        try { postStatus(orderId, "delivered", Map.of()); }
+        catch (RuntimeException e) {
+            // iFood pode rejeitar (pedido já estava concluded, logística não
+            // permite, etc). Não é fatal — só registra.
+            log.warn("[iFood] delivered rejeitado pra {} (provavelmente já concluído ou logística iFood): {}",
+                    orderId, e.getMessage());
+        }
+    }
+
     /** Cancela o pedido. Motivo precisa ser código válido do iFood. */
     public void cancelar(String orderId, String motivoCodigo, String motivoTexto) {
         postStatus(orderId, "requestCancellation", Map.of(

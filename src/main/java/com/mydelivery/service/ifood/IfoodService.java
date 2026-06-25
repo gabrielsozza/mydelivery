@@ -155,6 +155,25 @@ public class IfoodService {
         pedidoRepo.save(p);
         log.info("[iFood] Pedido novo criado — local={} iFood={} (display={}) restaurante={}",
                 p.getId(), orderId, p.getIfoodDisplayId(), r.getId());
+
+        // ── AUTO-CONFIRM IMEDIATO ──────────────────────────────────────────
+        // Setamos status=CONFIRMADO localmente, mas o iFood SÓ considera o
+        // pedido "Confirmado" quando recebe POST /orders/{id}/confirm.
+        // Sem isso o cenário "Pedido Confirmado" da homologação reprova com
+        // 'O pedido foi criado, mas não foi confirmado pelo restaurante'.
+        //
+        // Como auto-aceitamos todo pedido iFood (já vem pago, sem revisão),
+        // mandamos o confirm AGORA. SLA do iFood é 10s — qualquer atraso
+        // vira penalização. Idempotente: iFood aceita confirm duplicado.
+        //
+        // Fail-safe: erro de rede não bloqueia criação do pedido local
+        // (restaurante já vê no painel; confirm pode ser reenviado depois).
+        try {
+            client.confirmar(orderId);
+            log.info("[iFood] confirm enviado pra orderId={} (auto após PLC)", orderId);
+        } catch (Exception e) {
+            log.error("[iFood] auto-confirm FALHOU pra orderId={}: {}", orderId, e.getMessage());
+        }
         return true;
     }
 

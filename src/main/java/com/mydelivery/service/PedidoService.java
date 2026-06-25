@@ -473,6 +473,12 @@ public class PedidoService {
                 } else if (statusNovo == Pedido.Status.SAIU_ENTREGA) {
                     ifoodClient.despachado(oid);
                     log.info("[iFood] dispatch enviado pra orderId={}", oid);
+                } else if (statusNovo == Pedido.Status.ENTREGUE) {
+                    // /delivered marca CONCLUDED na Order API. Pra logística
+                    // iFood o ifoodClient.entregue() engole 400/409 (iFood já
+                    // gera CON sozinho). Pra logística MERCHANT, sobe o status.
+                    ifoodClient.entregue(oid);
+                    log.info("[iFood] delivered enviado pra orderId={}", oid);
                 } else if (statusNovo == Pedido.Status.CANCELADO) {
                     // Código 501 = "OUT_OF_PRODUCT" (motivo padrão).
                     ifoodClient.cancelar(oid, "501", "Cancelado pelo restaurante via painel");

@@ -41,6 +41,7 @@ public class AutoEntregueJob {
     private static final int MINUTOS_LIMITE = 150;
 
     private final PedidoRepository pedidoRepo;
+    private final com.mydelivery.service.ifood.IfoodClient ifoodClient;
 
     @Scheduled(fixedRate = 15 * 60_000L, initialDelay = 5 * 60_000L)
     @Transactional
@@ -56,6 +57,20 @@ public class AutoEntregueJob {
             try {
                 p.setStatus(Pedido.Status.ENTREGUE);
                 pedidoRepo.save(p);
+                // Propaga pra iFood quando aplicável — sem isso o pedido fica
+                // marcado como ENTREGUE localmente mas a Order API do iFood
+                // continua aguardando CONCLUDED (e o restaurante "perde"
+                // pontos na homologação/operação real).
+                if (p.getOrigem() == Pedido.Origem.IFOOD
+                        && p.getIfoodOrderId() != null
+                        && !p.getIfoodOrderId().isBlank()) {
+                    try {
+                        ifoodClient.entregue(p.getIfoodOrderId());
+                    } catch (Exception ife) {
+                        log.warn("[AutoEntregue] iFood delivered falhou pra orderId={}: {}",
+                                p.getIfoodOrderId(), ife.getMessage());
+                    }
+                }
                 fechados++;
                 log.info("[AutoEntregue] pedido#{} (rest={}) marcado ENTREGUE automaticamente — " +
                         "ficou {}min sem atualização",

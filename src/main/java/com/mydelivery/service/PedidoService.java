@@ -48,6 +48,7 @@ public class PedidoService {
     private final EstoqueService estoqueService;
     private final PagamentoService pagamentoService;
     private final HorarioLojaService horarioLojaService;
+    private final com.mydelivery.service.ifood.IfoodClient ifoodClient;
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private WebPushService webPushService;
 
@@ -437,8 +438,53 @@ public class PedidoService {
         if (!p.getRestaurante().getId().equals(rid)) {
             throw new RuntimeException("Acesso negado");
         }
-        p.setStatus(req.getStatus());
-        return toResponse(pedidoRepository.save(p));
+        Pedido.Status statusAntigo = p.getStatus();
+        Pedido.Status statusNovo = req.getStatus();
+        p.setStatus(statusNovo);
+        Pedido salvo = pedidoRepository.save(p);
+
+        // ── PROPAGAÇÃO PRO IFOOD ──────────────────────────────────────────
+        // Pedidos vindos do iFood (origem=IFOOD) precisam que o restaurante
+        // notifique a Order API quando avança o status, senão o iFood deixa
+        // o pedido travado em "criado mas não confirmado" — exatamente o que
+        // fez 3 cenários de homologação falharem (Confirmado, Despachado,
+        // Cancelado). Mapeamento:
+        //
+        //   nosso CONFIRMADO/EM_PREPARO   → POST /orders/{id}/confirm
+        //   nosso SAIU_ENTREGA            → POST /orders/{id}/dispatch
+        //   nosso CANCELADO               → POST /orders/{id}/cancel (motivo 501)
+        //
+        // Try/catch envolve cada chamada — falha de rede no iFood NÃO bloqueia
+        // a transição local. Erro só fica em log pra debug. ifoodOrderId é o
+        // UUID que o iFood usa internamente (vem do webhook PLC e fica salvo
+        // na coluna ifood_order_id quando o pedido foi importado pelo polling).
+        if (salvo.getOrigem() == Pedido.Origem.IFOOD
+                && salvo.getIfoodOrderId() != null
+                && !salvo.getIfoodOrderId().isBlank()
+                && statusNovo != statusAntigo) {
+            String oid = salvo.getIfoodOrderId();
+            try {
+                if (statusNovo == Pedido.Status.CONFIRMADO || statusNovo == Pedido.Status.EM_PREPARO) {
+                    // Confirm é idempotente — iFood aceita mesmo se já confirmado.
+                    // Mandamos em ambas transições pra cobrir restaurantes que
+                    // pulam do PENDENTE direto pra EM_PREPARO.
+                    ifoodClient.confirmar(oid);
+                    log.info("[iFood] confirm enviado pra orderId={} (status local={})", oid, statusNovo);
+                } else if (statusNovo == Pedido.Status.SAIU_ENTREGA) {
+                    ifoodClient.despachado(oid);
+                    log.info("[iFood] dispatch enviado pra orderId={}", oid);
+                } else if (statusNovo == Pedido.Status.CANCELADO) {
+                    // Código 501 = "OUT_OF_PRODUCT" (motivo padrão).
+                    ifoodClient.cancelar(oid, "501", "Cancelado pelo restaurante via painel");
+                    log.info("[iFood] cancel enviado pra orderId={}", oid);
+                }
+            } catch (Exception e) {
+                log.error("[iFood] FALHOU ao propagar status {} pra orderId={}: {}",
+                        statusNovo, oid, e.getMessage());
+            }
+        }
+
+        return toResponse(salvo);
     }
 
     @Transactional

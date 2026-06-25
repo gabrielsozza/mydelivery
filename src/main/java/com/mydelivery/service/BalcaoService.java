@@ -109,7 +109,38 @@ public class BalcaoService {
             if (!prod.getRestaurante().getId().equals(r.getId())) {
                 throw new SecurityException("Produto fora do restaurante");
             }
-            BigDecimal precoUnit = prod.getPreco() == null ? BigDecimal.ZERO : prod.getPreco();
+            BigDecimal precoBase = prod.getPreco() == null ? BigDecimal.ZERO : prod.getPreco();
+            BigDecimal precoUnit = precoBase;
+
+            // ── PREÇO POR ITEM (vitrine / complementos) ──
+            // Frontend balcão agora envia 'preco' já calculado quando atendente
+            // escolheu porção (vitrine) ou adicionais (complementos). Backend
+            // valida com a mesma blindagem do PedidoService:
+            //  - VITRINE (precoVitrine=true): preço base é só referencial.
+            //    Aceita o valor enviado direto (porção pode custar MENOS que o
+            //    base, ex: 500g por R$15 num produto de R$30/kg). Limite anti-
+            //    fraude: 100x do base.
+            //  - NORMAL: aceita preço enviado SE for MAIOR que o base (somou
+            //    complementos) e dentro do limite 10x.
+            BigDecimal precoEnviado = decOf(it.get("preco"));
+            boolean ehVitrine = Boolean.TRUE.equals(prod.getPrecoVitrine());
+            if (ehVitrine) {
+                BigDecimal limMax = precoBase.multiply(BigDecimal.valueOf(100));
+                if (precoEnviado != null && precoEnviado.compareTo(BigDecimal.ZERO) > 0
+                        && precoEnviado.compareTo(limMax) <= 0) {
+                    precoUnit = precoEnviado;
+                } else {
+                    // sem preço válido enviado: NÃO cobrar referencial (R$/kg) —
+                    // ficaria absurdo. Cobra 0 e fica claro no painel que algo errado.
+                    precoUnit = BigDecimal.ZERO;
+                }
+            } else if (precoEnviado != null && precoEnviado.compareTo(precoBase) > 0) {
+                BigDecimal limMax = precoBase.multiply(BigDecimal.valueOf(10));
+                if (precoEnviado.compareTo(limMax) <= 0) {
+                    precoUnit = precoEnviado;
+                }
+            }
+
             BigDecimal totalItem = precoUnit.multiply(BigDecimal.valueOf(qtd));
             subtotal = subtotal.add(totalItem);
 
@@ -279,4 +310,11 @@ public class BalcaoService {
         try { return Integer.parseInt(o.toString()); } catch (Exception e) { return def; }
     }
     private String strOf(Object o) { return o == null ? null : o.toString(); }
+    private BigDecimal decOf(Object o) {
+        if (o == null) return null;
+        if (o instanceof BigDecimal bd) return bd;
+        if (o instanceof Number n) return BigDecimal.valueOf(n.doubleValue());
+        try { return new BigDecimal(o.toString().trim()); }
+        catch (Exception e) { return null; }
+    }
 }

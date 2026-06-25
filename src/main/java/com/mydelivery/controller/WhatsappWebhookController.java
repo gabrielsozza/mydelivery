@@ -218,6 +218,40 @@ public class WhatsappWebhookController {
         if (fromMe) return; // Não processa mensagens que NÓS enviamos
         if (remoteJid == null) return;
 
+        // ── ANTI-BACKLOG / ANTI-SPAM ──────────────────────────────────────
+        // Quando Evolution/Baileys reconecta após queda, o WhatsApp drena
+        // todas as mensagens acumuladas DURANTE a queda — pode vir uma
+        // rajada de dezenas de msgs antigas. Se o bot responder cada uma,
+        // o cliente recebe uma rajada de respostas de coisas que mandou
+        // HORAS atrás. Resultado: confusão + cliente percebe que é bot +
+        // WhatsApp marca como spam → contribui pra shadow ban.
+        //
+        // Regra: msg com timestamp mais antigo que MAX_MSG_AGE_MIN é
+        // descartada SILENCIOSAMENTE — heartbeat e marcar-como-lida já
+        // rodaram acima, mas a resposta automática NÃO sai.
+        //
+        // Evolution envia messageTimestamp em SEGUNDOS (Unix epoch).
+        // 3min é seguro: cliente humano normal espera no MÁXIMO ~1min,
+        // depois desiste/repete a pergunta. Bot responder 3min+ atrasado
+        // é sempre ruim.
+        final int MAX_MSG_AGE_SEG = 3 * 60;
+        Object tsRaw = dataMap.get("messageTimestamp");
+        long tsSegundos = 0;
+        if (tsRaw instanceof Number n) tsSegundos = n.longValue();
+        else if (tsRaw != null) {
+            try { tsSegundos = Long.parseLong(tsRaw.toString()); } catch (Exception ignore) {}
+        }
+        if (tsSegundos > 0) {
+            long agoraSeg = System.currentTimeMillis() / 1000L;
+            long idadeSeg = agoraSeg - tsSegundos;
+            if (idadeSeg > MAX_MSG_AGE_SEG) {
+                log.info("[WA-Webhook] msg de backlog ignorada — idade={}s (>{}s) inst={} de={}***",
+                        idadeSeg, MAX_MSG_AGE_SEG, inst.getInstanceName(),
+                        remoteJid.length() > 5 ? remoteJid.substring(0, 5) : remoteJid);
+                return;
+            }
+        }
+
         // HEARTBEAT FORTE — passou de fromMe + remoteJid válido, é mensagem real
         // de cliente. Só agora atualizamos o sinal que prova bot operacional.
         // (O heartbeat fraco já foi atualizado no entry point do webhook.)

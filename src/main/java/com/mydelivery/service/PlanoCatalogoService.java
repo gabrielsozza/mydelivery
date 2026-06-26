@@ -39,6 +39,24 @@ public class PlanoCatalogoService {
         return repo.findByAtivoTrueOrderByOrdemAscIdAsc();
     }
 
+    /**
+     * Retorna o valor REAL do plano lendo da tabela `planos` (editável pelo
+     * admin). Cai pro valor hardcoded do enum como fallback caso não exista
+     * registro no banco — defesa pra não quebrar cobrança em ambiente novo
+     * sem seed.
+     *
+     * IMPORTANTE: USAR ESSE MÉTODO em vez de plano.getValor() em TODO ponto
+     * que vá pro Mercado Pago (transaction_amount, items.unit_price, etc).
+     * Senão admin edita preço mas MP segue cobrando o do enum.
+     */
+    public BigDecimal valorAtual(com.mydelivery.model.Plano plano) {
+        if (plano == null) return BigDecimal.ZERO;
+        return repo.findByCodigoIgnoreCase(plano.name())
+                .map(PlanoCatalogo::getValor)
+                .filter(v -> v != null && v.compareTo(BigDecimal.ZERO) > 0)
+                .orElse(plano.getValor());
+    }
+
     /** Lista completa (inclusive desativados). Usado pelo admin. */
     public List<PlanoCatalogo> listarTodos() {
         return repo.findAllByOrderByOrdemAscIdAsc();

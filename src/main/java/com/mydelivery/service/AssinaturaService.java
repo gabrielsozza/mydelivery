@@ -206,7 +206,7 @@ public class AssinaturaService {
         Assinatura a = assinaturaRepository.findByRestauranteId(r.getId())
                 .orElseGet(() -> Assinatura.builder()
                         .restaurante(r)
-                        .valor(plano.getValor())
+                        .valor(planoCatalogoService.valorAtual(plano))
                         .build());
 
         LocalDateTime agora = LocalDateTime.now();
@@ -230,7 +230,7 @@ public class AssinaturaService {
 
         a.setStatus(Assinatura.Status.ATIVA);
         a.setPlano(plano);
-        a.setValor(plano.getValor());
+        a.setValor(planoCatalogoService.valorAtual(plano));
         a.setValidaAte(novoFim);
         a.setProximaCobranca(novoFim);
         a.setUltimaCobranca(agora);
@@ -249,7 +249,7 @@ public class AssinaturaService {
         try {
             String emailDono = r.getUsuario() != null ? r.getUsuario().getEmail() : null;
             emailService.pagamentoAprovado(emailDono, r.getNome(), plano.getNomeExibicao(),
-                    plano.getValor(), novoFim);
+                    planoCatalogoService.valorAtual(plano), novoFim);
         } catch (Exception e) { log.warn("[Email] falha enviar aprovado: {}", e.getMessage()); }
 
         return salva;
@@ -269,7 +269,7 @@ public class AssinaturaService {
         Assinatura a = assinaturaRepository.findByRestauranteId(r.getId())
                 .orElseGet(() -> Assinatura.builder()
                         .restaurante(r)
-                        .valor(plano.getValor())
+                        .valor(planoCatalogoService.valorAtual(plano))
                         .build());
 
         LocalDateTime agora = LocalDateTime.now();
@@ -279,7 +279,7 @@ public class AssinaturaService {
 
         a.setStatus(Assinatura.Status.PENDENTE); // PENDENTE = cartão validado, aguardando trial expirar
         a.setPlano(plano);
-        a.setValor(plano.getValor());
+        a.setValor(planoCatalogoService.valorAtual(plano));
         a.setMetodoPagamento("CARTAO");
         a.setReferenciaGateway(referenciaGateway);
         a.setValidaAte(novoFim);
@@ -406,7 +406,7 @@ public class AssinaturaService {
         try {
             com.mydelivery.model.PagamentoMensalidade p = com.mydelivery.model.PagamentoMensalidade.builder()
                     .restaurante(r)
-                    .valor(plano.getValor())
+                    .valor(planoCatalogoService.valorAtual(plano))
                     .status(com.mydelivery.model.PagamentoMensalidade.Status.PAGO)
                     .metodoPagamento(metodo)
                     .plano(plano)
@@ -427,7 +427,7 @@ public class AssinaturaService {
             if (r != null && r.getUsuario() != null) {
                 var u = r.getUsuario();
                 metaCapiService.subscribe(u.getEmail(), u.getTelefone(), u.getNome(),
-                        plano.getValor() == null ? null : plano.getValor().doubleValue(),
+                        planoCatalogoService.valorAtual(plano) == null ? null : planoCatalogoService.valorAtual(plano).doubleValue(),
                         mpPaymentId);
             }
         } catch (Exception ignored) { /* fail-safe */ }
@@ -460,7 +460,7 @@ public class AssinaturaService {
                     : (mpStatusDetail.length() > 80 ? mpStatusDetail.substring(0, 80) : mpStatusDetail);
             com.mydelivery.model.PagamentoMensalidade p = com.mydelivery.model.PagamentoMensalidade.builder()
                     .restaurante(r)
-                    .valor(plano != null ? plano.getValor() : java.math.BigDecimal.ZERO)
+                    .valor(plano != null ? planoCatalogoService.valorAtual(plano) : java.math.BigDecimal.ZERO)
                     .status(com.mydelivery.model.PagamentoMensalidade.Status.REJEITADO)
                     .metodoPagamento(metodo)
                     .plano(plano)
@@ -478,7 +478,7 @@ public class AssinaturaService {
                 String emailDono = r.getUsuario() != null ? r.getUsuario().getEmail() : null;
                 emailService.pagamentoRecusado(emailDono, r.getNome(),
                         plano != null ? plano.getNomeExibicao() : "—",
-                        plano != null ? plano.getValor() : java.math.BigDecimal.ZERO,
+                        plano != null ? planoCatalogoService.valorAtual(plano) : java.math.BigDecimal.ZERO,
                         motivo);
             }
         } catch (Exception e) {

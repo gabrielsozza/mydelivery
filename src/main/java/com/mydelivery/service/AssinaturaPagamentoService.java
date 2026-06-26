@@ -256,11 +256,11 @@ public class AssinaturaPagamentoService {
         Map<String, Object> payerInfo = new LinkedHashMap<>();
         payerInfo.put("first_name", safeFirst(r.getNome()));
         payerInfo.put("last_name", "MyDelivery");
-        if (docNumber != null) {
-            Map<String, Object> idMap = new LinkedHashMap<>();
-            idMap.put("type", docType); idMap.put("number", docNumber);
-            payerInfo.put("identification", idMap);
-        }
+        // NÃO incluir "identification" dentro de additional_info.payer!
+        // MP rejeita com 400 bad_request "The name of the following parameters
+        // is wrong: [additional_info.payer.identification]". O identification
+        // já vai no payer root (campo .payer(payer) abaixo). Apenas first_name,
+        // last_name, phone, address e registration_date são válidos aqui.
 
         // ─── MELHORIA INTEGRACAO MP — score 51 → 75+ ───
         // Painel "Qualidade da Integração" do MP exige additional_info.payer

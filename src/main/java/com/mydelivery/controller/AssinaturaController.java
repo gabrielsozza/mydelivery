@@ -263,6 +263,43 @@ public class AssinaturaController {
     }
 
     /**
+     * USO INTERNO ADMIN/TESTE — expira o trial de um restaurante imediatamente.
+     * Não cobra, não bloqueia — apenas adianta trial_expira_em pra ontem,
+     * forçando o restaurante a cair no fluxo de cobrança imediata na próxima
+     * chamada de /assinar ou /pagar-cartao.
+     *
+     * Body: { restauranteId }
+     * Header: X-Admin-Secret
+     */
+    @PostMapping("/expirar-trial-admin")
+    public ResponseEntity<Map<String, Object>> expirarTrialAdmin(
+            @org.springframework.web.bind.annotation.RequestHeader(value = "X-Admin-Secret", required = false) String secret,
+            @RequestBody Map<String, Object> body,
+            @org.springframework.beans.factory.annotation.Value("${mydelivery.admin.internal-secret:}") String esperado) {
+        if (esperado == null || esperado.isBlank() || !esperado.equals(secret)) {
+            return ResponseEntity.status(org.springframework.http.HttpStatus.FORBIDDEN)
+                    .body(Map.of("erro", "Secret inválido"));
+        }
+        Long restauranteId = Long.valueOf(String.valueOf(body.get("restauranteId")));
+        Restaurante r = restauranteRepository.findById(restauranteId)
+                .orElseThrow(() -> new RuntimeException("Restaurante não encontrado"));
+        java.time.LocalDateTime ontem = java.time.LocalDateTime.now().minusDays(1);
+        r.setTrialExpiraEm(ontem);
+        // mantém status TRIAL — assim a UI mostra "seu trial acabou, contrate
+        // um plano" em vez de "BLOQUEADO". O check do controller pagarCartao
+        // (emTrial = status==TRIAL && trialExpiraEm.isAfter(now())) vai cair
+        // no else porque trialExpiraEm está no passado.
+        restauranteRepository.save(r);
+        return ResponseEntity.ok(Map.of(
+                "ok", true,
+                "restauranteId", r.getId(),
+                "nome", r.getNome(),
+                "trialExpiraEm", ontem.toString(),
+                "mensagem", "Trial expirado. Próxima tentativa de pagamento vai cobrar imediatamente."
+        ));
+    }
+
+    /**
      * USO INTERNO ADMIN — concede meses grátis pra um restaurante.
      * Não exige role RESTAURANTE: protegido por header X-Admin-Secret.
      * Body: { restauranteId, meses, motivo? }

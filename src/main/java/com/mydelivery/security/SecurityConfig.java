@@ -71,6 +71,7 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.POST, "/api/webhooks/whatsapp/**").permitAll()
                 // Endpoint interno chamado pelo admin-mydelivery-api — autenticado via X-Admin-Secret
                 .requestMatchers(HttpMethod.POST, "/api/restaurante/assinatura/conceder-meses-gratis-admin").permitAll()
+                .requestMatchers(HttpMethod.POST, "/api/restaurante/assinatura/expirar-trial-admin").permitAll()
                 .requestMatchers(HttpMethod.POST, "/api/restaurante/assinatura/impersonar-admin").permitAll()
                 .requestMatchers(HttpMethod.POST, "/api/restaurante/assinatura/replicar-cardapio-admin").permitAll()
                 // Health do WhatsApp — autenticação via X-Admin-Secret validada no controller

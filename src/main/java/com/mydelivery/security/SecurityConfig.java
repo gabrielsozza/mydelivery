@@ -81,6 +81,10 @@ public class SecurityConfig {
                 // /api/garcom/** exigem role GARCOM (JWT gerado no login).
                 .requestMatchers(HttpMethod.POST, "/api/garcom/*/login").permitAll()
                 .requestMatchers("/api/garcom/**").hasRole("GARCOM")
+                // Entregador: mesmo padrão do garçom — login PIN público,
+                // resto exige role ENTREGADOR (JWT com sub=entregadorId)
+                .requestMatchers(HttpMethod.POST, "/api/entregador/*/login").permitAll()
+                .requestMatchers("/api/entregador/**").hasRole("ENTREGADOR")
                 .requestMatchers("/api/admin/**").hasRole("ADMIN")
                 .requestMatchers("/api/restaurante/**").hasAnyRole("RESTAURANTE", "ADMIN")
                 .anyRequest().authenticated()

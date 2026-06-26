@@ -28,7 +28,9 @@ import com.mydelivery.repository.ProdutoRepository;
 import com.mydelivery.repository.RestauranteRepository;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class PedidoService {
@@ -410,7 +412,60 @@ public class PedidoService {
             } catch (Exception ignored) { /* fail-safe total */ }
         }
 
+        // ── Atribuição automática de entregador (DELIVERY) ───────────────
+        // Round-robin por carga real: escolhe o entregador DISPONIVEL com
+        // menos pedidos ativos no momento. Empate → ordem de criação (estável).
+        // Restaurante pode reatribuir manual depois pelo painel.
+        // Fail-safe: se não houver entregador disponível, pedido fica sem
+        // entregador (dono atribui manualmente). Não bloqueia criação.
+        if (salvo.getTipo() == Pedido.Tipo.DELIVERY && salvo.getEntregador() == null) {
+            try {
+                atribuirAutomaticamente(salvo);
+            } catch (Exception ignored) { /* fail-safe total */ }
+        }
+
         return toResponse(salvo);
+    }
+
+    /**
+     * Round-robin por carga. Pega entregadores DISPONIVEL do restaurante,
+     * conta pedidos ativos (CONFIRMADO/EM_PREPARO/PRONTO/SAIU_ENTREGA) por
+     * entregador, escolhe quem tem menos. Persiste atribuição.
+     *
+     * Decisão: NÃO muda status do entregador pra EM_ENTREGA aqui — só
+     * quando ele efetivamente sair pra entrega (transição manual no app
+     * ou painel). Pedido CONFIRMADO/EM_PREPARO ainda tá na cozinha, faz
+     * sentido entregador continuar DISPONIVEL pra receber próxima atribuição
+     * (entregador real do iFood/Anota carrega 2-3 pedidos juntos).
+     */
+    private void atribuirAutomaticamente(Pedido pedido) {
+        Long restId = pedido.getRestaurante().getId();
+        List<Entregador> disponiveis = entregadorRepository
+                .findByRestauranteIdAndAtivoTrueAndStatus(restId, Entregador.Status.DISPONIVEL);
+        if (disponiveis.isEmpty()) return;
+
+        // Conta pedidos ativos por entregador num único pass — DELIVERY rate
+        // não é alto o suficiente pra justificar query agregada custom.
+        java.util.Map<Long, Long> cargaPorEntregador = pedidoRepository
+                .findByRestauranteIdOrderByCriadoEmDesc(restId).stream()
+                .filter(p -> p.getEntregador() != null
+                        && p.getStatus() != Pedido.Status.ENTREGUE
+                        && p.getStatus() != Pedido.Status.CANCELADO)
+                .collect(java.util.stream.Collectors.groupingBy(
+                        p -> p.getEntregador().getId(), java.util.stream.Collectors.counting()));
+
+        Entregador escolhido = disponiveis.stream()
+                .min(java.util.Comparator
+                        .comparingLong((Entregador e) -> cargaPorEntregador.getOrDefault(e.getId(), 0L))
+                        .thenComparing(Entregador::getId))
+                .orElse(null);
+        if (escolhido == null) return;
+
+        pedido.setEntregador(escolhido);
+        pedidoRepository.save(pedido);
+        log.info("[entregador] auto-atribuído pedidoId={} -> entregadorId={} ({}) carga={}",
+                pedido.getId(), escolhido.getId(), escolhido.getNome(),
+                cargaPorEntregador.getOrDefault(escolhido.getId(), 0L));
     }
 
     @Transactional(readOnly = true)

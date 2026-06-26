@@ -51,4 +51,16 @@ public class EntregadorController {
         entregadorService.desativar(resolverRestauranteId(slug), id);
         return ResponseEntity.noContent().build();
     }
+
+    /**
+     * Regera o PIN do entregador. Usado pelo painel do dono quando PIN
+     * é comprometido (entregador saiu, vazou, etc.). Sessões JWT ativas
+     * NÃO são invalidadas (subject é o entregadorId, não o PIN) — pra
+     * logout imediato precisa app-side checar online flag ou rotacionar
+     * JWT secret (fora de escopo).
+     */
+    @PostMapping("/{id}/pin/regenerar")
+    public ResponseEntity<EntregadorResponse> regerarPin(@PathVariable String slug, @PathVariable Long id) {
+        return ResponseEntity.ok(entregadorService.regerarPin(resolverRestauranteId(slug), id));
+    }
 }

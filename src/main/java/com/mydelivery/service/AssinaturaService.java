@@ -399,7 +399,9 @@ public class AssinaturaService {
      * Registra uma tentativa de pagamento OK. Cria linha em pagamentos_mensalidade.
      * Admin lista esses registros pra ter histórico de cobranças.
      */
-    @Transactional
+    /** REQUIRES_NEW + noRollbackFor — mesma defesa do registrarFalhaPagamento. */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.REQUIRES_NEW,
+                   noRollbackFor = Exception.class)
     public void registrarPagamentoOk(Restaurante r, Plano plano, String metodo, Long mpPaymentId) {
         try {
             com.mydelivery.model.PagamentoMensalidade p = com.mydelivery.model.PagamentoMensalidade.builder()
@@ -436,12 +438,26 @@ public class AssinaturaService {
      *
      * @param categoria CLIENTE (cartão recusado), GATEWAY (MP fora), SISTEMA (bug interno)
      */
-    @Transactional
+    /**
+     * REQUIRES_NEW + noRollbackFor é DEFESA CRÍTICA: esse método é chamado
+     * sempre dentro de um catch externo, então qualquer falha aqui
+     * (ex: constraint violation por coluna truncada) NÃO PODE contaminar
+     * a transação pai com rollback-only. Sem isso, o erro original do MP
+     * vira "Transaction silently rolled back because it has been marked as
+     * rollback-only" no frontend, escondendo a causa real.
+     */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.REQUIRES_NEW,
+                   noRollbackFor = Exception.class)
     public void registrarFalhaPagamento(Restaurante r, Plano plano, String metodo,
                                         Long mpPaymentId, String mpStatusDetail,
                                         String motivo,
                                         com.mydelivery.model.PagamentoMensalidade.CategoriaErro categoria) {
         try {
+            // mpStatusDetail é varchar(80) no banco — MP às vezes retorna
+            // códigos longos tipo "cc_rejected_call_for_authorize_high_risk"
+            // que estouram. Trunca pra blindagem.
+            String detSafe = mpStatusDetail == null ? null
+                    : (mpStatusDetail.length() > 80 ? mpStatusDetail.substring(0, 80) : mpStatusDetail);
             com.mydelivery.model.PagamentoMensalidade p = com.mydelivery.model.PagamentoMensalidade.builder()
                     .restaurante(r)
                     .valor(plano != null ? plano.getValor() : java.math.BigDecimal.ZERO)
@@ -449,7 +465,7 @@ public class AssinaturaService {
                     .metodoPagamento(metodo)
                     .plano(plano)
                     .mpPaymentId(mpPaymentId)
-                    .mpStatusDetail(mpStatusDetail)
+                    .mpStatusDetail(detSafe)
                     .categoriaErro(categoria)
                     .motivoErro(motivo == null ? null
                             : (motivo.length() > 1000 ? motivo.substring(0, 1000) : motivo))

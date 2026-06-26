@@ -171,10 +171,22 @@ public class AssinaturaController {
         Map<String, Object> resp;
         try {
             resp = pagamentoService.pagarCartao(r, plano, formData);
+        } catch (org.springframework.transaction.UnexpectedRollbackException ure) {
+            // Defesa: alguma sub-tx interna marcou rollback (constraint/coluna
+            // estourou). NÃO tentar registrar falha aqui pq pode cascatear.
+            // Loga raw e devolve mensagem amigável.
+            log.error("[Pagamento] UnexpectedRollback no pagarCartao: {}", ure.getMessage(), ure);
+            throw new RuntimeException("Erro interno ao processar pagamento. Tente novamente em alguns minutos ou use PIX.");
         } catch (RuntimeException ex) {
-            // Erro interno/gateway → registra falha pra admin ver
-            assinaturaService.registrarFalhaPagamento(r, plano, "CARTAO", null, null,
-                    ex.getMessage(), com.mydelivery.model.PagamentoMensalidade.CategoriaErro.SISTEMA);
+            // Erro interno/gateway → registra falha pra admin ver. Como
+            // registrarFalhaPagamento agora é REQUIRES_NEW + noRollbackFor,
+            // não contamina nada caso o próprio registrar falhe.
+            try {
+                assinaturaService.registrarFalhaPagamento(r, plano, "CARTAO", null, null,
+                        ex.getMessage(), com.mydelivery.model.PagamentoMensalidade.CategoriaErro.SISTEMA);
+            } catch (Exception swallow) {
+                log.warn("[Pagamento] failed to register failure (ignorado): {}", swallow.getMessage());
+            }
             throw ex;
         }
         if (Boolean.TRUE.equals(resp.get("aprovado"))) {

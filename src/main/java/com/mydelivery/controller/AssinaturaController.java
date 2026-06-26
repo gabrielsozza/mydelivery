@@ -39,6 +39,7 @@ public class AssinaturaController {
     private final AssinaturaService assinaturaService;
     private final AssinaturaPagamentoService pagamentoService;
     private final RestauranteRepository restauranteRepository;
+    private final com.mydelivery.repository.AssinaturaRepository assinaturaRepository;
     private final com.mydelivery.security.JwtUtil jwtUtil;
     private final com.mydelivery.service.CardapioReplicaService cardapioReplicaService;
 
@@ -284,18 +285,30 @@ public class AssinaturaController {
         Restaurante r = restauranteRepository.findById(restauranteId)
                 .orElseThrow(() -> new RuntimeException("Restaurante não encontrado"));
         java.time.LocalDateTime ontem = java.time.LocalDateTime.now().minusDays(1);
-        r.setTrialExpiraEm(ontem);
-        // mantém status TRIAL — assim a UI mostra "seu trial acabou, contrate
-        // um plano" em vez de "BLOQUEADO". O check do controller pagarCartao
-        // (emTrial = status==TRIAL && trialExpiraEm.isAfter(now())) vai cair
+        // mantém status TRIAL — UI mostra "seu trial acabou, contrate plano"
+        // em vez de "BLOQUEADO". Check do controller pagarCartao
+        // (emTrial = status==TRIAL && trialExpiraEm.isAfter(now())) cai
         // no else porque trialExpiraEm está no passado.
+        r.setTrialExpiraEm(ontem);
         restauranteRepository.save(r);
+        // CRÍTICO: a UI lê /assinatura/status que usa assinatura.trialFim
+        // (não restaurante.trialExpiraEm). Sem mexer nos 2, o painel continua
+        // mostrando "32 dias restantes" mesmo com trial expirado no
+        // restaurante. Aqui também adianto trialFim + proximaCobranca.
+        com.mydelivery.model.Assinatura a = assinaturaRepository
+                .findByRestauranteId(restauranteId).orElse(null);
+        if (a != null) {
+            a.setTrialFim(ontem);
+            a.setProximaCobranca(ontem);
+            assinaturaRepository.save(a);
+        }
         return ResponseEntity.ok(Map.of(
                 "ok", true,
                 "restauranteId", r.getId(),
                 "nome", r.getNome(),
                 "trialExpiraEm", ontem.toString(),
-                "mensagem", "Trial expirado. Próxima tentativa de pagamento vai cobrar imediatamente."
+                "assinaturaAtualizada", a != null,
+                "mensagem", "Trial expirado em restaurantes e assinaturas. Próxima tentativa de pagamento vai cobrar imediatamente."
         ));
     }
 

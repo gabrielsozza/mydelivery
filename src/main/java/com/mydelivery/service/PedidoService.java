@@ -519,12 +519,24 @@ public class PedidoService {
                 && statusNovo != statusAntigo) {
             String oid = salvo.getIfoodOrderId();
             try {
-                if (statusNovo == Pedido.Status.CONFIRMADO || statusNovo == Pedido.Status.EM_PREPARO) {
+                if (statusNovo == Pedido.Status.CONFIRMADO) {
                     // Confirm é idempotente — iFood aceita mesmo se já confirmado.
-                    // Mandamos em ambas transições pra cobrir restaurantes que
-                    // pulam do PENDENTE direto pra EM_PREPARO.
                     ifoodClient.confirmar(oid);
-                    log.info("[iFood] confirm enviado pra orderId={} (status local={})", oid, statusNovo);
+                    log.info("[iFood] confirm enviado pra orderId={}", oid);
+                } else if (statusNovo == Pedido.Status.EM_PREPARO) {
+                    // Garante confirm primeiro (caso pulou do PENDENTE direto
+                    // pra EM_PREPARO sem passar por CONFIRMADO) e depois manda
+                    // o startPreparation — alguns testes de homologação verificam
+                    // esse evento separadamente. Ambos são idempotentes.
+                    try { ifoodClient.confirmar(oid); } catch (Exception ignored) {}
+                    ifoodClient.emPreparo(oid);
+                    log.info("[iFood] startPreparation enviado pra orderId={}", oid);
+                } else if (statusNovo == Pedido.Status.PRONTO) {
+                    // readyToPickup é OBRIGATÓRIO pra logística MERCHANT (entregador
+                    // próprio do restaurante). Pra logística iFood, é opcional
+                    // mas idempotente — não causa erro.
+                    ifoodClient.pronto(oid);
+                    log.info("[iFood] readyToPickup enviado pra orderId={}", oid);
                 } else if (statusNovo == Pedido.Status.SAIU_ENTREGA) {
                     ifoodClient.despachado(oid);
                     log.info("[iFood] dispatch enviado pra orderId={}", oid);

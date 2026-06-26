@@ -106,4 +106,60 @@ public class IfoodController {
         boolean ok = ifoodClient.ping();
         return ResponseEntity.ok(Map.of("apiOk", ok));
     }
+
+    /**
+     * Diagnóstico completo da integração — usar antes/durante homologação.
+     * Devolve checklist de pré-requisitos pra a integração funcionar:
+     *  - OAuth ok? (credenciais válidas)
+     *  - merchantId cadastrado?
+     *  - integração ativa?
+     *  - último polling foi quando?
+     *  - quantos pedidos iFood já passaram?
+     */
+    @GetMapping("/api/restaurante/ifood/diag")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Map<String, Object>> diagnostico(@AuthenticationPrincipal String email) {
+        Restaurante r = restauranteRepo.findByUsuarioEmail(email).orElseThrow();
+        Map<String, Object> out = new HashMap<>();
+        // 1. credenciais do app + OAuth
+        boolean oauthOk;
+        String oauthErro = null;
+        try { oauthOk = ifoodClient.ping(); }
+        catch (Exception e) { oauthOk = false; oauthErro = e.getMessage(); }
+        out.put("oauthOk", oauthOk);
+        if (oauthErro != null) out.put("oauthErro", oauthErro);
+
+        // 2. estado do restaurante
+        out.put("merchantId", r.getIfoodMerchantId());
+        out.put("merchantIdPresente", r.getIfoodMerchantId() != null && !r.getIfoodMerchantId().isBlank());
+        out.put("integracaoAtiva", Boolean.TRUE.equals(r.getIfoodIntegracaoAtiva()));
+
+        // 3. polling
+        if (r.getIfoodUltimoPollingEm() != null) {
+            long min = Duration.between(r.getIfoodUltimoPollingEm(), LocalDateTime.now()).toMinutes();
+            out.put("ultimoPollingEm", r.getIfoodUltimoPollingEm().toString());
+            out.put("minutosDesdeUltimoPoll", min);
+            out.put("pollingSaudavel", min < 5);
+        } else {
+            out.put("ultimoPollingEm", null);
+            out.put("pollingSaudavel", false);
+        }
+
+        // 4. checklist de pronto-pra-homologação
+        java.util.List<String> bloqueios = new java.util.ArrayList<>();
+        if (!oauthOk) bloqueios.add("OAuth falhou — confira IFOOD_CLIENT_ID e IFOOD_CLIENT_SECRET no Railway");
+        if (r.getIfoodMerchantId() == null || r.getIfoodMerchantId().isBlank())
+            bloqueios.add("merchantId não cadastrado — autorize o app no Gestor de Pedidos do iFood e conecte aqui");
+        if (!Boolean.TRUE.equals(r.getIfoodIntegracaoAtiva()))
+            bloqueios.add("integração desativada — ligue o toggle");
+        if (r.getIfoodUltimoPollingEm() == null)
+            bloqueios.add("nenhum polling registrado ainda — confira IFOOD_POLLING_ATIVO=true no Railway");
+        else {
+            long m = Duration.between(r.getIfoodUltimoPollingEm(), LocalDateTime.now()).toMinutes();
+            if (m > 5) bloqueios.add("último polling há " + m + "min — job pode estar travado");
+        }
+        out.put("bloqueios", bloqueios);
+        out.put("prontoParaHomologacao", bloqueios.isEmpty());
+        return ResponseEntity.ok(out);
+    }
 }

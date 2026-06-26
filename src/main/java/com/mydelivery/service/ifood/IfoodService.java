@@ -68,16 +68,55 @@ public class IfoodService {
                 case "DSP":          // dispatched
                 case "CON":          // concluded (entregue)
                     return tratarMudancaStatus(restaurante, orderId, code);
-                case "CAN":          // cancelled
+                case "CAN":          // cancelled (efetivo)
                     return tratarCancelamento(restaurante, orderId);
+                case "CCR":          // cancellation requested PELO CLIENTE — precisamos aceitar
+                case "CANCELLATION_REQUESTED":
+                    return tratarCancelamentoSolicitadoPeloCliente(restaurante, orderId);
+                case "CRA":          // cancellation request accepted (eco do aceite)
+                case "CRD":          // cancellation request denied
+                case "REC":          // received (legado)
+                case "KEEPALIVE":    // ping do iFood — só ack
+                    log.debug("[iFood] Evento {} ack-only (sem ação local)", code);
+                    return true;
                 default:
-                    log.info("[iFood] Evento {} ignorado (nao implementado)", code);
+                    log.info("[iFood] Evento {} ignorado (nao implementado) — orderId={}", code, orderId);
                     return true; // ack mesmo assim — não vamos tratar
             }
         } catch (Exception e) {
             log.error("[iFood] Erro processando evento {} orderId={}: {}", code, orderId, e.getMessage(), e);
             return false; // NÃO ack — próximo poll tenta de novo
         }
+    }
+
+    /**
+     * CCR — cliente pediu cancelamento pelo app iFood. Precisamos responder
+     * em ~10min com acceptCancellation OU denyCancellation, senão o iFood
+     * penaliza o restaurante.
+     *
+     * Política: AUTO-ACEITAR. Como pedidos iFood vêm pagos pelo cliente
+     * e cancelar é prejuízo zero (estorno automático), preferimos sempre
+     * aceitar a vontade do cliente. Manda o accept e marca local como
+     * CANCELADO (o iFood vai emitir CAN logo depois confirmando).
+     */
+    private boolean tratarCancelamentoSolicitadoPeloCliente(Restaurante r, String orderId) {
+        log.info("[iFood] CCR recebido — cliente pediu cancelamento pra orderId={}, auto-aceitando", orderId);
+        // 1) Aceita no iFood primeiro (fail-fast — sem accept não cancela)
+        try {
+            client.aceitarCancelamento(orderId);
+        } catch (Exception e) {
+            log.error("[iFood] FALHA ao aceitar cancelamento pra {}: {}", orderId, e.getMessage());
+            return false; // retenta no próximo poll
+        }
+        // 2) Atualiza local — se o pedido ainda nem foi criado localmente,
+        //    só ignoramos (o CAN posterior vai criar/cancelar).
+        var opt = pedidoRepo.findByIfoodOrderId(orderId);
+        if (opt.isPresent()) {
+            Pedido p = opt.get();
+            p.setStatus(Pedido.Status.CANCELADO);
+            pedidoRepo.save(p);
+        }
+        return true;
     }
 
     /** Cria Pedido local a partir de um order detalhado do iFood. Idempotente. */

@@ -223,6 +223,25 @@ public class IfoodClient {
         ));
     }
 
+    /**
+     * Aceita uma solicitação de cancelamento iniciada pelo CLIENTE no app
+     * iFood (evento CCR = CANCELLATION_REQUESTED). Quando o cliente cancela
+     * via app, o iFood NÃO cancela direto — ele pergunta pro restaurante
+     * se aceita ou não. Sem responder em ~10 min, o iFood penaliza.
+     *
+     * Como nosso modelo é auto-aceitar tudo (pedidos iFood vêm pagos), também
+     * auto-aceitamos cancelamentos do cliente.
+     *
+     * Idempotente: chamar 2x não dá erro fatal (engole 4xx).
+     */
+    public void aceitarCancelamento(String orderId) {
+        try { postStatus(orderId, "acceptCancellation", Map.of()); }
+        catch (RuntimeException e) {
+            log.warn("[iFood] acceptCancellation rejeitado pra {} (provavelmente já processado): {}",
+                    orderId, e.getMessage());
+        }
+    }
+
     private void postStatus(String orderId, String acao, Map<String, Object> body) {
         try {
             restClient.post()

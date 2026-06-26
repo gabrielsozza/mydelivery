@@ -100,21 +100,33 @@ public class IfoodService {
      * CANCELADO (o iFood vai emitir CAN logo depois confirmando).
      */
     private boolean tratarCancelamentoSolicitadoPeloCliente(Restaurante r, String orderId) {
-        log.info("[iFood] CCR recebido — cliente pediu cancelamento pra orderId={}, auto-aceitando", orderId);
+        log.info("[iFood-AUDIT] event=CCR orderId={} merchantId={} action=auto_accept_start",
+                orderId, r.getIfoodMerchantId());
         // 1) Aceita no iFood primeiro (fail-fast — sem accept não cancela)
         try {
             client.aceitarCancelamento(orderId);
+            log.info("[iFood-AUDIT] event=CCR orderId={} action=acceptCancellation_sent_ok", orderId);
         } catch (Exception e) {
-            log.error("[iFood] FALHA ao aceitar cancelamento pra {}: {}", orderId, e.getMessage());
+            log.error("[iFood-AUDIT] event=CCR orderId={} action=acceptCancellation_FAILED erro={}",
+                    orderId, e.getMessage());
             return false; // retenta no próximo poll
         }
         // 2) Atualiza local — se o pedido ainda nem foi criado localmente,
-        //    só ignoramos (o CAN posterior vai criar/cancelar).
+        //    materializa via getOrderDetalhe pra Firefly Audit detectar reflexo.
         var opt = pedidoRepo.findByIfoodOrderId(orderId);
         if (opt.isPresent()) {
             Pedido p = opt.get();
+            Pedido.Status statusAntigo = p.getStatus();
             p.setStatus(Pedido.Status.CANCELADO);
             pedidoRepo.save(p);
+            log.info("[iFood-AUDIT] event=CCR orderId={} statusAntigo={} statusNovo=CANCELADO action=local_update_ok",
+                    orderId, statusAntigo);
+        } else {
+            // Materializa direto (não tem PLC) — mesma proteção do tratarCancelamento
+            try { criarPedidoLocalCancelado(r, orderId); }
+            catch (Exception e) {
+                log.warn("[iFood-AUDIT] event=CCR orderId={} materialize_skipped erro={}", orderId, e.getMessage());
+            }
         }
         return true;
     }
@@ -219,12 +231,13 @@ public class IfoodService {
     private boolean tratarMudancaStatus(Restaurante r, String orderId, String code) {
         var opt = pedidoRepo.findByIfoodOrderId(orderId);
         if (opt.isEmpty()) {
-            log.warn("[iFood] {} pra orderId={} mas pedido não está local — buscando detalhe",
+            log.warn("[iFood-AUDIT] {} pra orderId={} mas pedido não está local — buscando detalhe",
                     code, orderId);
             // Pode ser que perdemos o PLC — cria agora
             return tratarPedidoNovo(r, orderId);
         }
         Pedido p = opt.get();
+        Pedido.Status statusAntigo = p.getStatus();
         switch (code) {
             case "CFM" -> p.setStatus(Pedido.Status.CONFIRMADO);
             case "RPR" -> p.setStatus(Pedido.Status.PRONTO);
@@ -232,20 +245,91 @@ public class IfoodService {
             case "CON" -> p.setStatus(Pedido.Status.ENTREGUE);
         }
         pedidoRepo.save(p);
-        log.info("[iFood] Status atualizado pra orderId={}: {}", orderId, code);
+        log.info("[iFood-AUDIT] event={} orderId={} merchantId={} statusAntigo={} statusNovo={} action=local_update_ok",
+                code, orderId, r.getIfoodMerchantId(), statusAntigo, p.getStatus());
         return true;
     }
 
+    /**
+     * CAN — pedido cancelado. Pode chegar em 3 situações:
+     *  1. Cliente cancelou pelo app iFood + nós aceitamos (CCR antes)
+     *  2. Restaurante cancelou via nosso painel (nós enviamos requestCancellation)
+     *  3. iFood cancelou direto (timeout, fraude, etc) — sem CCR antes
+     *
+     * IMPORTANTE: se o CAN chega pra um orderId que não temos local (cenário
+     * da homologação: pedido cancelado antes do nosso polling pegar o PLC),
+     * SEMPRE precisamos materializar localmente — buscando o detalhe via API
+     * e salvando como CANCELADO. Sem isso, o Firefly Audit do iFood detecta
+     * que demos ACK mas não houve reflexo local → homologação reprova com
+     * "logs de cancelamento não foram registrados corretamente".
+     */
     private boolean tratarCancelamento(Restaurante r, String orderId) {
         var opt = pedidoRepo.findByIfoodOrderId(orderId);
         if (opt.isEmpty()) {
-            log.info("[iFood] CAN sem pedido local pra orderId={} — ack mesmo assim", orderId);
+            log.warn("[iFood-AUDIT] CAN sem pedido local pra orderId={} — materializando como CANCELADO", orderId);
+            // Cria o pedido local marcado como CANCELADO direto. Reusa o
+            // tratarPedidoNovo pra puxar detalhe (cliente, endereço, total)
+            // e logo depois força CANCELADO + skipa o auto-confirm.
+            try {
+                boolean criado = criarPedidoLocalCancelado(r, orderId);
+                if (criado) return true;
+            } catch (Exception e) {
+                log.error("[iFood-AUDIT] FALHA ao materializar CAN pra {}: {}", orderId, e.getMessage());
+            }
+            // Mesmo se falhou ao buscar detalhe, dá ACK pra não ficar em loop
+            // (iFood vai re-enviar o evento se nós retornarmos false)
             return true;
         }
         Pedido p = opt.get();
+        Pedido.Status statusAntigo = p.getStatus();
         p.setStatus(Pedido.Status.CANCELADO);
         pedidoRepo.save(p);
-        log.info("[iFood] Pedido orderId={} cancelado", orderId);
+        log.info("[iFood-AUDIT] event=CAN orderId={} merchantId={} statusAntigo={} statusNovo=CANCELADO action=local_update_ok",
+                orderId, r.getIfoodMerchantId(), statusAntigo);
+        return true;
+    }
+
+    /**
+     * Cria o pedido local já marcado como CANCELADO. Usado quando o CAN
+     * chega pra um orderId que nunca passou pelo PLC (cenário comum em
+     * cancelamentos rápidos da homologação).
+     *
+     * Diferente do tratarPedidoNovo: NÃO chama auto-confirm (seria erro
+     * confirmar um pedido cancelado) e salva direto como CANCELADO.
+     */
+    private boolean criarPedidoLocalCancelado(Restaurante r, String orderId) {
+        Map<String, Object> det = client.getOrderDetalhe(orderId);
+        if (det == null || det.isEmpty()) {
+            log.warn("[iFood-AUDIT] getOrderDetalhe vazio pra orderId={} — não vamos materializar", orderId);
+            return false;
+        }
+        Pedido p = new Pedido();
+        p.setRestaurante(r);
+        p.setOrigem(Pedido.Origem.IFOOD);
+        p.setIfoodOrderId(orderId);
+        p.setIfoodDisplayId(strOf(det.get("displayId")));
+        p.setStatus(Pedido.Status.CANCELADO);
+        p.setTipo(extrairTipo(det));
+        p.setFormaPagamento(Pedido.FormaPagamento.PIX);
+        p.setModoPagamento(Pedido.ModoPagamento.ONLINE);
+        p.setPago(true);
+
+        Map<String, Object> customer = mapOf(det.get("customer"));
+        p.setNomeChamada(strOf(customer.get("name")));
+
+        Map<String, Object> delivery = mapOf(det.get("delivery"));
+        p.setEnderecoEntrega(montarEndereco(mapOf(delivery.get("deliveryAddress"))));
+
+        Map<String, Object> total = mapOf(det.get("total"));
+        p.setSubtotal(decOf(total.get("subTotal")));
+        p.setTaxaEntrega(decOf(total.get("deliveryFee")));
+        p.setTotal(decOf(total.get("orderAmount")));
+
+        // Itens vazios — pedido cancelado, frontend só precisa do header
+        p.setItens(new ArrayList<>());
+        pedidoRepo.save(p);
+        log.info("[iFood-AUDIT] event=CAN orderId={} displayId={} merchantId={} action=materialized_as_CANCELADO localId={}",
+                orderId, p.getIfoodDisplayId(), r.getIfoodMerchantId(), p.getId());
         return true;
     }
 

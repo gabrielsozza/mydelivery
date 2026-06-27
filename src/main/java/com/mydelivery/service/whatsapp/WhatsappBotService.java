@@ -190,43 +190,69 @@ public class WhatsappBotService {
 
         LocalDateTime agora = LocalDateTime.now();
 
-        // Modo silêncio: cliente pediu atendente humano → bot fica quieto.
-        // Janela deslizante: cada nova msg do cliente reseta o timer pros próximos N min.
-        // Assim, se cliente+atendente ficam X min em silêncio, o bot retoma sozinho.
-        if (st.silencioAte != null && agora.isBefore(st.silencioAte)) {
-            st.silencioAte = agora.plusMinutes(props.getBot().getSilencioMinutos());
-            log.info("[Bot:SILENCIO] modo humano ativo (renovado até {}) — chave={}", st.silencioAte, chave);
-            return;
+        // ─────────────────────────────────────────────────────────────────
+        // ANTI-DUPLICATA + THROTTLE atômico
+        // ─────────────────────────────────────────────────────────────────
+        // CRÍTICO: synchronized no `st` pra evitar race condition onde 2
+        // mensagens do mesmo número chegam em paralelo (cliente digita
+        // rápido OU Evolution re-entrega webhook) e ambas passam pelo
+        // throttle antes do ultimaResposta ser atualizado, disparando o
+        // mesmo fallback 2 vezes. Era a causa do "bot manda mesma mensagem
+        // 2x quando não entende" que gerava shadow ban.
+        //
+        // O texto da resposta É DECIDIDO dentro do bloco (rápido — só
+        // matching de regex). O ENVIO efetivo (que demora 2-4s com o
+        // typing delay) acontece FORA do synchronized — soltamos o lock
+        // assim que a "reserva" do timestamp é feita.
+        String resposta;
+        boolean ativouHumano = false;
+        int typingDelay;
+        synchronized (st) {
+            // Modo silêncio: cliente pediu atendente humano → bot fica quieto.
+            // Janela deslizante: cada nova msg do cliente reseta o timer.
+            if (st.silencioAte != null && agora.isBefore(st.silencioAte)) {
+                st.silencioAte = agora.plusMinutes(props.getBot().getSilencioMinutos());
+                log.info("[Bot:SILENCIO] modo humano ativo (renovado até {}) — chave={}", st.silencioAte, chave);
+                return;
+            }
+
+            // Throttle: evita flood se cliente mandar várias mensagens seguidas
+            // OU webhook duplicado da Evolution. Janela um pouco mais larga que
+            // o config padrão pra cobrir re-entregas do at-least-once.
+            int throttleSeg = Math.max(props.getBot().getThrottleSegundos(), 4);
+            if (st.ultimaResposta != null
+                    && Duration.between(st.ultimaResposta, agora).toSeconds() < throttleSeg) {
+                log.info("[Bot:DUP-GUARD] throttle ativo (resta {}s) — chave={} texto='{}'",
+                        throttleSeg - Duration.between(st.ultimaResposta, agora).toSeconds(),
+                        chave,
+                        texto.length() > 40 ? texto.substring(0, 40) + "..." : texto);
+                return;
+            }
+
+            resposta = decidirResposta(inst.getRestaurante(), texto, st, numeroLimpo);
+            if (resposta == null) {
+                log.info("[Bot:SILENCIO] decidirResposta() retornou null — sem regra casando — texto='{}', instância={}",
+                        texto.length() > 60 ? texto.substring(0, 60) + "..." : texto,
+                        inst.getInstanceName());
+                return;
+            }
+
+            // RESERVA o timestamp ANTES de soltar o lock — qualquer 2ª thread
+            // que chegar agora vai bater no throttle e ignorar.
+            st.ultimaResposta = agora;
+            st.saudou = true;
+            typingDelay = randomTypingDelay();
+
+            if (st.pediuAtendente) {
+                st.silencioAte = agora.plusMinutes(props.getBot().getSilencioMinutos());
+                st.pediuAtendente = false;
+                ativouHumano = true;
+            }
         }
 
-        // Throttle: evita flood se cliente mandar várias mensagens seguidas
-        if (st.ultimaResposta != null
-                && Duration.between(st.ultimaResposta, agora).toSeconds() < props.getBot().getThrottleSegundos()) {
-            log.info("[Bot:SILENCIO] throttle ativo (resta {}s) — chave={}",
-                    props.getBot().getThrottleSegundos() - Duration.between(st.ultimaResposta, agora).toSeconds(),
-                    chave);
-            return;
-        }
-
-        String resposta = decidirResposta(inst.getRestaurante(), texto, st, numeroLimpo);
-        if (resposta == null) {
-            log.info("[Bot:SILENCIO] decidirResposta() retornou null — sem regra casando — texto='{}', instância={}",
-                    texto.length() > 60 ? texto.substring(0, 60) + "..." : texto,
-                    inst.getInstanceName());
-            return;
-        }
-
-        // Delay aleatório por chamada: 2000-4000ms. Cada mensagem tem
-        // tempo de "digitando" diferente, simulando humano variando velocidade.
-        int typingDelay = randomTypingDelay();
+        // Envio EFETIVO fora do synchronized — não trava outros números.
         whatsappService.enviarMensagem(inst, numeroLimpo, resposta, typingDelay);
-        st.ultimaResposta = agora;
-        st.saudou = true;
-
-        // Se ativou modo humano, marca silêncio (timer é fallback caso ninguém devolva pelo painel)
-        if (st.pediuAtendente) {
-            st.silencioAte = agora.plusMinutes(props.getBot().getSilencioMinutos());
-            st.pediuAtendente = false;
+        if (ativouHumano) {
             log.info("[Bot] modo humano ativado pra {} (silêncio até {})", chave, st.silencioAte);
         }
     }

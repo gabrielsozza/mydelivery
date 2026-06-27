@@ -46,19 +46,4 @@ public class IfoodProperties {
 
     /** Timeout de chamadas HTTP em ms. */
     private int timeoutMs = 15_000;
-
-    /**
-     * Modo homologação: quando TRUE, auto-cancela TODO pedido iFood recebido
-     * após {@link #homologacaoAutoCancelDelaySec} segundos da confirmação.
-     * Necessário pro cenário "Pedido Cancelado" da homologação automatizada
-     * (TOQAN), que espera o restaurante enviar requestCancellation sem
-     * intervenção humana.
-     *
-     * IMPORTANTE: desligar (false) ANTES de pedidos reais de cliente real
-     * começarem a chegar — senão cancela tudo!
-     */
-    private boolean homologacaoMode = false;
-
-    /** Segundos após PLC pra disparar o auto-cancel em homologação. */
-    private int homologacaoAutoCancelDelaySec = 45;
 }

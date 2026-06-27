@@ -8,21 +8,16 @@ import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import com.mydelivery.config.IfoodProperties;
 import com.mydelivery.model.Pedido;
 import com.mydelivery.model.PedidoItem;
 import com.mydelivery.model.Restaurante;
 import com.mydelivery.repository.PedidoRepository;
 import com.mydelivery.repository.RestauranteRepository;
 
-import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
@@ -44,20 +39,6 @@ public class IfoodService {
     private final IfoodClient client;
     private final RestauranteRepository restauranteRepo;
     private final PedidoRepository pedidoRepo;
-    private final IfoodProperties props;
-
-    /**
-     * Executor pra disparar auto-cancel atrasado em modo homologação.
-     * Pool de 2 threads é suficiente pois homologação testa 1 pedido por vez.
-     */
-    private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(2, r -> {
-        Thread t = new Thread(r, "ifood-homolog-cancel");
-        t.setDaemon(true);
-        return t;
-    });
-
-    @PreDestroy
-    public void shutdown() { scheduler.shutdownNow(); }
 
     /**
      * Processa um evento do polling. Decide o que fazer com base no tipo.
@@ -253,43 +234,7 @@ public class IfoodService {
         } catch (Exception e) {
             log.error("[iFood] auto-confirm FALHOU pra orderId={}: {}", orderId, e.getMessage());
         }
-
-        // ── HOMOLOGAÇÃO: auto-cancel ─────────────────────────────────────
-        // Cenário "Pedido Cancelado" do TOQAN exige que o restaurante envie
-        // requestCancellation pro iFood DENTRO da janela de teste. Como o
-        // TOQAN é automatizado e não há intervenção humana, sem auto-cancel
-        // o teste expira e reprova com "logs de cancelamento não registrados".
-        //
-        // Política em modo homologação: agenda cancel pra 45s após PLC.
-        // Tempo suficiente pra o iFood considerar o confirm válido + auditar
-        // o ciclo completo PLC → CFM → REQ-CANCEL → CAN.
-        //
-        // Em produção real (homologacaoMode=false), nada acontece — restaurante
-        // cancela manual pelo painel quando quiser.
-        if (props.isHomologacaoMode()) {
-            agendarAutoCancelHomologacao(orderId, props.getHomologacaoAutoCancelDelaySec());
-        }
         return true;
-    }
-
-    /**
-     * Agenda envio de requestCancellation N segundos no futuro. Usado SÓ
-     * em modo homologação. Fail-safe: erro silencioso (não bloqueia nada).
-     */
-    private void agendarAutoCancelHomologacao(String orderId, int delaySec) {
-        log.info("[iFood-AUDIT] event=PLC orderId={} action=auto_cancel_scheduled delaySec={}",
-                orderId, delaySec);
-        scheduler.schedule(() -> {
-            try {
-                log.info("[iFood-AUDIT] event=AUTO_CANCEL orderId={} action=sending_requestCancellation reason='Homologacao iFood — auto cancel'",
-                        orderId);
-                client.cancelar(orderId, "501", "Homologacao iFood - cancelamento automatico para teste");
-                log.info("[iFood-AUDIT] event=AUTO_CANCEL orderId={} action=requestCancellation_sent_ok", orderId);
-            } catch (Exception e) {
-                log.error("[iFood-AUDIT] event=AUTO_CANCEL orderId={} action=requestCancellation_FAILED erro={}",
-                        orderId, e.getMessage());
-            }
-        }, delaySec, TimeUnit.SECONDS);
     }
 
     /**

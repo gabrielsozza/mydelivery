@@ -538,18 +538,11 @@ public class PedidoService {
                     ifoodClient.pronto(oid);
                     log.info("[iFood] readyToPickup enviado pra orderId={}", oid);
                 } else if (statusNovo == Pedido.Status.SAIU_ENTREGA) {
-                    // BLOQUEIO DE AGENDADO: iFood reprova homologação com
-                    // "pedido despachado antes da janela de entrega agendada"
-                    // se enviarmos dispatch antes do deliveryDateTime. Pra
-                    // pedido agendado, só dispatch ≥ 60min antes da janela.
-                    if (salvo.getAgendadoPara() != null
-                            && salvo.getAgendadoPara().isAfter(java.time.LocalDateTime.now().plusMinutes(60))) {
-                        log.warn("[iFood] dispatch BLOQUEADO pra orderId={} — agendado pra {} (faltam mais de 60min). " +
-                                "Restaurante tentou despachar cedo demais.",
-                                oid, salvo.getAgendadoPara());
-                        throw new RuntimeException("Pedido agendado pra " + salvo.getAgendadoPara() +
-                                " — só pode despachar até 60min antes do horário marcado.");
-                    }
+                    // Sem bloqueio por agendamento: o iFood considera
+                    // legítimo o restaurante despachar quando quiser, mesmo
+                    // pra pedidos com deliveryDateTime futuro. Bloquear aqui
+                    // reprovou homologação cenário "Despachado Imediato"
+                    // pq o TOQAN tratava como imediato pedidos com janela.
                     ifoodClient.despachado(oid);
                     log.info("[iFood] dispatch enviado pra orderId={}", oid);
                 } else if (statusNovo == Pedido.Status.ENTREGUE) {

@@ -53,6 +53,11 @@ public class IfoodClient {
         this.restClient = RestClient.builder()
                 .baseUrl(props.getBaseUrl())
                 .requestFactory(factory)
+                // User-Agent descritivo — antes ia o default "Java/21" do JDK HttpClient.
+                // Algumas integrações homologadas usam app identificado pra facilitar
+                // auditoria/troubleshooting no lado iFood. Não há doc oficial dizendo
+                // que é obrigatório, mas é boa prática e zero risco.
+                .defaultHeader("User-Agent", "MyDelivery-Integration/1.0 (+https://mydeliveryfood.com.br)")
                 .build();
     }
 

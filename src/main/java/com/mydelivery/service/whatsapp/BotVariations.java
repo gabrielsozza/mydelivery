@@ -68,7 +68,12 @@ public final class BotVariations {
 
     private static final List<String> EMOJI_CUMPRIMENTO = List.of("👋", "😊", "🙌", "🤝", "✋");
     private static final List<String> EMOJI_OK = List.of("✅", "👍", "✔️", "🆗", "😉");
-    private static final List<String> EMOJI_COMIDA = List.of("🍔", "🍕", "🍽️", "🥗", "🍴");
+    // EMOJI_COMIDA mantido GENÉRICO (talher/prato) — o sistema serve
+    // restaurantes de TODOS os tipos (pizzaria, hamburgueria, açaí, comida
+    // árabe, japonesa, brasileira, etc.). Emoji específico (🍕/🍔) era
+    // ofensivo pra lojas que não vendem aquele tipo de comida. User pediu
+    // explicitamente pra remover esses.
+    private static final List<String> EMOJI_COMIDA = List.of("🍽️", "🍴");
     private static final List<String> EMOJI_MOTO = List.of("🛵", "🏍️", "🛴", "🚴");
     private static final List<String> EMOJI_TEMPO = List.of("⏱️", "⏰", "🕐", "⌛");
     private static final List<String> EMOJI_DINHEIRO = List.of("💳", "💰", "💵", "💸");

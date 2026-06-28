@@ -99,6 +99,20 @@ public class PedidoService {
                 cliente.setNome(nome);
                 clienteRepository.save(cliente);
             }
+            // ── Atualiza ÚLTIMO endereço estruturado do cliente ──────────
+            // Só pra DELIVERY (mesa/retirada não tem endereço de entrega).
+            // Permite pré-preencher checkout em pedidos futuros e reduzir
+            // atrito ("já sei seu endereço, escolha o pagamento").
+            if ("delivery".equalsIgnoreCase(request.getModo())
+                    && request.getEndereco() != null && !request.getEndereco().isEmpty()) {
+                var end = request.getEndereco();
+                cliente.setEnderecoRua(end.getOrDefault("rua", null));
+                cliente.setEnderecoNumero(end.getOrDefault("numero", null));
+                cliente.setEnderecoComplemento(end.getOrDefault("complemento", null));
+                cliente.setEnderecoBairro(end.getOrDefault("bairro", null));
+                cliente.setEnderecoReferencia(end.getOrDefault("referencia", null));
+                clienteRepository.save(cliente);
+            }
         }
         // ── Taxa de entrega (só DELIVERY) ──
         // Mesa e retirada não cobram taxa. Delivery faz lookup por bairro.

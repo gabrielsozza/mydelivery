@@ -36,6 +36,52 @@ public class CardapioController {
     private final CardapioService cardapioService;
     private final RestauranteRepository restauranteRepository;
     private final com.mydelivery.repository.CategoriaRepository categoriaRepository;
+    private final com.mydelivery.repository.ClienteRepository clienteRepository;
+
+    /**
+     * Auto-preenchimento de checkout — pra cliente recorrente.
+     * Quando o cliente preenche nome+telefone no início do pedido,
+     * o frontend consulta esse endpoint pra ver se já temos endereço
+     * registrado de um pedido anterior. Se sim, pré-preenche os campos
+     * de rua/número/bairro/etc no checkout — cliente só escolhe pagamento.
+     *
+     * Devolve 204 (No Content) se o telefone não tem cadastro anterior
+     * naquele restaurante — frontend trata como "primeiro pedido".
+     *
+     * Match é por telefone normalizado (só dígitos) + restaurante (multi-tenant).
+     */
+    @GetMapping("/api/cardapio/{slug}/cliente")
+    public ResponseEntity<Map<String, Object>> buscarClienteRecorrente(
+            @PathVariable String slug,
+            @org.springframework.web.bind.annotation.RequestParam("telefone") String telefone) {
+        if (telefone == null || telefone.isBlank()) {
+            return ResponseEntity.noContent().build();
+        }
+        Restaurante r = restauranteRepository.findBySlug(slug).orElse(null);
+        if (r == null) return ResponseEntity.noContent().build();
+        String tel = com.mydelivery.util.TelefoneUtil.normalizar(telefone);
+        if (tel == null || tel.length() < 10) return ResponseEntity.noContent().build();
+        var opt = clienteRepository.findByTelefoneAndRestauranteId(tel, r.getId());
+        if (opt.isEmpty()) return ResponseEntity.noContent().build();
+        var c = opt.get();
+        // Só devolve se tiver pelo menos rua + bairro — sem isso, não dá
+        // pra pré-preencher de jeito útil (bairro é obrigatório pra calcular taxa).
+        if (c.getEnderecoRua() == null || c.getEnderecoRua().isBlank()
+                || c.getEnderecoBairro() == null || c.getEnderecoBairro().isBlank()) {
+            return ResponseEntity.noContent().build();
+        }
+        Map<String, Object> endereco = new java.util.LinkedHashMap<>();
+        endereco.put("rua", c.getEnderecoRua());
+        endereco.put("numero", c.getEnderecoNumero() != null ? c.getEnderecoNumero() : "");
+        endereco.put("complemento", c.getEnderecoComplemento() != null ? c.getEnderecoComplemento() : "");
+        endereco.put("bairro", c.getEnderecoBairro());
+        endereco.put("referencia", c.getEnderecoReferencia() != null ? c.getEnderecoReferencia() : "");
+        Map<String, Object> resp = new java.util.LinkedHashMap<>();
+        resp.put("nome", c.getNome());
+        resp.put("telefone", c.getTelefone());
+        resp.put("endereco", endereco);
+        return ResponseEntity.ok(resp);
+    }
 
     // ─── PÚBLICO ──────────────────────────────────────────────────────────
     @GetMapping("/api/cardapio/{slug}")

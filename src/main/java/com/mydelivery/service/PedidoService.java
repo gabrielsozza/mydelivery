@@ -482,9 +482,28 @@ public class PedidoService {
                 cargaPorEntregador.getOrDefault(escolhido.getId(), 0L));
     }
 
+    /**
+     * Versão sem filtro de data — MANTIDA pra retrocompat com callers
+     * antigos (admin, jobs internos, etc). PAINEL/POLLING deve usar a
+     * sobrecarga com `desde` pra evitar carregar histórico inteiro a
+     * cada request.
+     */
     @Transactional(readOnly = true)
     public List<PedidoResponse> listarPedidos(Long rid) {
         return pedidoRepository.findByRestauranteIdOrderByCriadoEmDesc(rid).stream().map(this::toResponse).toList();
+    }
+
+    /**
+     * Versão com filtro de data — usada pelo controller público que recebe
+     * `?desde=`. Reduz drasticamente payload e RAM em restaurantes com
+     * muitos pedidos históricos (problema reportado em pico de domingo).
+     */
+    @Transactional(readOnly = true)
+    public List<PedidoResponse> listarPedidos(Long rid, java.time.LocalDateTime desde) {
+        if (desde == null) return listarPedidos(rid);
+        java.time.LocalDateTime fim = java.time.LocalDateTime.now().plusDays(1);
+        return pedidoRepository.findByRestauranteIdAndPeriodo(rid, desde, fim)
+                .stream().map(this::toResponse).toList();
     }
 
     @Transactional(readOnly = true)

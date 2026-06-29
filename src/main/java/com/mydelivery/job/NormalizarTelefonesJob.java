@@ -24,8 +24,20 @@ import lombok.extern.slf4j.Slf4j;
  * Pode ser removido depois de rodar com sucesso uma vez em produção, mas
  * deixar não custa nada (overhead é mínimo nas próximas execuções).
  */
+/*
+ * DESATIVADO 2026-06-28 — auditoria de estabilidade.
+ *
+ * Esse job CommandLineRunner rodava no boot fazendo findAll() em 5 tabelas
+ * inteiras (Cliente, Pontos, Carrinho, Cupom, CupomUso) pra normalizar
+ * telefones legados. Já rodou com sucesso há meses — comentário original
+ * já dizia "Pode ser removido depois de rodar com sucesso uma vez em
+ * produção". Em base grande, no boot pega muita RAM + atrasa ~30s o
+ * startup, contribuindo pra OOM em deploy / restart.
+ *
+ * Pra reativar (caso algum bug se manifeste): descomentar o @Component.
+ */
 @Slf4j
-@Component
+// @Component  ← desativado intencionalmente em 2026-06-28
 public class NormalizarTelefonesJob implements CommandLineRunner {
 
     @Autowired private ClienteRepository clienteRepository;

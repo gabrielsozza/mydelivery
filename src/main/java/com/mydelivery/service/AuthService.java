@@ -28,6 +28,10 @@ public class AuthService {
     private final EmailService emailService;
     private final com.mydelivery.service.meta.MetaCapiService metaCapiService;
 
+    /** Webhook async pro myafiliados-api — só dispara se restaurante tem afiliadoCodigo. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.mydelivery.service.afiliados.AfiliadosWebhookService afiliadosWebhookService;
+
     @Value("${app.trial.dias}")
     private int trialDias;
 
@@ -63,8 +67,17 @@ public class AuthService {
                 .telefone(request.getTelefone()) // ← prefill do cadastro
                 .status(Restaurante.Status.TRIAL)
                 .trialExpiraEm(LocalDateTime.now().plusDays(trialDias))
+                // Programa de afiliados: salva o codigo que veio no link (se houver)
+                .afiliadoCodigo(request.getAfiliadoCodigo())
                 .build();
         restauranteRepository.save(restaurante);
+
+        // Webhook async pro myafiliados-api — só dispara se tem código
+        try {
+            if (afiliadosWebhookService != null) {
+                afiliadosWebhookService.restauranteCriado(restaurante, request.getLinkOrigem());
+            }
+        } catch (Exception ignored) { /* fail-safe */ }
 
         // Cria a assinatura em trial.
         // trialDias = 32 (30 trial + 2 extras de configuração — definido em application.properties).

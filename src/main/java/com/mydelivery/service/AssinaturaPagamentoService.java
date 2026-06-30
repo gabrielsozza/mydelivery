@@ -256,7 +256,7 @@ public class AssinaturaPagamentoService {
         item.put("description", "Mensalidade do plano " + plano.getNomeExibicao() + " da plataforma MyDelivery");
         item.put("category_id", "services");
         item.put("quantity", 1);
-        item.put("unit_price", planoCatalogoService.valorAtual(plano));
+        item.put("unit_price", planoCatalogoService.valorPara(r, plano));
         Map<String, Object> payerInfo = new LinkedHashMap<>();
         payerInfo.put("first_name", safeFirst(r.getNome()));
         payerInfo.put("last_name", "MyDelivery");
@@ -319,7 +319,7 @@ public class AssinaturaPagamentoService {
         String deviceId = (String) formData.get("deviceId");
 
         MpPaymentRequest body = MpPaymentRequest.builder()
-                .transactionAmount(planoCatalogoService.valorAtual(plano))
+                .transactionAmount(planoCatalogoService.valorPara(r, plano))
                 .token(token)
                 .installments(installments)
                 .paymentMethodId(paymentMethodId)
@@ -342,7 +342,7 @@ public class AssinaturaPagamentoService {
         out.put("status", resp.getStatus());
         out.put("statusDetail", resp.getStatusDetail());
         out.put("aprovado", "approved".equals(resp.getStatus()));
-        out.put("valor", planoCatalogoService.valorAtual(plano));
+        out.put("valor", planoCatalogoService.valorPara(r, plano));
         log.info("[AssPag][CARTAO] MP respondeu — paymentId={}, status={}, detail={}",
                 resp.getId(), resp.getStatus(), resp.getStatusDetail());
         return out;
@@ -364,7 +364,7 @@ public class AssinaturaPagamentoService {
                 .build();
 
         MpPaymentRequest body = MpPaymentRequest.builder()
-                .transactionAmount(planoCatalogoService.valorAtual(plano))
+                .transactionAmount(planoCatalogoService.valorPara(r, plano))
                 .paymentMethodId("pix")
                 .description("MyDelivery — Assinatura " + plano.getNomeExibicao() + " (Restaurante #" + r.getId() + ")")
                 .externalReference("assinatura-" + r.getId() + "-" + plano.name() + "-" + System.currentTimeMillis())
@@ -374,14 +374,14 @@ public class AssinaturaPagamentoService {
                 .build();
 
         log.info("[AssPag][PIX] criando — restaurante={}, plano={}, valor={}, idem={}",
-                r.getId(), plano, planoCatalogoService.valorAtual(plano), idempotencyKey);
+                r.getId(), plano, planoCatalogoService.valorPara(r, plano), idempotencyKey);
         MpPaymentResponse resp = mpClient.criarPagamento(adminAccessToken, idempotencyKey, body);
 
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("tipo", "PIX");
         out.put("paymentId", resp.getId());
         out.put("status", resp.getStatus());
-        out.put("valor", planoCatalogoService.valorAtual(plano));
+        out.put("valor", planoCatalogoService.valorPara(r, plano));
         out.put("expiraEm", expiraEm.toString());
         if (resp.getPointOfInteraction() != null
                 && resp.getPointOfInteraction().getTransactionData() != null) {
@@ -411,7 +411,7 @@ public class AssinaturaPagamentoService {
                 "description", "Plano " + plano.getNomeExibicao() + " (" + plano.getDuracaoMeses() + " mês(es))",
                 "quantity", 1,
                 "currency_id", "BRL",
-                "unit_price", planoCatalogoService.valorAtual(plano)
+                "unit_price", planoCatalogoService.valorPara(r, plano)
         )));
         body.put("payer", Map.of("email", adminPayerEmail));
         body.put("payment_methods", Map.of(
@@ -465,7 +465,7 @@ public class AssinaturaPagamentoService {
                 if (metaCapiService != null && r.getUsuario() != null) {
                     var u = r.getUsuario();
                     metaCapiService.initiateCheckout(u.getEmail(), u.getTelefone(), u.getNome(),
-                            planoCatalogoService.valorAtual(plano) == null ? null : planoCatalogoService.valorAtual(plano).doubleValue());
+                            planoCatalogoService.valorPara(r, plano) == null ? null : planoCatalogoService.valorPara(r, plano).doubleValue());
                 }
             } catch (Exception ignored) { /* fail-safe */ }
 
@@ -521,7 +521,7 @@ public class AssinaturaPagamentoService {
                 .build();
 
         MpPaymentRequest body = MpPaymentRequest.builder()
-                .transactionAmount(planoCatalogoService.valorAtual(plano))
+                .transactionAmount(planoCatalogoService.valorPara(r, plano))
                 .token(token)
                 .installments(1)
                 .description("MyDelivery — Renovação " + plano.getNomeExibicao() + " (Restaurante #" + r.getId() + ")")
@@ -539,7 +539,7 @@ public class AssinaturaPagamentoService {
         out.put("status", resp.getStatus());
         out.put("statusDetail", resp.getStatusDetail());
         out.put("aprovado", "approved".equals(resp.getStatus()));
-        out.put("valor", planoCatalogoService.valorAtual(plano));
+        out.put("valor", planoCatalogoService.valorPara(r, plano));
         return out;
     }
 

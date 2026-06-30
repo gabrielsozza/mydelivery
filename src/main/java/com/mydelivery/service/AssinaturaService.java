@@ -52,6 +52,10 @@ public class AssinaturaService {
     private final com.mydelivery.repository.PagamentoMensalidadeRepository pagamentoMensalidadeRepository;
     private final EmailService emailService;
 
+    /** Programa de afiliados — disparado quando restaurante ATIVA ou CANCELA. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.mydelivery.service.afiliados.AfiliadosWebhookService afiliadosWebhookService;
+
     @Value("${app.assinatura.aviso-trial-dias:5}")
     private int avisoTrialDias;
 
@@ -74,7 +78,7 @@ public class AssinaturaService {
         LocalDateTime agora = LocalDateTime.now();
 
         Map<String, Object> out = new LinkedHashMap<>();
-        out.put("planosDisponiveis", listarPlanos());
+        out.put("planosDisponiveis", listarPlanos(r));
 
         if (a == null) {
             // Restaurante sem assinatura (caso raro — pode ser bug de cadastro antigo)
@@ -244,6 +248,13 @@ public class AssinaturaService {
         restauranteRepository.save(r);
 
         log.info("✅ Plano {} ativado para restaurante #{} até {}", plano, r.getId(), novoFim);
+
+        // Webhook async pro myafiliados-api — só dispara se restaurante veio via link
+        try {
+            if (afiliadosWebhookService != null) {
+                afiliadosWebhookService.restauranteAssinou(r, plano, planoCatalogoService.valorAtual(plano));
+            }
+        } catch (Exception ignored) { /* fail-safe */ }
 
         // Email de pagamento aprovado (assíncrono, não falha se SMTP cair)
         try {
@@ -585,6 +596,11 @@ public class AssinaturaService {
         log.info("Plano cancelado para restaurante #{}. Acesso mantido até {}",
                 r.getId(), a.getValidaAte());
 
+        // Webhook async pro myafiliados-api
+        try {
+            if (afiliadosWebhookService != null) afiliadosWebhookService.restauranteCancelou(r);
+        } catch (Exception ignored) { /* fail-safe */ }
+
         try {
             String emailDono = r.getUsuario() != null ? r.getUsuario().getEmail() : null;
             emailService.canceladoPeloCliente(emailDono, r.getNome(), a.getValidaAte());
@@ -629,11 +645,11 @@ public class AssinaturaService {
      * estiver vazia por algum motivo extremo (seed não rodou), cai pro enum
      * histórico — garante que nunca devolve lista vazia em produção.
      */
-    private List<Map<String, Object>> listarPlanos() {
+    private List<Map<String, Object>> listarPlanos(Restaurante r) {
         List<PlanoCatalogo> ativos = planoCatalogoService.listarAtivos();
         if (!ativos.isEmpty()) {
             List<Map<String, Object>> lista = new ArrayList<>();
-            for (PlanoCatalogo p : ativos) lista.add(planoCatalogoService.toMapRestaurante(p));
+            for (PlanoCatalogo p : ativos) lista.add(planoCatalogoService.toMapRestaurante(p, r));
             return lista;
         }
         // Fallback de segurança — só roda se tabela ficou vazia (caso patológico)

@@ -273,6 +273,30 @@ public class Restaurante {
     private LocalDateTime bloqueadoEm;
     private String motivoBloqueio;
 
+    // ── Programa de Afiliados ──
+    /**
+     * Código do afiliado que trouxe esse restaurante (8 chars).
+     * Vazio se o restaurante chegou orgânico. Imutável após cadastro.
+     * Usado pra disparar webhook pra myafiliados-api a cada mudança de status.
+     */
+    @Column(name = "afiliado_codigo", length = 16)
+    private String afiliadoCodigo;
+
+    // ── Precificação personalizada ──
+    /**
+     * Quando preenchido, sobrescreve o valor do plano lido da tabela `planos`.
+     * Permite cobrar valores diferentes pra restaurantes diferentes (ex: novos
+     * pagam R$75, antigos seguem R$50). Null = usa valor padrão do PlanoCatalogo.
+     */
+    @Column(name = "valor_mensal_personalizado", precision = 10, scale = 2)
+    private java.math.BigDecimal valorMensalPersonalizado;
+
+    @Column(name = "valor_semestral_personalizado", precision = 10, scale = 2)
+    private java.math.BigDecimal valorSemestralPersonalizado;
+
+    @Column(name = "valor_anual_personalizado", precision = 10, scale = 2)
+    private java.math.BigDecimal valorAnualPersonalizado;
+
     @CreationTimestamp
     private LocalDateTime criadoEm;
 

@@ -264,6 +264,43 @@ public class AssinaturaController {
     }
 
     /**
+     * USO INTERNO ADMIN — define valores personalizados de plano por restaurante.
+     * Body: { restauranteId, valorMensal, valorSemestral, valorAnual }
+     * Valores null mantêm o default da tabela `planos` (R$75 novo padrão).
+     */
+    @PostMapping("/precificar-restaurante-admin")
+    public ResponseEntity<Map<String, Object>> precificarRestauranteAdmin(
+            @org.springframework.web.bind.annotation.RequestHeader(value = "X-Admin-Secret", required = false) String secret,
+            @RequestBody Map<String, Object> body,
+            @org.springframework.beans.factory.annotation.Value("${mydelivery.admin.internal-secret:}") String esperado) {
+        if (esperado == null || esperado.isBlank() || !esperado.equals(secret)) {
+            return ResponseEntity.status(org.springframework.http.HttpStatus.FORBIDDEN)
+                    .body(Map.of("erro", "Secret inválido"));
+        }
+        Long restauranteId = Long.valueOf(String.valueOf(body.get("restauranteId")));
+        Restaurante r = restauranteRepository.findById(restauranteId)
+                .orElseThrow(() -> new RuntimeException("Restaurante não encontrado"));
+        r.setValorMensalPersonalizado(decOf(body.get("valorMensal")));
+        r.setValorSemestralPersonalizado(decOf(body.get("valorSemestral")));
+        r.setValorAnualPersonalizado(decOf(body.get("valorAnual")));
+        restauranteRepository.save(r);
+        return ResponseEntity.ok(Map.of(
+                "ok", true,
+                "restauranteId", r.getId(),
+                "valorMensal", r.getValorMensalPersonalizado() == null ? "default" : r.getValorMensalPersonalizado().toString(),
+                "valorSemestral", r.getValorSemestralPersonalizado() == null ? "default" : r.getValorSemestralPersonalizado().toString(),
+                "valorAnual", r.getValorAnualPersonalizado() == null ? "default" : r.getValorAnualPersonalizado().toString()
+        ));
+    }
+
+    private java.math.BigDecimal decOf(Object o) {
+        if (o == null) return null;
+        String s = String.valueOf(o).trim();
+        if (s.isEmpty() || "null".equals(s)) return null;
+        try { return new java.math.BigDecimal(s); } catch (Exception e) { return null; }
+    }
+
+    /**
      * USO INTERNO ADMIN/TESTE — expira o trial de um restaurante imediatamente.
      * Não cobra, não bloqueia — apenas adianta trial_expira_em pra ontem,
      * forçando o restaurante a cair no fluxo de cobrança imediata na próxima

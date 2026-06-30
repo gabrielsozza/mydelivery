@@ -24,4 +24,10 @@ public class CadastroRequest {
 
     @NotBlank(message = "Nome do restaurante é obrigatório")
     private String nomeRestaurante;
+
+    /** Código do afiliado se chegou via link (?afiliado=ab12cd34). Opcional. */
+    private String afiliadoCodigo;
+
+    /** Plano clicado no link (MENSAL/SEMESTRAL/ANUAL). Opcional. */
+    private String linkOrigem;
 }

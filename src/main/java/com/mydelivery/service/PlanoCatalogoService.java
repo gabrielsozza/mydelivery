@@ -57,6 +57,27 @@ public class PlanoCatalogoService {
                 .orElse(plano.getValor());
     }
 
+    /**
+     * Variante por restaurante — retorna valor personalizado se ele tem
+     * (R$50 pra antigos, R$75 pra novos), senão cai no valor padrão da
+     * tabela `planos`. Usar em pontos onde o valor cobrado depende de
+     * QUEM está pagando, não só do plano em si.
+     */
+    public BigDecimal valorPara(com.mydelivery.model.Restaurante r, com.mydelivery.model.Plano plano) {
+        if (plano == null) return BigDecimal.ZERO;
+        if (r != null) {
+            BigDecimal personalizado = switch (plano) {
+                case MENSAL -> r.getValorMensalPersonalizado();
+                case SEMESTRAL -> r.getValorSemestralPersonalizado();
+                case ANUAL -> r.getValorAnualPersonalizado();
+            };
+            if (personalizado != null && personalizado.compareTo(BigDecimal.ZERO) > 0) {
+                return personalizado;
+            }
+        }
+        return valorAtual(plano);
+    }
+
     /** Lista completa (inclusive desativados). Usado pelo admin. */
     public List<PlanoCatalogo> listarTodos() {
         return repo.findAllByOrderByOrdemAscIdAsc();
@@ -68,16 +89,44 @@ public class PlanoCatalogoService {
      * Mantém compatibilidade — frontend planos.html não precisa mudar.
      */
     public Map<String, Object> toMapRestaurante(PlanoCatalogo p) {
+        return toMapRestaurante(p, null);
+    }
+
+    /**
+     * Variante que aplica valor personalizado por restaurante quando houver
+     * (R$ 50 antigos, R$ 75 novos, etc). Usado pelo painel planos.html pra
+     * exibir o que o restaurante específico vai pagar.
+     */
+    public Map<String, Object> toMapRestaurante(PlanoCatalogo p, com.mydelivery.model.Restaurante r) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("id", p.getCodigo());
         m.put("nome", p.getNome());
         m.put("descricao", p.getDescricao());
-        m.put("valor", p.getValor());
+        // Valor efetivo: personalizado se existir pro restaurante, senão o do catálogo
+        java.math.BigDecimal valorEfetivo = p.getValor();
+        if (r != null) {
+            try {
+                com.mydelivery.model.Plano enumPlano = com.mydelivery.model.Plano.valueOf(p.getCodigo());
+                java.math.BigDecimal personalizado = switch (enumPlano) {
+                    case MENSAL -> r.getValorMensalPersonalizado();
+                    case SEMESTRAL -> r.getValorSemestralPersonalizado();
+                    case ANUAL -> r.getValorAnualPersonalizado();
+                };
+                if (personalizado != null && personalizado.compareTo(java.math.BigDecimal.ZERO) > 0) {
+                    valorEfetivo = personalizado;
+                }
+            } catch (IllegalArgumentException ignored) { /* código fora do enum padrão */ }
+        }
+        m.put("valor", valorEfetivo);
         m.put("duracaoMeses", p.getDuracaoMeses());
-        m.put("valorPorMes", calcularValorPorMes(p));
-        BigDecimal economia = calcularEconomia(p);
+        // valorPorMes e economia recalculados sobre valorEfetivo (personalizado se houver)
+        BigDecimal valorPorMes = (p.getDuracaoMeses() != null && p.getDuracaoMeses() > 0)
+                ? valorEfetivo.divide(new BigDecimal(p.getDuracaoMeses()), 2, RoundingMode.HALF_UP)
+                : BigDecimal.ZERO;
+        m.put("valorPorMes", valorPorMes);
+        BigDecimal economia = calcularEconomia(p, valorEfetivo, r);
         m.put("economiaTotal", economia);
-        m.put("economiaPercentual", calcularEconomiaPct(p, economia));
+        m.put("economiaPercentual", calcularEconomiaPct(p, economia, r));
         m.put("recomendado", Boolean.TRUE.equals(p.getRecomendado()));
         m.put("aceitaCartao", Boolean.TRUE.equals(p.getAceitaCartao()));
         m.put("aceitaPix", Boolean.TRUE.equals(p.getAceitaPix()));
@@ -96,20 +145,30 @@ public class PlanoCatalogoService {
     }
 
     /** Economia vs plano "MENSAL" hipotético (preço × meses). 0 se não fizer sentido. */
-    private BigDecimal calcularEconomia(PlanoCatalogo p) {
+    private BigDecimal calcularEconomia(PlanoCatalogo p, BigDecimal valorEfetivo, com.mydelivery.model.Restaurante r) {
         if (p.getDuracaoMeses() == null || p.getDuracaoMeses() <= 1) return BigDecimal.ZERO;
         PlanoCatalogo mensal = repo.findByCodigoIgnoreCase("MENSAL").orElse(null);
         if (mensal == null) return BigDecimal.ZERO;
-        BigDecimal seFosseMensal = mensal.getValor().multiply(new BigDecimal(p.getDuracaoMeses()));
-        BigDecimal eco = seFosseMensal.subtract(p.getValor());
+        BigDecimal mensalRef = mensal.getValor();
+        if (r != null && r.getValorMensalPersonalizado() != null
+                && r.getValorMensalPersonalizado().compareTo(BigDecimal.ZERO) > 0) {
+            mensalRef = r.getValorMensalPersonalizado();
+        }
+        BigDecimal seFosseMensal = mensalRef.multiply(new BigDecimal(p.getDuracaoMeses()));
+        BigDecimal eco = seFosseMensal.subtract(valorEfetivo);
         return eco.compareTo(BigDecimal.ZERO) > 0 ? eco : BigDecimal.ZERO;
     }
 
-    private int calcularEconomiaPct(PlanoCatalogo p, BigDecimal economia) {
+    private int calcularEconomiaPct(PlanoCatalogo p, BigDecimal economia, com.mydelivery.model.Restaurante r) {
         if (economia.signum() <= 0) return 0;
         PlanoCatalogo mensal = repo.findByCodigoIgnoreCase("MENSAL").orElse(null);
         if (mensal == null) return 0;
-        BigDecimal ref = mensal.getValor().multiply(new BigDecimal(p.getDuracaoMeses()));
+        BigDecimal mensalRef = mensal.getValor();
+        if (r != null && r.getValorMensalPersonalizado() != null
+                && r.getValorMensalPersonalizado().compareTo(BigDecimal.ZERO) > 0) {
+            mensalRef = r.getValorMensalPersonalizado();
+        }
+        BigDecimal ref = mensalRef.multiply(new BigDecimal(p.getDuracaoMeses()));
         if (ref.signum() <= 0) return 0;
         return economia.multiply(new BigDecimal("100"))
                 .divide(ref, 0, RoundingMode.HALF_UP).intValue();

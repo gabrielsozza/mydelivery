@@ -21,7 +21,11 @@ public class EvolutionProperties {
     private String baseUrl = "http://localhost:8081";
     private String apiKey;
     private String webhookBaseUrl = "http://localhost:8080";
-    private int timeoutMs = 15000;
+    // Timeout curto pra I/O externo — se Evolution não respondeu em 4s, é anormal.
+    // Antes 15s: thread do Tomcat ficava presa esperando, gerando cascata sob rush.
+    // Falha rápido → libera thread pra requests reais. Override via env
+    // MYDELIVERY_EVOLUTION_TIMEOUT_MS se precisar aumentar.
+    private int timeoutMs = 4000;
 
     private Bot bot = new Bot();
 

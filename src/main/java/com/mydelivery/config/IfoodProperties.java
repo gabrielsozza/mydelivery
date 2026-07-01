@@ -44,6 +44,11 @@ public class IfoodProperties {
     /** Intervalo de polling em segundos (mínimo recomendado pelo iFood: 30s). */
     private int pollingIntervaloSegundos = 30;
 
-    /** Timeout de chamadas HTTP em ms. */
-    private int timeoutMs = 15_000;
+    /**
+     * Timeout de chamadas HTTP em ms.
+     * 4s — se iFood não respondeu nesse prazo, é anormal; segurar thread do
+     * Tomcat esperando 15s (padrão anterior) causa cascata sob rush. Falha
+     * rápida, thread liberada. Override via env MYDELIVERY_IFOOD_TIMEOUT_MS.
+     */
+    private int timeoutMs = 4_000;
 }

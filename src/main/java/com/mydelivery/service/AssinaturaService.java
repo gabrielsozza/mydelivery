@@ -393,8 +393,8 @@ public class AssinaturaService {
         if (!"PIX".equals(m) && !"CARTAO".equals(m)) {
             throw new RuntimeException("Método inválido. Use PIX ou CARTAO");
         }
-        if ("PIX".equals(m) && a.getPlano() != null && a.getPlano().getDuracaoMeses() <= 1) {
-            throw new RuntimeException("PIX disponível apenas para plano Semestral ou Anual");
+        if ("PIX".equals(m) && a.getPlano() != null && !planoCatalogoService.aceitaPix(a.getPlano())) {
+            throw new RuntimeException("Esse plano não aceita PIX");
         }
         a.setMetodoPagamento(m);
         log.info("Método pagamento trocado pra {} no restaurante #{}", m, r.getId());

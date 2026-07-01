@@ -17,6 +17,7 @@ import com.mydelivery.model.Restaurante;
 import com.mydelivery.repository.RestauranteRepository;
 import com.mydelivery.service.AssinaturaPagamentoService;
 import com.mydelivery.service.AssinaturaService;
+import com.mydelivery.service.PlanoCatalogoService;
 
 import lombok.RequiredArgsConstructor;
 
@@ -38,6 +39,7 @@ public class AssinaturaController {
 
     private final AssinaturaService assinaturaService;
     private final AssinaturaPagamentoService pagamentoService;
+    private final PlanoCatalogoService planoCatalogoService;
     private final RestauranteRepository restauranteRepository;
     private final com.mydelivery.repository.AssinaturaRepository assinaturaRepository;
     private final com.mydelivery.security.JwtUtil jwtUtil;
@@ -74,11 +76,12 @@ public class AssinaturaController {
         metodo = metodo == null ? "CARTAO" : metodo.toUpperCase();
         String refGateway = body.getOrDefault("referenciaGateway", null);
 
-        // Regra de negócio: PIX só pra planos > 1 mês.
-        // Mensal só aceita cartão (cobrança recorrente).
-        if ("PIX".equals(metodo) && plano.getDuracaoMeses() <= 1) {
-            throw new RuntimeException("PIX disponível apenas para planos Semestral ou Anual. "
-                    + "O plano Mensal aceita apenas cartão de crédito.");
+        // PIX é liberado por plano via flag aceitaPix do catálogo
+        // (admin controla pelo painel admin-mydelivery). Plano que não
+        // aceita PIX rejeita aqui — não depende mais de duração.
+        if ("PIX".equals(metodo) && !planoCatalogoService.aceitaPix(plano)) {
+            throw new RuntimeException("Esse plano não aceita pagamento via PIX. "
+                    + "Escolha cartão de crédito ou outro plano.");
         }
 
         Assinatura a = assinaturaService.ativarPlano(r, plano, metodo, refGateway);
@@ -108,9 +111,9 @@ public class AssinaturaController {
         catch (Exception e) { throw new RuntimeException("Plano inválido"); }
 
         String metodo = body.getOrDefault("metodo", "CARTAO").toUpperCase();
-        // Regra: PIX só pra planos > 1 mês
-        if ("PIX".equals(metodo) && plano.getDuracaoMeses() <= 1) {
-            throw new RuntimeException("PIX disponível apenas para planos Semestral ou Anual.");
+        // PIX é liberado por plano via flag aceitaPix do catálogo (admin controla)
+        if ("PIX".equals(metodo) && !planoCatalogoService.aceitaPix(plano)) {
+            throw new RuntimeException("Esse plano não aceita pagamento via PIX.");
         }
 
         if ("PIX".equals(metodo)) {

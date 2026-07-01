@@ -63,6 +63,21 @@ public class PlanoCatalogoService {
      * tabela `planos`. Usar em pontos onde o valor cobrado depende de
      * QUEM está pagando, não só do plano em si.
      */
+    /**
+     * Lê do catálogo se o plano aceita PIX. Usado pelos endpoints de
+     * pagamento pra liberar/bloquear PIX por plano — admin controla via
+     * painel admin-mydelivery (CRUD de planos).
+     *
+     * Fallback: se não houver registro no banco, usa o flag do enum
+     * legado pra não quebrar em ambiente sem seed.
+     */
+    public boolean aceitaPix(com.mydelivery.model.Plano plano) {
+        if (plano == null) return false;
+        return repo.findByCodigoIgnoreCase(plano.name())
+                .map(p -> Boolean.TRUE.equals(p.getAceitaPix()))
+                .orElseGet(plano::isAceitaPix);
+    }
+
     public BigDecimal valorPara(com.mydelivery.model.Restaurante r, com.mydelivery.model.Plano plano) {
         if (plano == null) return BigDecimal.ZERO;
         if (r != null) {

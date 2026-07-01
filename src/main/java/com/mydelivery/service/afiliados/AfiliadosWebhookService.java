@@ -28,21 +28,35 @@ public class AfiliadosWebhookService {
 
     private final RestClient client;
     private final String secret;
+    private final String baseUrl;
     private final boolean ativo;
 
     public AfiliadosWebhookService(
-            @Value("${mydelivery.afiliados.base-url:}") String baseUrl,
+            @Value("${mydelivery.afiliados.base-url:}") String baseUrlEnv,
             @Value("${mydelivery.afiliados.webhook-secret:}") String secret) {
-        this.secret = secret;
-        this.ativo = baseUrl != null && !baseUrl.isBlank()
-                && secret != null && !secret.isBlank();
+        this.secret = secret == null ? "" : secret.trim();
+        // Normaliza baseUrl: aceita "https://foo" ou "foo.railway.app" (sem esquema),
+        // remove barra final. Se estiver vazio/inválido, seta ativo=false — jamais quebra o startup.
+        String b = baseUrlEnv == null ? "" : baseUrlEnv.trim();
+        if (!b.isEmpty() && !b.startsWith("http://") && !b.startsWith("https://")) {
+            b = "https://" + b;
+        }
+        while (b.endsWith("/")) b = b.substring(0, b.length() - 1);
+        this.baseUrl = b;
+        this.ativo = !this.baseUrl.isEmpty() && !this.secret.isEmpty();
+
+        // Client SEM baseUrl no builder — a URL absoluta é passada em cada .uri().
+        // Isso evita InvalidUrlException no startup se a env var vier malformada.
         var factory = new org.springframework.http.client.SimpleClientHttpRequestFactory();
         factory.setConnectTimeout((int) Duration.ofSeconds(5).toMillis());
         factory.setReadTimeout((int) Duration.ofSeconds(8).toMillis());
-        this.client = RestClient.builder()
-                .baseUrl(ativo ? baseUrl : "http://localhost:65535")
-                .requestFactory(factory)
-                .build();
+        this.client = RestClient.builder().requestFactory(factory).build();
+
+        if (this.ativo) {
+            log.info("[Afiliados] webhook ATIVO → baseUrl={}", this.baseUrl);
+        } else {
+            log.info("[Afiliados] webhook INATIVO (base-url ou secret vazios) — chamadas serão ignoradas");
+        }
     }
 
     @Async
@@ -94,7 +108,7 @@ public class AfiliadosWebhookService {
     private void enviar(Map<String, Object> body) {
         try {
             client.post()
-                    .uri("/api/webhooks/mydelivery/evento")
+                    .uri(baseUrl + "/api/webhooks/mydelivery/evento")
                     .header("X-Webhook-Secret", secret)
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(body)

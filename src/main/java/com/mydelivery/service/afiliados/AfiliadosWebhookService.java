@@ -105,6 +105,30 @@ public class AfiliadosWebhookService {
         return m;
     }
 
+    /**
+     * Busca dados básicos do afiliado no myafiliados-api. SÍNCRONO (com timeout
+     * curto) — usado no cadastro do restaurante pra salvar snapshot imutável.
+     *
+     * Retorna Map com { id, nome, email, comissaoPercentual, status } ou null
+     * se: (a) integração desativada, (b) afiliado não existe, (c) myafiliados
+     * offline. Nesse último caso o webhook async continua tentando depois —
+     * mas o snapshot fica sem dados até o admin resolver manualmente.
+     */
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> buscarSnapshot(String codigoAfiliado) {
+        if (!ativo || codigoAfiliado == null || codigoAfiliado.isBlank()) return null;
+        try {
+            return client.get()
+                    .uri(baseUrl + "/api/admin-internal/afiliado-por-codigo/" + codigoAfiliado.trim())
+                    .header("X-Admin-Secret", secret)
+                    .retrieve()
+                    .body(Map.class);
+        } catch (Exception e) {
+            log.warn("[Afiliados] buscarSnapshot({}) falhou: {}", codigoAfiliado, e.getMessage());
+            return null;
+        }
+    }
+
     private void enviar(Map<String, Object> body) {
         try {
             client.post()

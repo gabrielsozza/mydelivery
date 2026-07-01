@@ -12,8 +12,12 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.Map;
 import java.util.UUID;
 
+import lombok.extern.slf4j.Slf4j;
+
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class AuthService {
@@ -70,6 +74,35 @@ public class AuthService {
                 // Programa de afiliados: salva o codigo que veio no link (se houver)
                 .afiliadoCodigo(request.getAfiliadoCodigo())
                 .build();
+
+        // ── Snapshot IMUTÁVEL do afiliado ─────────────────────────────
+        // Se veio código, tenta buscar dados do afiliado NO ATO do cadastro e
+        // salvar cópia local. Isso garante:
+        //   (1) admin consegue ver "quem indicou" mesmo se myafiliados-api cair
+        //   (2) histórico preservado se afiliado for deletado depois
+        // Se a chamada falhar (offline/timeout), o snapshot fica vazio e o
+        // webhook async continua tentando registrar o vínculo do outro lado.
+        String codigoAfil = request.getAfiliadoCodigo();
+        if (afiliadosWebhookService != null && codigoAfil != null && !codigoAfil.isBlank()) {
+            try {
+                Map<String, Object> snap = afiliadosWebhookService.buscarSnapshot(codigoAfil);
+                if (snap != null && snap.get("id") != null) {
+                    restaurante.setAfiliadoIdSnap(Long.valueOf(String.valueOf(snap.get("id"))));
+                    restaurante.setAfiliadoNomeSnap((String) snap.get("nome"));
+                    restaurante.setAfiliadoEmailSnap((String) snap.get("email"));
+                    Object comOb = snap.get("comissaoPercentual");
+                    if (comOb != null) {
+                        try {
+                            restaurante.setAfiliadoComissaoSnap(new java.math.BigDecimal(String.valueOf(comOb)));
+                        } catch (Exception ignored) { /* comissão inválida — ignora */ }
+                    }
+                    restaurante.setAfiliadoVinculadoEm(LocalDateTime.now());
+                }
+            } catch (Exception e) {
+                log.warn("[Auth] snapshot do afiliado {} falhou: {}", codigoAfil, e.getMessage());
+            }
+        }
+
         restauranteRepository.save(restaurante);
 
         // Webhook async pro myafiliados-api — só dispara se tem código

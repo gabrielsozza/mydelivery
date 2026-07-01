@@ -282,6 +282,37 @@ public class Restaurante {
     @Column(name = "afiliado_codigo", length = 16)
     private String afiliadoCodigo;
 
+    /**
+     * SNAPSHOT do afiliado no momento do cadastro. Imutável.
+     *
+     * Guardamos cópia dos dados aqui pra:
+     *   (a) o painel admin conseguir mostrar "quem indicou" mesmo se o
+     *       myafiliados-api estiver offline ou fora do ar;
+     *   (b) preservar histórico se o afiliado for deletado no futuro
+     *       (o restaurante ainda saberá por quem foi indicado);
+     *   (c) não depender de round-trip HTTP toda vez que abrir os
+     *       detalhes do restaurante no admin.
+     *
+     * REGRA CRÍTICA: esses campos JAMAIS devem ser sobrescritos após o
+     * cadastro do restaurante. Nenhum endpoint público ou de restaurante
+     * pode alterá-los. Só admin via SQL manual em caso de correção
+     * humana comprovada.
+     */
+    @Column(name = "afiliado_id_snap")
+    private Long afiliadoIdSnap;
+
+    @Column(name = "afiliado_nome_snap", length = 200)
+    private String afiliadoNomeSnap;
+
+    @Column(name = "afiliado_email_snap", length = 200)
+    private String afiliadoEmailSnap;
+
+    @Column(name = "afiliado_comissao_snap", precision = 5, scale = 2)
+    private java.math.BigDecimal afiliadoComissaoSnap;
+
+    @Column(name = "afiliado_vinculado_em")
+    private LocalDateTime afiliadoVinculadoEm;
+
     // ── Precificação personalizada ──
     /**
      * Quando preenchido, sobrescreve o valor do plano lido da tabela `planos`.

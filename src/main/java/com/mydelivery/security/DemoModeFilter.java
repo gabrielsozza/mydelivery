@@ -44,6 +44,25 @@ import lombok.extern.slf4j.Slf4j;
 @RequiredArgsConstructor
 public class DemoModeFilter extends OncePerRequestFilter {
 
+    /**
+     * FIX crítico de performance: Spring Boot auto-registra QUALQUER
+     * {@link OncePerRequestFilter} anotado com {@link Component} como filter
+     * global via {@code FilterRegistrationBean}. Como também registramos
+     * manualmente no {@code SecurityConfig.addFilterAfter(...)}, o filter
+     * rodava DUAS VEZES em cada request — parseando JWT em duplicidade e
+     * acumulando latência sob carga.
+     *
+     * Este bean desabilita o auto-registro global; o filter passa a rodar
+     * apenas 1× pela security chain, como pretendido.
+     */
+    @org.springframework.context.annotation.Bean
+    public org.springframework.boot.web.servlet.FilterRegistrationBean<DemoModeFilter> disableAutoRegistration(DemoModeFilter filter) {
+        org.springframework.boot.web.servlet.FilterRegistrationBean<DemoModeFilter> reg =
+                new org.springframework.boot.web.servlet.FilterRegistrationBean<>(filter);
+        reg.setEnabled(false);
+        return reg;
+    }
+
     private final JwtUtil jwtUtil;
 
     /**

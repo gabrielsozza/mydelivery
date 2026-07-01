@@ -520,6 +520,27 @@ public class PedidoService {
         return toResponse(p);
     }
 
+    /**
+     * Lista motivos de cancelamento disponíveis pra um pedido — vem
+     * direto do iFood via GET /order/v1.0/orders/{id}/cancellationReasons.
+     *
+     * Retorna lista vazia se:
+     *  - pedido não é do iFood (não precisa de motivo — cancelamento livre)
+     *  - iFood não devolveu motivos (pedido em fase que não permite cancelar)
+     *  - erro de comunicação
+     */
+    public java.util.List<java.util.Map<String, Object>> listarMotivosCancelamento(Long rid, Long pid) {
+        Pedido p = pedidoRepository.findById(pid)
+                .orElseThrow(() -> new RuntimeException("Pedido nao encontrado"));
+        if (!p.getRestaurante().getId().equals(rid)) {
+            throw new RuntimeException("Acesso negado");
+        }
+        if (p.getIfoodOrderId() == null || p.getIfoodOrderId().isBlank()) {
+            return java.util.List.of();
+        }
+        return ifoodClient.buscarMotivosCancelamento(p.getIfoodOrderId());
+    }
+
     @Transactional
     public PedidoResponse atualizarStatus(Long rid, Long pid, AtualizarStatusRequest req) {
         Pedido p = pedidoRepository.findById(pid).orElseThrow(() -> new RuntimeException("Pedido nao encontrado"));
@@ -585,9 +606,19 @@ public class PedidoService {
                     ifoodClient.entregue(oid);
                     log.info("[iFood] delivered enviado pra orderId={}", oid);
                 } else if (statusNovo == Pedido.Status.CANCELADO) {
-                    // Código 501 = "OUT_OF_PRODUCT" (motivo padrão).
-                    ifoodClient.cancelar(oid, "501", "Cancelado pelo restaurante via painel");
-                    log.info("[iFood] cancel enviado pra orderId={}", oid);
+                    // Fluxo homologação iFood: o código PRECISA vir de
+                    // GET /order/v1.0/orders/{id}/cancellationReasons —
+                    // o painel consulta esse endpoint via nosso proxy
+                    // e passa o cancelCodeId escolhido pelo operador.
+                    // Sem código, o ifoodClient rejeita com IllegalArgumentException.
+                    String codigo = req.getMotivoCancelamentoCodigo();
+                    String texto = req.getMotivoCancelamentoTexto();
+                    if (codigo == null || codigo.isBlank()) {
+                        throw new RuntimeException("Motivo de cancelamento obrigatório pra pedidos do iFood. "
+                                + "Consulte GET /api/pedidos/" + pid + "/motivos-cancelamento e selecione um.");
+                    }
+                    ifoodClient.cancelar(oid, codigo, texto);
+                    log.info("[iFood] cancel enviado pra orderId={} codigo={}", oid, codigo);
                 }
             } catch (Exception e) {
                 log.error("[iFood] FALHOU ao propagar status {} pra orderId={}: {}",

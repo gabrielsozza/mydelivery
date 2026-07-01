@@ -82,6 +82,20 @@ public class PedidoController {
             @PathVariable String slug, @PathVariable Long id, @Valid @RequestBody AtualizarStatusRequest request) {
         return ResponseEntity.ok(pedidoService.atualizarStatus(getRestauranteId(email), id, request));
     }
+
+    /**
+     * Lista motivos de cancelamento disponíveis pra ESTE pedido — usado pelo
+     * painel ANTES de mostrar o modal de cancelamento. Pra pedidos do iFood
+     * devolve a lista vinda de GET /order/v1.0/orders/{id}/cancellationReasons.
+     * Pra pedidos próprios (não iFood), devolve lista vazia (cancelamento livre).
+     */
+    @GetMapping("/restaurante/{slug}/pedidos/{id}/motivos-cancelamento")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<java.util.List<java.util.Map<String, Object>>> motivosCancelamento(
+            @org.springframework.security.core.annotation.AuthenticationPrincipal String email,
+            @PathVariable String slug, @PathVariable Long id) {
+        return ResponseEntity.ok(pedidoService.listarMotivosCancelamento(getRestauranteId(email), id));
+    }
     @PutMapping("/restaurante/{slug}/pedidos/{id}")
     @PreAuthorize("hasRole('RESTAURANTE')")
     public ResponseEntity<PedidoResponse> editarPedido(@AuthenticationPrincipal String email,

@@ -220,12 +220,90 @@ public class IfoodClient {
         }
     }
 
-    /** Cancela o pedido. Motivo precisa ser código válido do iFood. */
+    /**
+     * Cancela o pedido. Fluxo CORRETO conforme homologação iFood:
+     *
+     *  1. GET /order/v1.0/orders/{id}/cancellationReasons → lista os
+     *     motivos VÁLIDOS pra ESTE pedido no momento (varia com o estado
+     *     do pedido: preparando, saiu pra entrega, etc).
+     *  2. Confirma que o {@code cancellationCode} recebido está na lista.
+     *  3. Envia POST /order/v1.0/orders/{id}/requestCancellation com
+     *     {reason, cancellationCode} — o {@code reason} SEMPRE vem do
+     *     campo "description" do motivo retornado pelo iFood.
+     *
+     * Se o código não estiver na lista permitida, lança IllegalArgumentException
+     * — o painel deve reapresentar a lista atualizada pro operador.
+     */
     public void cancelar(String orderId, String motivoCodigo, String motivoTexto) {
+        // Passo 1: busca motivos válidos pra este pedido AGORA
+        java.util.List<java.util.Map<String, Object>> motivos = buscarMotivosCancelamento(orderId);
+        if (motivos == null || motivos.isEmpty()) {
+            throw new RuntimeException("Nenhum motivo de cancelamento disponível pra esse pedido no iFood. "
+                    + "Talvez ele já esteja em fase que não permite cancelamento.");
+        }
+        // Passo 2: valida código
+        java.util.Map<String, Object> escolhido = null;
+        String codigoNorm = motivoCodigo == null ? "" : motivoCodigo.trim();
+        for (java.util.Map<String, Object> m : motivos) {
+            Object c = m.get("cancelCodeId");
+            if (c == null) c = m.get("cancellationCode");
+            if (c != null && codigoNorm.equalsIgnoreCase(String.valueOf(c).trim())) {
+                escolhido = m;
+                break;
+            }
+        }
+        if (escolhido == null) {
+            String disponiveis = motivos.stream()
+                    .map(m -> String.valueOf(m.getOrDefault("cancelCodeId", m.get("cancellationCode"))))
+                    .collect(java.util.stream.Collectors.joining(", "));
+            throw new IllegalArgumentException("Motivo de cancelamento '" + codigoNorm
+                    + "' não é válido pra esse pedido. Motivos permitidos: [" + disponiveis + "]");
+        }
+        // Passo 3: envia cancelamento com reason vindo do próprio iFood
+        // (regra: reason DEVE ser o description do motivo escolhido — senão iFood pode rejeitar).
+        String reason = motivoTexto != null && !motivoTexto.isBlank()
+                ? motivoTexto
+                : String.valueOf(escolhido.getOrDefault("description",
+                    escolhido.getOrDefault("cancelCodeMessage", "Cancelado pelo restaurante")));
+        String codigo = String.valueOf(escolhido.getOrDefault("cancelCodeId",
+                escolhido.get("cancellationCode")));
         postStatus(orderId, "requestCancellation", Map.of(
-                "reason", motivoTexto == null ? "" : motivoTexto,
-                "cancellationCode", motivoCodigo == null ? "501" : motivoCodigo
+                "reason", reason,
+                "cancellationCode", codigo
         ));
+        log.info("[iFood] cancelamento enviado pedido={} codigo={} reason={}",
+                orderId, codigo, reason);
+    }
+
+    /**
+     * Busca a lista de motivos de cancelamento válidos pra um pedido
+     * no momento atual. iFood devolve algo tipo:
+     * <pre>
+     * [{ "cancelCodeId": "501", "description": "Pedido em duplicidade" }, ...]
+     * </pre>
+     * (formato pode variar conforme o cenário — código também vem como
+     * "cancellationCode" em versões antigas). Retorna lista vazia se não
+     * houver motivos ou se o endpoint falhar (permite fallback no chamador).
+     */
+    @SuppressWarnings("unchecked")
+    public java.util.List<java.util.Map<String, Object>> buscarMotivosCancelamento(String orderId) {
+        try {
+            Object resp = restClient.get()
+                    .uri("/order/v1.0/orders/" + orderId + "/cancellationReasons")
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + obterAccessToken())
+                    .retrieve()
+                    .body(Object.class);
+            if (resp instanceof java.util.List) return (java.util.List<java.util.Map<String, Object>>) resp;
+            if (resp instanceof java.util.Map) {
+                Object arr = ((java.util.Map<?, ?>) resp).get("cancellationReasons");
+                if (arr instanceof java.util.List) return (java.util.List<java.util.Map<String, Object>>) arr;
+            }
+            log.warn("[iFood] cancellationReasons pra {} veio em formato inesperado: {}", orderId, resp);
+            return java.util.List.of();
+        } catch (Exception e) {
+            log.warn("[iFood] buscarMotivosCancelamento({}) falhou: {}", orderId, e.getMessage());
+            return java.util.List.of();
+        }
     }
 
     /**

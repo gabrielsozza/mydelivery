@@ -48,6 +48,44 @@ public class AuthService {
             throw new RuntimeException("E-mail já cadastrado");
         }
 
+        // ── ANTI-AUTOINDICAÇÃO ───────────────────────────────────────────
+        // Se veio com código de afiliado, busca snapshot ANTES de qualquer
+        // save e compara com dados do cadastro. Se detectar match forte
+        // (email/CPF/telefone/PIX igual ao do afiliado), bloqueia com 409.
+        //
+        // Nada é gravado no banco em caso de bloqueio — nenhum Usuario,
+        // nenhum Restaurante, nenhuma Assinatura. Fica o registro no log
+        // de eventos do myafiliados-api pra o admin ver depois.
+        Map<String, Object> snapAfiliado = null;
+        String codigoAfilPreCheck = request.getAfiliadoCodigo();
+        if (afiliadosWebhookService != null && codigoAfilPreCheck != null && !codigoAfilPreCheck.isBlank()) {
+            try {
+                snapAfiliado = afiliadosWebhookService.buscarSnapshot(codigoAfilPreCheck);
+                if (snapAfiliado != null) {
+                    var dados = new com.mydelivery.service.afiliados.AutoindicacaoDetector.DadosCadastro();
+                    dados.email = request.getEmail();
+                    dados.telefone = request.getTelefone();
+                    // TODO: no futuro, se cadastro tiver CPF/CNPJ e chavePix, comparar também.
+                    var res = com.mydelivery.service.afiliados.AutoindicacaoDetector.detectar(dados, snapAfiliado);
+                    if (res.temMatchForte()) {
+                        // Registra no log de eventos ANTES de lançar (fail-safe).
+                        try {
+                            afiliadosWebhookService.registrarAutoindicacaoBloqueada(
+                                    codigoAfilPreCheck, request.getEmail(), request.getTelefone(),
+                                    res.descricao(), res.paraLog());
+                        } catch (Exception ignored) { /* logging não pode quebrar */ }
+                        log.warn("[Auth] autoindicação BLOQUEADA codigo={} match={}",
+                                codigoAfilPreCheck, res.descricao());
+                        throw new com.mydelivery.service.afiliados.AutoindicacaoException(res.descricao());
+                    }
+                }
+            } catch (com.mydelivery.service.afiliados.AutoindicacaoException fe) {
+                throw fe; // deixa passar
+            } catch (Exception e) {
+                log.warn("[Auth] check anti-autoindicação falhou (permitindo cadastro): {}", e.getMessage());
+            }
+        }
+
         // Cria o usuário
         Usuario usuario = Usuario.builder()
                 .nome(request.getNome())
@@ -85,7 +123,11 @@ public class AuthService {
         String codigoAfil = request.getAfiliadoCodigo();
         if (afiliadosWebhookService != null && codigoAfil != null && !codigoAfil.isBlank()) {
             try {
-                Map<String, Object> snap = afiliadosWebhookService.buscarSnapshot(codigoAfil);
+                // Reusa o snapshot que já foi buscado no check anti-autoindicação
+                // (evita 2 round-trips pra myafiliados-api no cadastro).
+                Map<String, Object> snap = snapAfiliado != null
+                        ? snapAfiliado
+                        : afiliadosWebhookService.buscarSnapshot(codigoAfil);
                 if (snap != null && snap.get("id") != null) {
                     restaurante.setAfiliadoIdSnap(Long.valueOf(String.valueOf(snap.get("id"))));
                     restaurante.setAfiliadoNomeSnap((String) snap.get("nome"));

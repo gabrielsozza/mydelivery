@@ -94,6 +94,25 @@ public class AfiliadosWebhookService {
         enviar(baseBody("TRIAL_EXPIROU", r));
     }
 
+    /**
+     * Dispara síncrono um evento AUTOINDICACAO_BLOQUEADA pro myafiliados-api
+     * registrar no log de auditoria. Chamado ANTES de qualquer save no banco
+     * do mydelivery-api — usa fail-safe interno.
+     */
+    public void registrarAutoindicacaoBloqueada(String codigoAfiliado, String email,
+                                                 String telefone, String descricao,
+                                                 Map<String, Object> flags) {
+        if (!ativo || codigoAfiliado == null || codigoAfiliado.isBlank()) return;
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("tipo", "AUTOINDICACAO_BLOQUEADA");
+        body.put("codigoAfiliado", codigoAfiliado);
+        body.put("emailTentativa", email);
+        body.put("telefoneTentativa", telefone);
+        body.put("descricao", descricao);
+        if (flags != null) body.put("flags", flags);
+        enviar(body);
+    }
+
     private Map<String, Object> baseBody(String tipo, Restaurante r) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("tipo", tipo);

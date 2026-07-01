@@ -56,34 +56,6 @@ public class JwtUtil {
                 .compact();
     }
 
-    /**
-     * Gera token CURTO (30min) pra afiliado demonstrar o sistema pra prospect.
-     * Marca claim {@code demo=true} — usada pelo DemoModeFilter pra bloquear
-     * mutações destrutivas (envio de WhatsApp real, alteração de config sensível,
-     * delete, pagamentos). Role é RESTAURANTE normal pra atravessar security
-     * matchers já existentes sem duplicar todos os hasRole().
-     */
-    public String gerarTokenDemo(String email, String afiliadoIdentificador) {
-        long trintaMinutos = 30L * 60L * 1000L;
-        return Jwts.builder()
-                .subject(email)
-                .claim("role", "RESTAURANTE")
-                .claim("demo", true)
-                .claim("demoAfiliado", afiliadoIdentificador)
-                .issuedAt(new Date())
-                .expiration(new Date(System.currentTimeMillis() + trintaMinutos))
-                .signWith(getSigningKey())
-                .compact();
-    }
-
-    /** Retorna true se o token tem claim {@code demo=true}. Falha silenciosa → false. */
-    public boolean isDemo(String token) {
-        try {
-            Object v = extrairClaims(token).get("demo");
-            return v instanceof Boolean && ((Boolean) v);
-        } catch (Exception e) { return false; }
-    }
-
     public String gerarRefreshToken(String email) {
         return Jwts.builder()
                 .subject(email)

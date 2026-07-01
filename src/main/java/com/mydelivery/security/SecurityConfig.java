@@ -29,7 +29,6 @@ public class SecurityConfig {
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
     private final LoginRateLimitFilter loginRateLimitFilter;
-    private final DemoModeFilter demoModeFilter;
 
     @Value("${app.cors.allowed-origins}")
     private String allowedOrigins;
@@ -76,9 +75,6 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.POST, "/api/restaurante/assinatura/precificar-restaurante-admin").permitAll()
                 .requestMatchers(HttpMethod.POST, "/api/restaurante/assinatura/impersonar-admin").permitAll()
                 .requestMatchers(HttpMethod.POST, "/api/restaurante/assinatura/replicar-cardapio-admin").permitAll()
-                // Endpoint de geração de token demo — chamado pelo myafiliados-api
-                // com X-Afiliados-Secret validado no próprio controller.
-                .requestMatchers(HttpMethod.POST, "/api/afiliado/demo/token").permitAll()
                 // Health do WhatsApp — autenticação via X-Admin-Secret validada no controller
                 .requestMatchers("/api/admin-internal/whatsapp/**").permitAll()
                 // Web Push: setup VAPID — autenticado via X-Admin-Secret no controller
@@ -100,11 +96,7 @@ public class SecurityConfig {
                 // Rate-limit em endpoints de login (brute-force). Roda ANTES do
                 // JWT filter — se IP estourou limite, retorna 429 sem nem parsear
                 // token.
-                .addFilterBefore(loginRateLimitFilter, JwtAuthenticationFilter.class)
-                // DemoModeFilter roda DEPOIS do JwtAuthenticationFilter — precisa do token
-                // já parseado pra detectar claim demo=true. Bloqueia mutações destrutivas
-                // em sessões demo (envio de WhatsApp real, delete, config crítica, etc).
-                .addFilterAfter(demoModeFilter, JwtAuthenticationFilter.class);
+                .addFilterBefore(loginRateLimitFilter, JwtAuthenticationFilter.class);
 
         return http.build();
     }

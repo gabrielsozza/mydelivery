@@ -334,6 +334,14 @@ public class CardapioService {
         produto.setDestaque(request.getDestaque());
         if (request.getPrecoVitrine() != null) produto.setPrecoVitrine(request.getPrecoVitrine());
         if (request.getUnidadePreco() != null) produto.setUnidadePreco(request.getUnidadePreco());
+        if (request.getPrecoAPartirDe() != null) produto.setPrecoAPartirDe(request.getPrecoAPartirDe());
+        // diasSemanaAtivos: string vazia vinda do front = limpar restrição.
+        // Assim admin desmarca "todos os dias" via campo vazio, sem precisar
+        // de um endpoint separado. Null = campo não enviado (não mexer).
+        if (request.getDiasSemanaAtivos() != null) {
+            String d = request.getDiasSemanaAtivos().trim();
+            produto.setDiasSemanaAtivos(d.isEmpty() ? null : d);
+        }
 
         if (request.getCategoriaId() != null) {
             Categoria cat = categoriaRepository.findById(request.getCategoriaId())
@@ -369,6 +377,14 @@ public class CardapioService {
         if (request.getDestaque() != null)     produto.setDestaque(request.getDestaque());
         if (request.getPrecoVitrine() != null) produto.setPrecoVitrine(request.getPrecoVitrine());
         if (request.getUnidadePreco() != null) produto.setUnidadePreco(request.getUnidadePreco());
+        if (request.getPrecoAPartirDe() != null) produto.setPrecoAPartirDe(request.getPrecoAPartirDe());
+        // diasSemanaAtivos: string vazia vinda do front = limpar restrição.
+        // Assim admin desmarca "todos os dias" via campo vazio, sem precisar
+        // de um endpoint separado. Null = campo não enviado (não mexer).
+        if (request.getDiasSemanaAtivos() != null) {
+            String d = request.getDiasSemanaAtivos().trim();
+            produto.setDiasSemanaAtivos(d.isEmpty() ? null : d);
+        }
 
         if (request.getCategoriaId() != null) {
             Categoria cat = categoriaRepository.findById(request.getCategoriaId())
@@ -428,6 +444,8 @@ public class CardapioService {
                 .tipo(p.getTipo() != null ? p.getTipo().name() : "NORMAL")
                 .precoVitrine(Boolean.TRUE.equals(p.getPrecoVitrine()))
                 .unidadePreco(p.getUnidadePreco())
+                .precoAPartirDe(Boolean.TRUE.equals(p.getPrecoAPartirDe()))
+                .diasSemanaAtivos(p.getDiasSemanaAtivos())
                 .build();
     }
 

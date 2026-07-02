@@ -24,4 +24,9 @@ public class ProdutoPublicResponse {
     private Boolean precoVitrine;
     /** Sufixo de unidade exibido no card ("kg", "100g", "L", "un"). */
     private String unidadePreco;
+    /** Se true, cardápio público mostra prefixo "a partir de" antes do preço.
+     *  Útil pra produtos com complementos obrigatórios que somam ao preço final
+     *  (ex: feijoada base + adicionais). Diferente de precoVitrine — este é
+     *  cosmético, o preço base ainda é o mínimo cobrado. */
+    private Boolean precoAPartirDe;
 }

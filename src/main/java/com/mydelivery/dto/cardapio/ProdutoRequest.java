@@ -36,4 +36,11 @@ public class ProdutoRequest {
     /** Unidade exibida com o preço quando precoVitrine=true.
      *  Valores típicos: kg, g, 100g, L, ml, un, porção. */
     private String unidadePreco;
+
+    /** Se true, exibe "a partir de R$ X" no cardápio público. */
+    private Boolean precoAPartirDe;
+
+    /** Dias da semana em que o produto fica ativo (CSV: "QUA,SAB").
+     *  NULL/vazio = sempre ativo. */
+    private String diasSemanaAtivos;
 }

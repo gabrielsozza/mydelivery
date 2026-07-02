@@ -110,6 +110,29 @@ public class Produto {
     @Column(name = "unidade_preco", length = 16)
     private String unidadePreco;
 
+    /**
+     * Se true, o preço é exibido no cardápio como "a partir de R$ X" —
+     * útil pra produtos com complementos que somam ao valor final
+     * (ex: feijoada base R$ 46, com adicionais chega a R$ 60).
+     * Independente do precoVitrine (kg): dá pra usar sozinho.
+     * Default false (comportamento antigo — mostra só o preço).
+     */
+    @Builder.Default
+    @Column(name = "preco_a_partir_de")
+    private Boolean precoAPartirDe = false;
+
+    /**
+     * Dias da semana em que o produto fica ativo no cardápio público.
+     * CSV com codes de 3 letras: "SEG,TER,QUA,QUI,SEX,SAB,DOM".
+     * NULL ou vazio = sempre ativo (todos os dias) — comportamento
+     * padrão pra lanchonetes que não usam essa restrição.
+     * Ex: feijoada = "QUA,SAB" → só aparece pra cliente nesses dias.
+     * Filtro é aplicado no CardapioService, produto invisível pro cliente
+     * fora do horário. Continua editável no painel do restaurante.
+     */
+    @Column(name = "dias_semana_ativos", length = 40)
+    private String diasSemanaAtivos;
+
     @CreationTimestamp
     private LocalDateTime criadoEm;
 }

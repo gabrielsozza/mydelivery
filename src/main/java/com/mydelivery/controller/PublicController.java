@@ -98,9 +98,14 @@ public class PublicController {
                 .findByRestauranteAndAtivoTrueOrderByOrdem(r)
                 .stream()
                 .map(cat -> {
+                    // Filtro por dia da semana: se produto tem restrição de dias e
+                    // hoje não está na lista, esconde do cliente. Sem restrição =
+                    // aparece sempre (retrocompat pra 99% dos produtos).
+                    final String hoje = codigoDiaSemanaAtual();
                     List<ProdutoPublicResponse> produtos = produtoRepo
                             .findByCategoriaAndDisponivelTrueOrderByOrdem(cat)
                             .stream()
+                            .filter(p -> diasSemanaAceita(p.getDiasSemanaAtivos(), hoje))
                             .map(p -> ProdutoPublicResponse.builder()
                             .id(p.getId())
                             .nome(p.getNome())
@@ -112,6 +117,7 @@ public class PublicController {
                             .tipo(p.getTipo() != null ? p.getTipo().name() : "NORMAL")
                             .precoVitrine(Boolean.TRUE.equals(p.getPrecoVitrine()))
                             .unidadePreco(p.getUnidadePreco())
+                            .precoAPartirDe(Boolean.TRUE.equals(p.getPrecoAPartirDe()))
                             .build())
                             .toList();
 
@@ -216,5 +222,39 @@ public class PublicController {
         String n = Normalizer.normalize(s, Normalizer.Form.NFD)
                 .replaceAll("\\p{InCombiningDiacriticalMarks}+", "");
         return n.toLowerCase().trim();
+    }
+
+    /**
+     * Código de 3 letras pro dia da semana atual no fuso Brasil.
+     * SEG,TER,QUA,QUI,SEX,SAB,DOM — mesmo padrão do campo Produto.diasSemanaAtivos.
+     */
+    private static String codigoDiaSemanaAtual() {
+        java.time.DayOfWeek d = java.time.LocalDate.now(
+                java.time.ZoneId.of("America/Sao_Paulo")).getDayOfWeek();
+        switch (d) {
+            case MONDAY:    return "SEG";
+            case TUESDAY:   return "TER";
+            case WEDNESDAY: return "QUA";
+            case THURSDAY:  return "QUI";
+            case FRIDAY:    return "SEX";
+            case SATURDAY:  return "SAB";
+            case SUNDAY:    return "DOM";
+            default:        return "";
+        }
+    }
+
+    /**
+     * Retorna true se o produto pode aparecer hoje. Regras:
+     *  - diasCsv null/vazio → sempre aparece (99% dos produtos).
+     *  - diasCsv contém código de hoje → aparece.
+     *  - caso contrário → escondido.
+     * Comparação tolerante a espaços e casing.
+     */
+    private static boolean diasSemanaAceita(String diasCsv, String hoje) {
+        if (diasCsv == null || diasCsv.isBlank()) return true;
+        for (String d : diasCsv.split(",")) {
+            if (d.trim().equalsIgnoreCase(hoje)) return true;
+        }
+        return false;
     }
 }

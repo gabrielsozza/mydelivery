@@ -33,4 +33,8 @@ public class ProdutoResponse {
     private Boolean precoVitrine;
     /** Unidade exibida com o preço (ex: "kg", "100g", "un", "porção"). */
     private String unidadePreco;
+    /** Se true, cardápio público mostra "a partir de R$ X" antes do preço. */
+    private Boolean precoAPartirDe;
+    /** CSV de dias da semana ativos ("SEG,QUA,SAB") ou null pra sempre ativo. */
+    private String diasSemanaAtivos;
 }

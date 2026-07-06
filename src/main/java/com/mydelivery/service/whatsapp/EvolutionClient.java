@@ -2,6 +2,8 @@ package com.mydelivery.service.whatsapp;
 
 import java.time.Duration;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 import org.springframework.http.HttpHeaders;
@@ -289,24 +291,110 @@ public class EvolutionClient {
         return props.getApiKey();
     }
 
+    // ═══════════════════════════════════════════════════════════════════
+    // CIRCUIT BREAKER (Jul/2026)
+    // ═══════════════════════════════════════════════════════════════════
+    //
+    // Motivação: quando a Evolution VPS trava (memory leak, banco Baileys
+    // gigante, network glitch), TODAS as calls começam a falhar. Sem CB, cada
+    // request de restaurante fica presa 12s esperando timeout → thread pool
+    // Tomcat esgota → mydelivery-api também cai. Já aconteceu.
+    //
+    // Estratégia CB (simples, sem lib externa pra evitar deps):
+    //   - CLOSED: fluxo normal, mede falhas
+    //   - Se falharam N seguidas em janela de 60s → OPEN por 30s
+    //   - OPEN: rejeita TODA chamada com "circuit breaker aberto" (fail fast,
+    //     libera thread em <1ms). Health job sabe e adia reconexões.
+    //   - Depois de 30s: HALF_OPEN — permite UMA call de teste
+    //   - Se ok → CLOSED. Se falha → volta OPEN por 60s (backoff exponencial).
+    //
+    // Chamadas afetadas: TODAS que passam por executar(). Envio de mensagem,
+    // criação de instância, restart, etc. Isso é intencional: se Evolution
+    // tá fora, é fora pra tudo.
+    private static final AtomicInteger falhasSeguidas = new AtomicInteger(0);
+    private static final AtomicReference<Long> circuitAbertoAte = new AtomicReference<>(0L);
+    private static final AtomicInteger cbBackoffCiclos = new AtomicInteger(0);
+    private static final int CB_LIMITE_FALHAS = 5;
+    private static final long CB_TEMPO_ABERTO_BASE_MS = 30_000L;
+
+    /** Retorna true se o circuit está aberto (rejeitar sem chamar Evolution). */
+    public boolean circuitBreakerAberto() {
+        long agora = System.currentTimeMillis();
+        long ate = circuitAbertoAte.get();
+        return agora < ate;
+    }
+
+    private void registrarFalha(String method, String path) {
+        int f = falhasSeguidas.incrementAndGet();
+        if (f >= CB_LIMITE_FALHAS && !circuitBreakerAberto()) {
+            // Backoff exponencial no tempo de abertura: 30s → 60s → 120s → 240s.
+            // Se Evolution tá persistentemente fora, dá cada vez mais tempo pra
+            // ela se recuperar antes de bombardearmos de novo.
+            int ciclo = cbBackoffCiclos.incrementAndGet();
+            long tempoAberto = Math.min(CB_TEMPO_ABERTO_BASE_MS * (long) Math.pow(2, ciclo - 1), 300_000L);
+            circuitAbertoAte.set(System.currentTimeMillis() + tempoAberto);
+            log.error("[Evolution:CB] ABRINDO circuit breaker por {}s ({} falhas seguidas). " +
+                    "Último erro: {} {}. Chamadas serão rejeitadas até {}ms.",
+                    tempoAberto / 1000, f, method, path, tempoAberto);
+        }
+    }
+
+    private void registrarSucesso() {
+        int f = falhasSeguidas.getAndSet(0);
+        if (f > 0) {
+            log.info("[Evolution:CB] recuperado após {} falhas — resetando contador", f);
+        }
+        // Ao voltar ao normal, resetamos o backoff exponencial pra tempos curtos.
+        cbBackoffCiclos.set(0);
+    }
+
     @SuppressWarnings("unchecked")
     private <T> T executar(String method, String path, String apiKey, Object body, Class<T> tipo) {
+        // GUARD: circuit breaker aberto — falha rápido em vez de esperar timeout.
+        if (circuitBreakerAberto()) {
+            long faltamMs = circuitAbertoAte.get() - System.currentTimeMillis();
+            log.warn("[Evolution:CB] rejeitando {} {} — circuit aberto por mais {}s",
+                    method, path, faltamMs / 1000);
+            throw new EvolutionCircuitOpenException("Evolution temporariamente indisponível (circuit aberto)");
+        }
+
         try {
             Consumer<HttpHeaders> headers = h -> h.add("apikey", apiKey);
-            return (T) switch (method) {
+            T result = (T) switch (method) {
                 case "POST"   -> restClient.post().uri(path).headers(headers).body(body == null ? "" : body).retrieve().body(tipo);
                 case "GET"    -> restClient.get().uri(path).headers(headers).retrieve().body(tipo);
                 case "DELETE" -> restClient.delete().uri(path).headers(headers).retrieve().body(tipo);
                 default -> throw new IllegalArgumentException("Método não suportado: " + method);
             };
+            registrarSucesso();
+            return result;
         } catch (RestClientResponseException e) {
+            // 4xx da Evolution (400/404/409) NÃO conta como falha de infra —
+            // é erro de negócio (instância já existe, não encontrada, etc).
+            // Só 5xx e erros de rede indicam Evolution doente.
+            if (e.getStatusCode().is5xxServerError()) {
+                registrarFalha(method, path);
+            }
             log.error("[Evolution] {} {} falhou [{}]: {}", method, path, e.getStatusCode(),
                     truncar(e.getResponseBodyAsString()));
             throw new RuntimeException("Evolution API: " + extrairMensagem(e));
         } catch (Exception e) {
+            // Timeout, connection refused, DNS falha, etc — tudo é sintoma
+            // de Evolution/rede doente.
+            registrarFalha(method, path);
             log.error("[Evolution] {} {} erro: {}", method, path, e.getMessage());
             throw new RuntimeException("Não foi possível contactar a Evolution API");
         }
+    }
+
+    /**
+     * Exceção específica pra caller distinguir "Evolution rejeitou por lógica"
+     * de "sistema em circuit-open". HealthJob e Bot podem tratar diferente:
+     * durante CB aberto, health job NÃO dispara auto-reconexão (só piora),
+     * Bot devolve mensagem "estamos com instabilidade momentânea, tenta em 1min".
+     */
+    public static class EvolutionCircuitOpenException extends RuntimeException {
+        public EvolutionCircuitOpenException(String msg) { super(msg); }
     }
 
     private String extrairMensagem(RestClientResponseException e) {

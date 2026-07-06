@@ -66,6 +66,18 @@ public class WhatsappBotService {
     private static final java.util.concurrent.ThreadLocalRandom RNG =
             java.util.concurrent.ThreadLocalRandom.current();
 
+    /**
+     * Warmup do bot em conta nova (Jul/2026).
+     * Nas primeiras 24h após conectar, o bot fica calado — dono responde
+     * manualmente pra criar padrão humano na conta antes do bot entrar.
+     * Reduz shadow ban imediato em conta nova de forma significativa.
+     * Override via env var pra ajustar sem redeploy.
+     */
+    @org.springframework.beans.factory.annotation.Value("${mydelivery.bot.warmup-horas:24}")
+    private int warmupHorasCfg;
+
+    private int WARMUP_HORAS_BOT() { return warmupHorasCfg; }
+
     /** Sorteia delay variável por chamada — quebra padrão constante que
      *  WhatsApp usa pra detectar bot. */
     private static int randomTypingDelay() {
@@ -179,6 +191,30 @@ public class WhatsappBotService {
         if (texto == null || texto.isBlank()) {
             log.info("[Bot:SILENCIO] texto vazio — instância={}", inst.getInstanceName());
             return;
+        }
+
+        // WARMUP DE CONTA NOVA (Jul/2026): nas primeiras 24h após conectar,
+        // o bot fica em silêncio. Motivo: o WhatsApp faz "profiling" agressivo
+        // de contas novas — se detecta padrão de bot (respostas em <5s pra
+        // toda mensagem, texto idêntico, alto volume) logo no início, marca
+        // como suspeita e shadow bane.
+        //
+        // Deixando 24h em silêncio, o dono responde manualmente as primeiras
+        // mensagens (padrão humano) e o algoritmo do WA aceita a conta como
+        // legítima. Depois o bot entra e o volume dele passa despercebido
+        // no meio do tráfego "humano" já estabelecido.
+        //
+        // Frontend mostra aviso "Bot em aquecimento — responde a partir de X"
+        // pro dono não achar que quebrou.
+        if (inst.getConectadoEm() != null) {
+            long horasDesdeConexao = java.time.Duration.between(
+                    inst.getConectadoEm(), java.time.LocalDateTime.now()).toHours();
+            int warmup = WARMUP_HORAS_BOT();
+            if (warmup > 0 && horasDesdeConexao < warmup) {
+                log.info("[Bot:SILENCIO] WARMUP ({}h de {}h) — instância={}",
+                        horasDesdeConexao, warmup, inst.getInstanceName());
+                return;
+            }
         }
 
         String numeroLimpo = limparNumero(numero);

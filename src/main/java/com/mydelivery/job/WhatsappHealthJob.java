@@ -44,18 +44,28 @@ public class WhatsappHealthJob {
     private final WhatsappIncidenteRepository incidenteRepo;
     private final WhatsappAcaoAutomaticaRepository acaoRepo;
 
-    /** Cooldown entre auto-reconexões da MESMA instância (anti-loop). */
-    private static final int COOLDOWN_RECONEXAO_MIN = 15;
+    /**
+     * Cooldown entre auto-reconexões da MESMA instância (anti-loop).
+     * OVERHAUL Jul/2026: 15min era TÃO curto que o WhatsApp interpretava
+     * reconexões repetidas como comportamento de bot mal-intencionado.
+     * Cada reconexão renova fingerprint da sessão Baileys — o WA marca isso.
+     * 60min dá tempo do algoritmo deles "esfriar" a leitura antes da próxima
+     * tentativa. Se problema é persistente, é sinal de que restart não resolve
+     * — precisa intervenção humana (mudar proxy, mudar número, warmup).
+     */
+    private static final int COOLDOWN_RECONEXAO_MIN = 60;
 
     /** Máximo de tentativas consecutivas antes de desistir do auto-restart.
-     *  Reduzido de 5 → 3: shadow ban persistente não resolve com restart,
-     *  insistir é só esforço inútil. Após 3 falhas, abre INSTANCIA_INSTAVEL
-     *  e respeita cooldown longo (6h) antes de tentar de novo. */
-    private static final int MAX_TENTATIVAS_SEGUIDAS = 3;
+     *  OVERHAUL Jul/2026: reduzido de 3 → 2. Insistir mais de 2x em 12h é loop
+     *  inútil que só piora shadow ban. Após 2 falhas, abre INSTANCIA_INSTAVEL
+     *  e respeita cooldown MUITO longo antes de tentar de novo. */
+    private static final int MAX_TENTATIVAS_SEGUIDAS = 2;
 
     /** Após esgotar tentativas, espera N horas antes de tentar restart de
-     *  novo. Shadow ban tem que "esfriar" — restart imediato re-flagga. */
-    private static final int COOLDOWN_POS_ESGOTADO_HORAS = 6;
+     *  novo. OVERHAUL Jul/2026: 6h → 12h. Shadow ban de verdade só esfria com
+     *  o número parado. 12h alinha com "espera até amanhã" — restaurante fecha
+     *  de madrugada, na manhã seguinte o WA já limpou o histórico suspeito. */
+    private static final int COOLDOWN_POS_ESGOTADO_HORAS = 12;
 
     /** Janela mínima entre QUALQUER auto-reconexão no sistema inteiro.
      *  Antes: 5 instâncias podiam reconectar simultaneamente no mesmo tick,
@@ -74,11 +84,18 @@ public class WhatsappHealthJob {
             new AtomicReference<>(null);
 
     /** Cooldown longo aplicado quando a causa raiz é SHADOW_BAN_SUSPEITO.
-     *  Restart durante shadow ban PIORA: o Baileys re-conecta com novo
-     *  fingerprint e o WhatsApp re-flagga, então vira loop. Em vez disso,
-     *  damos tempo do número "esfriar" no lado deles. Em 4h os algoritmos
-     *  costumam reavaliar a sessão. */
-    private static final int COOLDOWN_SHADOW_BAN_HORAS = 4;
+     *  OVERHAUL Jul/2026: 4h → 8h. Empiricamente 4h não bastava — números que
+     *  voltavam nesse tempo eram re-banidos em minutos. 8h coincide com "dormir
+     *  a noite" — se ban veio na hora do jantar, só volta ao acordar. */
+    private static final int COOLDOWN_SHADOW_BAN_HORAS = 8;
+
+    /**
+     * NOVO Jul/2026: cooldown mínimo aplicado a QUALQUER instância nas primeiras
+     * 48h após conectar. Conta nova é ultra-sensível a reconexão — o WA usa isso
+     * como sinal principal de bot. Nesse período, NÃO fazemos auto-reconexão
+     * nenhuma (nem tentativa 1). Se cair, o dono precisa reconectar manualmente.
+     */
+    private static final int WARMUP_HORAS_CONTA_NOVA = 48;
 
     @Scheduled(fixedRate = 5 * 60_000L, initialDelay = 60_000L) // 5min, espera 1min após boot
     public void tick() {
@@ -168,11 +185,36 @@ public class WhatsappHealthJob {
             throttleGlobalBloqueado = true;
         }
 
+        // GUARD 3 — WARMUP DE CONTA NOVA (Jul/2026): nas primeiras 48h após
+        // conectar, ZERO auto-reconexão. Conta nova é ultra-sensível — WA usa
+        // reconexões nesse período como principal sinal de bot. Se cair, o
+        // dono reconecta manualmente. Sem exceção — nem em falha real, restart
+        // automático em conta nova é o motivo #1 de shadow ban logo no início.
+        boolean emWarmup = false;
+        if (inst.getConectadoEm() != null
+                && Duration.between(inst.getConectadoEm(), LocalDateTime.now()).toHours() < WARMUP_HORAS_CONTA_NOVA) {
+            emWarmup = true;
+        }
+
+        // GUARD 4 — HORÁRIO DE PICO (Jul/2026): NÃO faz auto-reconexão em pico
+        // de operação do restaurante (11:30-14h almoço, 18h-23h jantar). Se
+        // cair no meio do jantar, restart mata pedidos em andamento e ainda
+        // gera flag pro WA. Espera até o próximo tick (pode passar até 30min
+        // sem reconectar em pico, mas evita quebrar a operação). Fora do pico,
+        // reconexão rola normal.
+        boolean emPicoOperacao = false;
+        int horaAgora = LocalDateTime.now().getHour();
+        if ((horaAgora >= 11 && horaAgora <= 13) || (horaAgora >= 18 && horaAgora <= 22)) {
+            emPicoOperacao = true;
+        }
+
         if (precisaIntervir
                 && !foiManual
                 && !esgotouEPrecisaResfriar
                 && !emCooldownShadowBan
                 && !throttleGlobalBloqueado
+                && !emWarmup
+                && !emPicoOperacao
                 && Boolean.TRUE.equals(inst.getBotAtivo())
                 && inst.getConectadoEm() != null
                 && cooldownOk(inst)
@@ -204,6 +246,12 @@ public class WhatsappHealthJob {
         } else if (precisaIntervir && throttleGlobalBloqueado) {
             log.info("[WAHealth] {} precisaria reconectar mas throttle global ({}s) ativo — aguardando próximo tick",
                     inst.getInstanceName(), THROTTLE_GLOBAL_SEGUNDOS);
+        } else if (precisaIntervir && emWarmup) {
+            log.info("[WAHealth] {} em WARMUP (conta com <{}h) — auto-reconexão desabilitada. Dono deve reconectar manualmente.",
+                    inst.getInstanceName(), WARMUP_HORAS_CONTA_NOVA);
+        } else if (precisaIntervir && emPicoOperacao) {
+            log.info("[WAHealth] {} precisaria reconectar mas está em PICO ({}h) — postergado pra fora do horário crítico",
+                    inst.getInstanceName(), horaAgora);
         }
 
         healthService.registrarSnapshot(inst, reconectou);

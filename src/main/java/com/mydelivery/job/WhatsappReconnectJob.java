@@ -4,7 +4,6 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.List;
-import java.util.concurrent.ThreadLocalRandom;
 
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -47,8 +46,23 @@ public class WhatsappReconnectJob {
     private final WhatsappInstanceRepository repo;
     private final EvolutionClient evolutionClient;
 
+    /**
+     * Kill-switch. Padrão DESABILITADO — restart preventivo cego causou mais
+     * problema que resolveu. Só ativa quando tiver certeza que sessão velha
+     * é o problema real (evidência empírica, não teoria).
+     */
+    @org.springframework.beans.factory.annotation.Value("${mydelivery.jobs.wa-reconnect.ativo:false}")
+    private boolean ativo;
+
     /** Intervalo mínimo entre restarts da MESMA instância. */
     private static final int MIN_HORAS_ENTRE_RESTARTS = 4;
+
+    /**
+     * Só faz restart preventivo se instância está SEM RECEBER MENSAGEM há
+     * pelo menos N horas. Evidência real de "sessão travada".
+     * Menor que isso = provavelmente saudável, só sem tráfego temporário.
+     */
+    private static final int HORAS_SEM_MSG_PRA_RESTART = 24;
 
     /** Hora inicial da janela de pico (não restartar). */
     private static final int PICO_HORA_INICIO = 18;
@@ -63,56 +77,74 @@ public class WhatsappReconnectJob {
      * Tick horário (em vez de fixo 6h). A decisão de restartar OU NÃO cada
      * instância é tomada por instância dentro do tick.
      */
+    /**
+     * MUDANÇA CRÍTICA Jul/2026: restart preventivo agora é OPT-IN via env var.
+     * A hipótese original (Baileys entra em shadow ban silencioso se sessão
+     * fica muito tempo aberta) NÃO SE PROVOU empiricamente — restart preventivo
+     * em conta saudável causou mais dano do que resolveu:
+     *
+     *   - Cada restart é evento de "sessão nova" pro WhatsApp → suspeição
+     *   - Instância que estava recebendo mensagens perdeu ~40s de tráfego
+     *   - Se ban veio depois, restart em conta já frágil piorou
+     *
+     * Comportamento atual (opt-out por padrão):
+     *   - Job só roda se MYDELIVERY_JOBS_WA_RECONNECT_ATIVO=true
+     *   - Quando ativo, só restart em instância há >24h sem receber mensagem
+     *     (evidência real de "está travada"), fora de pico, fora de warmup.
+     *
+     * Deixe DESATIVADO por padrão. Só liga se tiver evidência forte que
+     * o problema é a sessão ficar velha (raro).
+     */
     @Scheduled(fixedDelay = 60L * 60 * 1000, initialDelay = 5L * 60 * 1000)
     public void restartPreventivo() {
+        if (!ativo) {
+            log.debug("[WhatsappReconnectJob] desabilitado (MYDELIVERY_JOBS_WA_RECONNECT_ATIVO=false) — pulando");
+            return;
+        }
+
         LocalTime agora = LocalTime.now();
         if (estaNoPico(agora)) {
             log.info("[WhatsappReconnectJob] horário de pico ({}h) — pulando restart preventivo", agora.getHour());
             return;
         }
 
-        List<WhatsappInstance> ativas;
+        List<WhatsappInstance> candidatas;
         try {
-            ativas = repo.findAll().stream()
+            candidatas = repo.findAll().stream()
                     .filter(i -> i.getStatus() == WhatsappInstance.Status.CONECTADA
                               && Boolean.TRUE.equals(i.getBotAtivo()))
+                    // NOVO: só restart em instância "morta" — sem mensagem há
+                    // muito tempo. Instância recebendo tráfego = saudável, não
+                    // mexe. Isso é a diferença entre "restart preventivo cego"
+                    // e "restart guiado por evidência".
+                    .filter(i -> {
+                        LocalDateTime ult = i.getUltimaMensagemRecebidaEm();
+                        return ult != null
+                                && Duration.between(ult, LocalDateTime.now()).toHours() >= HORAS_SEM_MSG_PRA_RESTART;
+                    })
+                    // NOVO: pula qualquer instância nas 48h iniciais (warmup).
+                    // Conta nova é sensível a restart.
+                    .filter(i -> {
+                        LocalDateTime conectadoEm = i.getConectadoEm();
+                        return conectadoEm == null
+                                || Duration.between(conectadoEm, LocalDateTime.now()).toHours() >= 48;
+                    })
                     .toList();
         } catch (Exception e) {
             log.warn("[WhatsappReconnectJob] falha ao listar instâncias: {}", e.getMessage());
             return;
         }
-        if (ativas.isEmpty()) {
-            log.debug("[WhatsappReconnectJob] sem instâncias ativas");
+        if (candidatas.isEmpty()) {
+            log.debug("[WhatsappReconnectJob] sem candidatas a restart (todas saudáveis ou em warmup)");
             return;
         }
 
         int ok = 0, falha = 0, pulado = 0;
         LocalDateTime inicio = LocalDateTime.now();
-        for (WhatsappInstance inst : ativas) {
-            // Pula se foi restartada recentemente (menos de MIN_HORAS_ENTRE_RESTARTS).
-            // Usa ultimaTentativaReconexaoEm como timestamp do último restart
-            // (job e health service ambos atualizam esse campo).
+        for (WhatsappInstance inst : candidatas) {
             LocalDateTime ultimo = inst.getUltimaTentativaReconexaoEm();
             if (ultimo != null
                     && Duration.between(ultimo, inicio).toHours() < MIN_HORAS_ENTRE_RESTARTS) {
-                pulado++;
-                continue;
-            }
-
-            // Jitter: aplica delay aleatório curto pra evitar restart simultâneo
-            // de N instâncias (thundering herd no Evolution). 0 a 30min em
-            // chamada bloqueante seria ruim — fazemos o jitter via "sorteio
-            // de elegibilidade": com prob = (horasAtual - 4) / (24 - 4), maior
-            // prob de restartar conforme mais tempo passou.
-            //
-            // Resultado prático: instância que caiu há 4h tem ~15% de chance
-            // de ser restartada nesse tick. Há 8h: ~30%. Há 12h: ~45%.
-            // Distribui o restart ao longo de várias horas em vez de todo
-            // mundo no mesmo minuto.
-            double horasDesdeUltimo = ultimo == null ? 24
-                    : Duration.between(ultimo, inicio).toHours();
-            double prob = Math.min(1.0, (horasDesdeUltimo - MIN_HORAS_ENTRE_RESTARTS) / 12.0);
-            if (ThreadLocalRandom.current().nextDouble() > prob) {
                 pulado++;
                 continue;
             }
@@ -122,18 +154,20 @@ public class WhatsappReconnectJob {
                 inst.setUltimaTentativaReconexaoEm(LocalDateTime.now());
                 repo.save(inst);
                 ok++;
-                log.info("[WhatsappReconnectJob] restart ok — {} (rest={}, horasDesdeUlt={})",
+                log.info("[WhatsappReconnectJob] restart guiado por evidência — {} (rest={}, {}h sem msg)",
                         inst.getInstanceName(),
                         inst.getRestaurante() != null ? inst.getRestaurante().getId() : null,
-                        (int) horasDesdeUltimo);
+                        inst.getUltimaMensagemRecebidaEm() != null
+                            ? Duration.between(inst.getUltimaMensagemRecebidaEm(), LocalDateTime.now()).toHours()
+                            : -1);
             } catch (Exception e) {
                 falha++;
                 log.warn("[WhatsappReconnectJob] restart falhou pra {}: {}",
                         inst.getInstanceName(), e.getMessage());
             }
         }
-        log.info("[WhatsappReconnectJob] tick — total={} ok={} falha={} pulado={} dur={}s",
-                ativas.size(), ok, falha, pulado,
+        log.info("[WhatsappReconnectJob] tick — candidatas={} ok={} falha={} pulado={} dur={}s",
+                candidatas.size(), ok, falha, pulado,
                 Duration.between(inicio, LocalDateTime.now()).getSeconds());
     }
 

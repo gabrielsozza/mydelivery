@@ -70,6 +70,24 @@ public class WhatsappService {
     public WhatsappInstance conectar(Restaurante restaurante) {
         WhatsappInstance inst = repo.findByRestauranteId(restaurante.getId()).orElse(null);
 
+        // ── FAST PATH: QR ativo em cache local (Jul/2026) ──
+        // Se já temos QR válido no banco, devolve DIRETO. Zero chamada Evolution.
+        // Esse é o cenário mais comum quando o usuário clica "Gerar novo QR" ou
+        // recarrega a página nos primeiros 60s após criar a instância. Antes,
+        // toda vez que ele clicava, chamávamos consultarStatus + connect na
+        // Evolution — 2 HTTPs, cada uma podendo estar lenta. Agora: se o QR
+        // ainda tá válido no banco, devolve em <50ms.
+        if (inst != null
+                && inst.getQrCode() != null && !inst.getQrCode().isBlank()
+                && inst.getQrExpiraEm() != null
+                && LocalDateTime.now().isBefore(inst.getQrExpiraEm())
+                && inst.getStatus() != WhatsappInstance.Status.CONECTADA) {
+            log.info("[WhatsApp] QR cache-hit pra rest_id={} (expira em {}s) — servindo sem chamar Evolution",
+                    restaurante.getId(),
+                    java.time.Duration.between(LocalDateTime.now(), inst.getQrExpiraEm()).getSeconds());
+            return inst;
+        }
+
         if (inst == null) {
             // Race condition: o job de reconnect, outra aba do painel ou um POST
             // duplicado podem ter criado a instância em paralelo. O findByRestauranteId
@@ -80,6 +98,13 @@ public class WhatsappService {
             // Fix: catch a violação e re-fetch a linha que a outra transaction criou.
             try {
                 inst = criarNova(restaurante);
+                // criarNova já preenche QR do body do /instance/create (qrcode=true).
+                // Se veio, RETORNA já — sem chamar /connect. Menos 1 HTTP.
+                if (inst.getQrCode() != null && !inst.getQrCode().isBlank()) {
+                    log.info("[WhatsApp] QR entregue direto do /instance/create pra rest_id={} — fast path",
+                            restaurante.getId());
+                    return inst;
+                }
             } catch (DataIntegrityViolationException dive) {
                 log.warn("[WhatsApp] Concorrência ao criar instância pra rest_id={} — re-fetch da linha existente",
                         restaurante.getId());
@@ -115,7 +140,11 @@ public class WhatsappService {
                 String qr = extrairQrCode(resp);
                 if (qr != null) {
                     inst.setQrCode(qr);
-                    inst.setQrExpiraEm(LocalDateTime.now().plusSeconds(60));
+                    // TTL aumentado 60s → 90s (Jul/2026). Antes o webhook
+                    // QRCODE_UPDATED (a cada ~25-30s) sobrescrevia o QR que
+                    // o dono estava escaneando. 90s dá janela mais generosa
+                    // pra scan sem invalidação.
+                    inst.setQrExpiraEm(LocalDateTime.now().plusSeconds(90));
                 }
                 // Se QR não veio no body, webhook QRCODE_UPDATED chegará em
                 // alguns segundos e popula via salvarQrCode().
@@ -155,7 +184,9 @@ public class WhatsappService {
         }
 
         inst.setQrCode(qrBase64);
-        inst.setQrExpiraEm(LocalDateTime.now().plusSeconds(60));
+        // TTL 60s → 90s (Jul/2026, consistente com fluxo do conectar).
+        // Dono precisa de tempo pra escanear sem ficar corrida.
+        inst.setQrExpiraEm(LocalDateTime.now().plusSeconds(90));
         inst.setStatus(WhatsappInstance.Status.AGUARDANDO_QR);
         repo.save(inst);
         log.info("[WhatsApp] QR atualizado via webhook pra {}", inst.getInstanceName());
@@ -679,7 +710,8 @@ public class WhatsappService {
         if (token != null) inst.setInstanceToken(token);
         if (qrInicial != null) {
             inst.setQrCode(qrInicial);
-            inst.setQrExpiraEm(LocalDateTime.now().plusSeconds(60));
+            // TTL 60s → 90s (Jul/2026, consistente com todos os fluxos de QR).
+            inst.setQrExpiraEm(LocalDateTime.now().plusSeconds(90));
             log.info("[WhatsApp] QR pré-extraído da resposta /instance/create para {}", nome);
         }
         inst.setStatus(WhatsappInstance.Status.AGUARDANDO_QR);

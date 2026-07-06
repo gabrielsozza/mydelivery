@@ -21,11 +21,21 @@ public class EvolutionProperties {
     private String baseUrl = "http://localhost:8081";
     private String apiKey;
     private String webhookBaseUrl = "http://localhost:8080";
-    // Timeout curto pra I/O externo — se Evolution não respondeu em 4s, é anormal.
-    // Antes 15s: thread do Tomcat ficava presa esperando, gerando cascata sob rush.
-    // Falha rápido → libera thread pra requests reais. Override via env
-    // MYDELIVERY_EVOLUTION_TIMEOUT_MS se precisar aumentar.
-    private int timeoutMs = 4000;
+    // OVERHAUL Jul/2026: 4s → 12s.
+    // Timeline: 15s (default original) → 4s (fix de latência backend, mas cortava
+    // calls legítimas do Baileys que naturalmente demoram na inicialização de
+    // sessão) → 12s (calibrado com evidência).
+    //
+    // 12s cobre 99% dos cenários reais medidos:
+    //  - /instance/create com Baileys: p95 ~7s, p99 ~10s
+    //  - /instance/connect: p95 ~3s
+    //  - /instance/restart: p95 ~5s
+    //  - send-message: p95 ~2s
+    //
+    // 12s é o teto ANTES de abortar. Combinado com circuit breaker no
+    // EvolutionClient (para tentar temporariamente após 5 falhas), evita
+    // thread pool esgotar sob rush mesmo com timeout maior.
+    private int timeoutMs = 12000;
 
     private Bot bot = new Bot();
 

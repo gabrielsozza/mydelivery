@@ -135,7 +135,9 @@ public class ComplementoController {
             ComplementoItem it = ComplementoItem.builder()
                     .grupo(g)
                     .nome(strReq(imap, "nome"))
+                    .descricao(strOr(imap, "descricao", null))
                     .precoAdicional(decOr(imap, "precoAdicional", BigDecimal.ZERO))
+                    .maxSelecoes(intOrNull(imap, "maxSelecoes"))
                     .ativo(boolOr(imap, "ativo", true))
                     .build();
             g.getItens().add(it);
@@ -276,7 +278,9 @@ public class ComplementoController {
                         Map<String, Object> mi = new HashMap<>();
                         mi.put("id", i.getId());
                         mi.put("nome", i.getNome());
+                        mi.put("descricao", i.getDescricao()); // pode ser null — front trata
                         mi.put("precoAdicional", i.getPrecoAdicional() != null ? i.getPrecoAdicional() : BigDecimal.ZERO);
+                        mi.put("maxSelecoes", i.getMaxSelecoes()); // null = sem limite individual
                         mi.put("ativo", Boolean.TRUE.equals(i.getAtivo()));
                         return mi;
                     }).toList();
@@ -306,5 +310,20 @@ public class ComplementoController {
         Object v = m.get(k);
         if (v == null) return d;
         try { return new BigDecimal(v.toString()); } catch (Exception e) { return d; }
+    }
+    /** String opcional — retorna default (pode ser null). Vazio = null. */
+    private static String strOr(Map<String, Object> m, String k, String d) {
+        Object v = m.get(k);
+        if (v == null) return d;
+        String s = v.toString().trim();
+        return s.isEmpty() ? d : s;
+    }
+    /** Integer opcional puro — null quando ausente ou inválido. */
+    private static Integer intOrNull(Map<String, Object> m, String k) {
+        Object v = m.get(k);
+        if (v == null) return null;
+        String s = v.toString().trim();
+        if (s.isEmpty()) return null;
+        try { int n = Integer.parseInt(s); return n > 0 ? n : null; } catch (Exception e) { return null; }
     }
 }

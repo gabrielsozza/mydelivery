@@ -212,10 +212,21 @@ public class GrupoComplementoModeloController {
                 if (pr != null) {
                     try { preco = new java.math.BigDecimal(pr.toString()); } catch (Exception ignore) {}
                 }
+                // Propaga descricao + maxSelecoes vindo do modelo (podem estar null).
+                Object descRaw = it.get("descricao");
+                String desc = descRaw == null ? null : descRaw.toString().trim();
+                if (desc != null && desc.isEmpty()) desc = null;
+                Integer maxSel = null;
+                Object msRaw = it.get("maxSelecoes");
+                if (msRaw != null) {
+                    try { int n = Integer.parseInt(msRaw.toString()); if (n > 0) maxSel = n; } catch (Exception ignore) {}
+                }
                 ComplementoItem ci = ComplementoItem.builder()
                         .grupo(novo)
                         .nome(it.get("nome").toString().trim())
+                        .descricao(desc)
                         .precoAdicional(preco)
+                        .maxSelecoes(maxSel)
                         .ativo(true)
                         .build();
                 novo.getItens().add(ci);

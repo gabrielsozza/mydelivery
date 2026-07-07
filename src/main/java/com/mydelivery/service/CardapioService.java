@@ -223,7 +223,9 @@ public class CardapioService {
                     ComplementoItem itNovo = ComplementoItem.builder()
                             .grupo(gNovo)
                             .nome(itOrig.getNome())
+                            .descricao(itOrig.getDescricao())
                             .precoAdicional(itOrig.getPrecoAdicional())
+                            .maxSelecoes(itOrig.getMaxSelecoes())
                             .ativo(itOrig.getAtivo())
                             .build();
                     gNovo.getItens().add(itNovo);

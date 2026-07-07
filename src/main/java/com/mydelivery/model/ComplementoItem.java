@@ -23,8 +23,26 @@ public class ComplementoItem {
     @Column(nullable = false)
     private String nome;
 
+    /**
+     * Descrição opcional exibida no cardápio abaixo do nome. Usada pra
+     * ingredientes/sabor (ex: pizza "Calabresa" → "calabresa, queijo,
+     * cebola, orégano"). NULL/vazio = card mostra só o nome.
+     */
+    @Column(length = 300)
+    private String descricao;
+
     @Column(precision = 10, scale = 2)
     private BigDecimal precoAdicional = BigDecimal.ZERO;
+
+    /**
+     * Quantas vezes este item específico pode ser selecionado dentro do
+     * grupo. Default null = comportamento antigo (limite pelo max do grupo).
+     * Ex: açaí morango → max 2x (mesmo se o grupo permita 5 no total).
+     * Interpretação no frontend: cliente pode clicar "+" até atingir esse
+     * limite, aí desabilita.
+     */
+    @Column(name = "max_selecoes")
+    private Integer maxSelecoes;
 
     private Boolean ativo = true;
 }

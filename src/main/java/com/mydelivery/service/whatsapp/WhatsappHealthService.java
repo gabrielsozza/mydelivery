@@ -189,6 +189,9 @@ public class WhatsappHealthService {
             log.warn("[WAHealth] tentando reconexão de {} (tentativa {})",
                     inst.getInstanceName(), inst.getTentativasReconexaoSeguidas() + 1);
             evolutionClient.restart(inst.getInstanceName());
+            // Ativa post-reconnect throttle no rate limiter (60s de rampa 10%→100%).
+            // Evita burst-flood pós-reconnect que dispara detecção do WA.
+            WhatsappService.marcarRestart(inst.getInstanceName());
             inst.setUltimaTentativaReconexaoEm(LocalDateTime.now());
             inst.setTentativasReconexaoSeguidas(inst.getTentativasReconexaoSeguidas() + 1);
             instanceRepo.save(inst);

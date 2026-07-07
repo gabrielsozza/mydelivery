@@ -218,6 +218,13 @@ public class WhatsappWebhookController {
         if (fromMe) return; // Não processa mensagens que NÓS enviamos
         if (remoteJid == null) return;
 
+        // TRACKER DE REPLY-RATE (Jul/2026 v2): registra que este número respondeu.
+        // Se estávamos "esperando resposta" (msg enviada por nós <48h atrás), essa
+        // conversa vira "answered" no contador. WhatsApp usa unanswered-message
+        // ratio como sinal de ban desde 2026.
+        com.mydelivery.service.whatsapp.WhatsappService.trackerResposta(
+                inst.getInstanceName(), remoteJid);
+
         // ── ANTI-BACKLOG / ANTI-SPAM ──────────────────────────────────────
         // Quando Evolution/Baileys reconecta após queda, o WhatsApp drena
         // todas as mensagens acumuladas DURANTE a queda — pode vir uma

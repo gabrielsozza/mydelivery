@@ -178,10 +178,20 @@ public class WhatsappBotService {
                 } catch (Exception ignore) {}
             }
             // Não relança — webhook precisa responder 200 pra Evolution não fazer retry.
+        } finally {
+            // LIMPEZA CRÍTICA do MDC — sem isso, a thread do Tomcat retorna
+            // pro pool com "inst=X" ainda setado, e o próximo request de OUTRA
+            // instância herda a tag errada. Bug clássico de MDC em thread pool.
+            org.slf4j.MDC.remove("inst");
         }
     }
 
     private void processarInterno(WhatsappInstance inst, String numero, String texto, String pushName) {
+        // Injeta tag da instância no MDC — todos os logs do Bot vão ter
+        // {inst=mydelivery-rest-42}. Filtro no Railway: grep 'inst=X'.
+        // Limpo no finally do processar() (nível acima).
+        org.slf4j.MDC.put("inst", inst.getInstanceName());
+
         // ── Logs em INFO nos pontos de silêncio: antes eram DEBUG, bot calado
         //    sumia silenciosamente do log de produção. Agora aparece no Railway. ──
         if (!Boolean.TRUE.equals(inst.getBotAtivo())) {

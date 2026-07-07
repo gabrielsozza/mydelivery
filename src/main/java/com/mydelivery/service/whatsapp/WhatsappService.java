@@ -441,6 +441,10 @@ public class WhatsappService {
             // Heartbeat de envio — atualizado SÓ em sucesso. Combinado com
             // ultimaMensagemRecebidaEm prova que o bot está respondendo.
             marcarRespostaEnviada(inst);
+            // Tracker de reply-rate: guarda que enviamos pra esse número, esperando
+            // resposta em 48h. Se cliente responder, contamos como "conversa viva".
+            // Se ficar sem resposta, sinaliza risco de spam-flag pro admin.
+            trackerEnvio(inst.getInstanceName(), numeroDestino);
         } catch (RuntimeException e) {
             log.error("[WhatsApp] Falha ao enviar: {}", e.getMessage());
             boolean fallbackOk = false;
@@ -479,37 +483,234 @@ public class WhatsappService {
         enviarMensagem(inst, numeroDestino, texto, 0);
     }
 
-    // ── RATE LIMIT ANTI-SHADOWBAN (Jul/2026) ────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════════════
+    // RATE LIMIT MULTI-JANELA + WARMUP GRADUAL + POST-RECONNECT THROTTLE
+    // (Jul/2026 v2 — calibrado com pesquisa sobre WA policy 2026)
+    // ═══════════════════════════════════════════════════════════════════════
     //
-    // Sliding window de 60 minutos por instância. Guarda timestamps dos últimos
-    // envios em uma queue. A cada check, expira envios com >60min. Se count
-    // atual < limite, autoriza e adiciona. Senão, dropa.
+    // Fontes empíricas usadas:
+    //  - achiya-automation.com/en/blog/whatsapp-spam-detection-2026 — safe
+    //    zone: <30 msgs/hora (era 60 aqui, agressivo demais).
+    //  - github.com/kobie3717/baileys-antiban — anti-ban middleware Baileys
+    //    com padrão default 8/min, 200/hora, 1500/dia.
+    //  - Meta 2026 policy — WA agora conta "unanswered messages ratio" em
+    //    janela de 30 dias. Cap ~30% reply rate ou vira flag.
     //
-    // Em memória (não persiste) — se app reiniciar, contador zera. Isso é
-    // aceito: o WA também "esquece" heurística de volume em janelas curtas.
-    // Se o backend cair no meio do dia, ganha algumas msgs a mais, mas
-    // reset natural depois.
+    // Nosso caso (restaurante estruturado, permitido pela política):
+    //  - 8 msgs/minuto (rush de pedidos NÃO deve estourar isso)
+    //  - 40 msgs/hora (safe zone confortável)
+    //  - 500 msgs/dia (larga margem, restaurante médio faz ~100-200)
+    //  - Warmup GRADUAL 7 dias em vez de binário 48h
+    //  - Post-reconnect: rampa 60s, 10% → 100%
     //
-    // Storage: ConcurrentHashMap<instanceName, ArrayDeque<timestamp>>. Deque
-    // acessado dentro de synchronized na key. Baixo overhead — ~microsegundos.
+    // 3 janelas simultâneas. Se qualquer uma estoura, dropa. Aceita perder
+    // 1 msg pontual pra proteger a conta o dia inteiro.
+    // ═══════════════════════════════════════════════════════════════════════
     private static final java.util.concurrent.ConcurrentHashMap<String, java.util.ArrayDeque<Long>> RATE_HIST =
             new java.util.concurrent.ConcurrentHashMap<>();
 
-    @org.springframework.beans.factory.annotation.Value("${mydelivery.wa.rate-limit-hora:60}")
+    @org.springframework.beans.factory.annotation.Value("${mydelivery.wa.rate-limit-min:8}")
+    private int rateLimitMin;
+
+    @org.springframework.beans.factory.annotation.Value("${mydelivery.wa.rate-limit-hora:40}")
     private int rateLimitHora;
 
+    @org.springframework.beans.factory.annotation.Value("${mydelivery.wa.rate-limit-dia:500}")
+    private int rateLimitDia;
+
+    /**
+     * Warmup ramp de 7 dias. Multiplicador aplicado ao rate/dia.
+     * Dia 1: 0.04 (20 msgs), Dia 2: 0.08, Dia 3: 0.13, Dia 4: 0.24, Dia 5: 0.43,
+     * Dia 6: 0.78, Dia 7: 1.0. Baseado em growthFactor ~1.8 do baileys-antiban.
+     */
+    private static final double[] WARMUP_RAMP = {
+            0.04, 0.08, 0.13, 0.24, 0.43, 0.78, 1.00
+    };
+
+    /** Se o dono já pausou a autoresposta manualmente, respeita. Configurável. */
+    @org.springframework.beans.factory.annotation.Value("${mydelivery.wa.warmup-dias:7}")
+    private int warmupDias;
+
+    /**
+     * Timestamps do último RESTART/RECONNECT por instância. Usado pra pós-reconnect
+     * throttle: nos primeiros 60s a capacidade é reduzida gradualmente.
+     * Cada reconexão flag é DIFERENTE do post-reconnect: reconexão implícita do
+     * Evolution não é registrada aqui — apenas restart deliberado (via HealthJob
+     * ou WatchdogJob).
+     */
+    private static final java.util.concurrent.ConcurrentHashMap<String, Long> ULTIMO_RESTART =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * Registra que houve restart/reconnect da instância. Chamado pelos jobs de
+     * health/watchdog. Ativa post-reconnect throttle nos próximos 60s.
+     * Static pra evitar ciclo de dependência entre WhatsappService e HealthService.
+     */
+    public static void marcarRestart(String instanceName) {
+        ULTIMO_RESTART.put(instanceName, System.currentTimeMillis());
+    }
+
+    /**
+     * Fator de throttle aplicado logo após reconnect. 60s de rampa começando em
+     * 10% de capacidade, subindo em 6 steps (10s cada) até 100%.
+     * Mimic humano — depois de reconectar, começa devagar em vez de disparar
+     * todas as msgs pendentes de uma vez (padrão que dispara flag do WA).
+     */
+    private double fatorPosReconnect(String instanceName) {
+        Long ultRestart = ULTIMO_RESTART.get(instanceName);
+        if (ultRestart == null) return 1.0;
+        long msDesde = System.currentTimeMillis() - ultRestart;
+        if (msDesde >= 60_000L) return 1.0; // rampa concluída
+        // 6 steps de 10s: 10%, 25%, 40%, 55%, 70%, 85% e depois 100%
+        int step = (int) (msDesde / 10_000L);
+        double[] fatores = { 0.10, 0.25, 0.40, 0.55, 0.70, 0.85 };
+        return step < fatores.length ? fatores[step] : 1.0;
+    }
+
+    /**
+     * Multiplicador de warmup por dias-desde-conexão. Se conta tem N dias
+     * conectada, aplica WARMUP_RAMP[N-1]. Depois de 7 dias, retorna 1.0.
+     * Se instância NUNCA conectou (conectadoEm null), retorna 0.04 (ultra-safe).
+     */
+    private double fatorWarmup(WhatsappInstance inst) {
+        if (warmupDias <= 0) return 1.0;
+        if (inst.getConectadoEm() == null) return WARMUP_RAMP[0];
+        long dias = java.time.Duration.between(inst.getConectadoEm(), java.time.LocalDateTime.now()).toDays();
+        if (dias >= WARMUP_RAMP.length) return 1.0;
+        return WARMUP_RAMP[(int) dias];
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // UNANSWERED-MESSAGE TRACKER (Jul/2026 v2)
+    // ═══════════════════════════════════════════════════════════════════════
+    //
+    // Meta em 2026 adicionou "unanswered-message ratio" como sinal de ban.
+    // Referência: pesquisa achiya-automation.com/blog/whatsapp-spam-detection-2026
+    // e chatboq.com/blogs/third-party-ai-chatbots-ban.
+    //
+    // Regra: WhatsApp conta mensagens enviadas que NÃO receberam resposta em
+    // 48h. Cumulativo, janela rolante de 30 dias, todas conversas. Se
+    // reply-rate < 30% → flag pra restrição/ban.
+    //
+    // Nosso tracker: por instância + por número destino, guarda timestamp da
+    // ÚLTIMA msg enviada. Ao receber msg do mesmo número em <48h, marca como
+    // "respondida" (incrementa reply count). Consulta agregada devolve
+    // reply-rate atual pra admin ver risco.
+    //
+    // In-memory. Reset em restart do backend (aceito — janela de 48h resetar
+    // é OK pra sinalização, não pra billing).
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /** Msgs enviadas por instância nas últimas 48h. Key = "<instancia>:<numero>". */
+    private static final java.util.concurrent.ConcurrentHashMap<String, Long> ENVIADAS_48H =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** Contadores agregados por instância — {enviadasTotal, respondidasTotal}. */
+    private static final java.util.concurrent.ConcurrentHashMap<String, long[]> STATS_INSTANCIA =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * Registra que enviamos msg pra este número. Chamado após envio confirmado.
+     * Se já tinha registro <48h, contamos como "envio duplicado sem resposta"
+     * (não bumpamos again — mantém primeira timestamp pra reply detection).
+     */
+    private void trackerEnvio(String instanceName, String numero) {
+        String key = instanceName + ":" + limparNumeroTrk(numero);
+        long agora = System.currentTimeMillis();
+        // Só marca timestamp se não tinha um recente (<48h). Múltiplas msgs
+        // pra mesmo número sem resposta = 1 conversa, não N.
+        ENVIADAS_48H.compute(key, (k, v) -> (v == null || (agora - v) > 172_800_000L) ? agora : v);
+        // Sempre incrementa contador de envios totais pra taxa geral.
+        STATS_INSTANCIA.computeIfAbsent(instanceName, k -> new long[]{0, 0})[0]++;
+    }
+
+    /**
+     * Registra que este número RESPONDEU. Chamado no webhook MESSAGES_UPSERT
+     * quando fromMe=false. Se havia envio pendente <48h, conta como
+     * "respondida" pra reply-rate.
+     */
+    public static void trackerResposta(String instanceName, String numero) {
+        String key = instanceName + ":" + limparNumeroTrk(numero);
+        Long tsEnvio = ENVIADAS_48H.remove(key);
+        if (tsEnvio == null) return; // não tinha msg pendente pra ele
+        if (System.currentTimeMillis() - tsEnvio > 172_800_000L) return; // >48h
+        STATS_INSTANCIA.computeIfAbsent(instanceName, k -> new long[]{0, 0})[1]++;
+    }
+
+    /** Retorna reply-rate atual da instância (0.0 a 1.0). null se nunca enviou. */
+    public Double getReplyRate(String instanceName) {
+        long[] stats = STATS_INSTANCIA.get(instanceName);
+        if (stats == null || stats[0] == 0) return null;
+        return (double) stats[1] / (double) stats[0];
+    }
+
+    /** Alerta admin se reply-rate cair abaixo de 20% em conta com volume relevante. */
+    public boolean estaEmRiscoDeSpamFlag(String instanceName) {
+        long[] stats = STATS_INSTANCIA.get(instanceName);
+        if (stats == null || stats[0] < 30) return false; // pouco volume, não avalia
+        double taxa = (double) stats[1] / (double) stats[0];
+        return taxa < 0.20;
+    }
+
+    private static String limparNumeroTrk(String num) {
+        if (num == null) return "";
+        return num.replaceAll("\\D", "");
+    }
+
+    /**
+     * Check multi-janela. Retorna true se pode enviar SEGURAMENTE.
+     * Aplica: rate limits (min/hora/dia), warmup gradual, post-reconnect throttle.
+     * Se qualquer camada bloquear, DROPA e loga o motivo específico.
+     */
     private boolean rateLimitOk(WhatsappInstance inst) {
-        if (rateLimitHora <= 0) return true; // desabilitado
+        if (rateLimitHora <= 0) return true; // desabilitado totalmente
+
         String key = inst.getInstanceName();
         java.util.ArrayDeque<Long> hist = RATE_HIST.computeIfAbsent(key, k -> new java.util.ArrayDeque<>());
         long agora = System.currentTimeMillis();
-        long corte = agora - 3_600_000L; // 60min atrás
+        long corteDia  = agora - 86_400_000L;
+        long corteHora = agora - 3_600_000L;
+        long corteMin  = agora -    60_000L;
+
+        // Multiplicadores dinâmicos: warmup × pós-reconnect
+        double warm = fatorWarmup(inst);
+        double posRec = fatorPosReconnect(key);
+        double mult = warm * posRec;
+        int capMin  = Math.max(1, (int) Math.floor(rateLimitMin  * mult));
+        int capHora = Math.max(1, (int) Math.floor(rateLimitHora * mult));
+        int capDia  = Math.max(1, (int) Math.floor(rateLimitDia  * mult));
+
         synchronized (hist) {
-            // Expira timestamps antigos
-            while (!hist.isEmpty() && hist.peekFirst() < corte) {
+            // Expira entradas com >24h (janela máxima). As demais janelas usam
+            // subsets contando do agora.
+            while (!hist.isEmpty() && hist.peekFirst() < corteDia) {
                 hist.pollFirst();
             }
-            if (hist.size() >= rateLimitHora) return false;
+            // Conta ocorrências em cada janela olhando pra trás
+            int dia = hist.size();
+            int hora = 0, min = 0;
+            for (java.util.Iterator<Long> it = hist.descendingIterator(); it.hasNext(); ) {
+                long t = it.next();
+                if (t >= corteMin)  min++;
+                if (t >= corteHora) hora++;
+                else break; // deque em ordem crescente — se saiu da janela hora, para
+            }
+
+            if (min >= capMin) {
+                log.warn("[WhatsApp:RATE_LIMIT] cap MIN atingido pra {} — {}/{} (warm={} posRec={})",
+                        key, min, capMin, warm, posRec);
+                return false;
+            }
+            if (hora >= capHora) {
+                log.warn("[WhatsApp:RATE_LIMIT] cap HORA atingido pra {} — {}/{} (warm={} posRec={})",
+                        key, hora, capHora, warm, posRec);
+                return false;
+            }
+            if (dia >= capDia) {
+                log.warn("[WhatsApp:RATE_LIMIT] cap DIA atingido pra {} — {}/{} (warm={})",
+                        key, dia, capDia, warm);
+                return false;
+            }
             hist.addLast(agora);
             return true;
         }

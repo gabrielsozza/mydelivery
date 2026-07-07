@@ -66,6 +66,27 @@ public class WhatsappController {
         return ResponseEntity.ok(Map.of("status", "DESCONECTADA"));
     }
 
+    /**
+     * Métricas anti-shadowban da instância do restaurante logado. Devolve
+     * reply-rate atual, flag de risco de spam-flag, e estado do rate limiter.
+     * Usado pelo painel pra mostrar "saúde" do bot ao dono. Também pelo admin
+     * pra decidir intervir em conta específica antes de shadow ban.
+     */
+    @GetMapping("/risco")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Map<String, Object>> risco(@AuthenticationPrincipal String email) {
+        Restaurante r = restauranteRepository.findByUsuarioEmail(email).orElseThrow();
+        WhatsappInstance inst = whatsappService.status(r);
+        String nome = inst.getInstanceName();
+        Double replyRate = whatsappService.getReplyRate(nome);
+        boolean emRisco = whatsappService.estaEmRiscoDeSpamFlag(nome);
+        Map<String, Object> resp = new java.util.HashMap<>();
+        resp.put("replyRate", replyRate); // 0.0 a 1.0, ou null se pouco volume
+        resp.put("emRiscoDeSpamFlag", emRisco); // true se <20% e volume relevante
+        resp.put("instanceName", nome);
+        return ResponseEntity.ok(resp);
+    }
+
     /** Toggle do bot — 1 clique. Body: { ativo: true|false } */
     @PatchMapping("/bot")
     @PreAuthorize("hasRole('RESTAURANTE')")

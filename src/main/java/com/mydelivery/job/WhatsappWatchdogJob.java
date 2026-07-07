@@ -66,8 +66,23 @@ public class WhatsappWatchdogJob {
     @org.springframework.beans.factory.annotation.Value("${mydelivery.jobs.wa-watchdog.ativo:true}")
     private boolean ativo;
 
-    /** Máximo de pings falhos seguidos antes de marcar como suspeita. */
-    private static final int MAX_FALHAS_SEGUIDAS = 2;
+    /**
+     * Máximo de pings falhos seguidos antes de marcar como suspeita.
+     * Jul/2026 v3: 2 → 3. Com tick de 30min, 2 falhas = 60min de tolerância,
+     * o que era curto demais. Evolution/Baileys em rush pode ficar lento
+     * por 60-90min e recuperar sozinho. 3 falhas = 90min mínimo, evita
+     * flag individual quando o problema é global.
+     */
+    private static final int MAX_FALHAS_SEGUIDAS = 3;
+
+    /**
+     * Se MAIS de {@code SAFETY_FALHAS_MASSA_PCT}% das instâncias falharem
+     * ping no mesmo tick, é problema global da Evolution — NÃO marcamos NENHUMA
+     * como zumbi individual. Isso evita o cenário "Evolution VPS caiu 30min →
+     * watchdog matou todas as 9 instâncias".
+     * 50% = suficientemente conservador. Se 5 de 9 falham, é infra, não app.
+     */
+    private static final int SAFETY_FALHAS_MASSA_PCT = 50;
 
     /**
      * Contador de falhas consecutivas por instância. Reseta em qualquer
@@ -104,49 +119,71 @@ public class WhatsappWatchdogJob {
             return;
         }
 
-        int ok = 0, falhou = 0, zumbi = 0;
+        // PASSO 1: pinga TODAS as instâncias primeiro. Coleta resultados.
+        // Só depois decide o que fazer, permitindo detectar padrão de outage
+        // global (muitas falhas no mesmo tick = infra, não zumbi individual).
+        java.util.List<String> falharam = new java.util.ArrayList<>();
+        java.util.List<WhatsappInstance> falharamInst = new java.util.ArrayList<>();
+        int ok = 0;
         for (WhatsappInstance inst : conectadas) {
             String nome = inst.getInstanceName();
-            boolean pingOk = pingar(nome);
-            if (pingOk) {
-                // Zera contador — recuperou. remove() devolve o valor anterior
-                // (ou null se nunca falhou) num único hit atômico.
+            if (pingar(nome)) {
                 Integer previas = FALHAS_SEGUIDAS.remove(nome);
                 ok++;
                 if (previas != null && previas > 0) {
                     log.info("[Watchdog] {} recuperou após {} falhas", nome, previas);
                 }
             } else {
-                int consec = FALHAS_SEGUIDAS.merge(nome, 1, Integer::sum);
-                falhou++;
-                if (consec >= MAX_FALHAS_SEGUIDAS) {
-                    zumbi++;
-                    log.error("[Watchdog] ZUMBI DETECTADO — {} falhou {} pings seguidos. " +
-                            "Marcando status=DESCONECTADA pra HealthJob tentar reconectar.",
-                            nome, consec);
-                    try {
-                        // Marcar como DESCONECTADA faz HealthJob pegar no próximo
-                        // tick e disparar o fluxo de reconexão normal (respeitando
-                        // cooldown, warmup, pico, tudo). Não chamamos restart aqui
-                        // pra centralizar decisão de reconexão no HealthJob.
-                        inst.setStatus(WhatsappInstance.Status.DESCONECTADA);
-                        inst.setMotivoUltimaQueda("Watchdog: sessão zumbi (Evolution deixou de responder ao ping)");
-                        inst.setUltimaQuedaEm(LocalDateTime.now());
-                        repo.save(inst);
-                    } catch (Exception e) {
-                        log.error("[Watchdog] falha ao marcar {} como DESCONECTADA: {}", nome, e.getMessage());
-                    }
-                    // Zera contador — HealthJob agora é dono da reconexão
-                    FALHAS_SEGUIDAS.put(nome, 0);
-                } else {
-                    log.warn("[Watchdog] {} falhou ping #{} (precisa de {} pra intervir)",
-                            nome, consec, MAX_FALHAS_SEGUIDAS);
-                }
+                falharam.add(nome);
+                falharamInst.add(inst);
             }
         }
 
-        log.info("[Watchdog] tick — checadas={} ok={} falhou={} zumbi={}",
-                conectadas.size(), ok, falhou, zumbi);
+        // PASSO 2: safety anti-cascade. Se >= 50% das instâncias falharam
+        // no MESMO tick, é problema global da Evolution/rede — NÃO marcamos
+        // NENHUMA como zumbi. Só logamos alerta pra admin investigar.
+        // Isso previne o cenário "Evolution VPS caiu 30min → watchdog matou
+        // todas as 9 instâncias" que já aconteceu.
+        int pctFalha = conectadas.size() == 0 ? 0 : (falharam.size() * 100) / conectadas.size();
+        if (pctFalha >= SAFETY_FALHAS_MASSA_PCT && conectadas.size() >= 3) {
+            log.error("[Watchdog:SAFETY] OUTAGE GLOBAL suspeito — {}% ({}/{}) das instâncias falharam ping " +
+                    "no mesmo tick. NÃO marcando nenhuma como zumbi (provável problema Evolution/rede). " +
+                    "Instâncias afetadas: {}",
+                    pctFalha, falharam.size(), conectadas.size(), falharam);
+            // NÃO incrementa contadores — o que aconteceu foi infra, não zumbi.
+            // Se Evolution recuperar até o próximo tick, contadores zeram sozinhos.
+            return;
+        }
+
+        // PASSO 3: modo normal — incrementa contador de cada falha e marca como
+        // zumbi quando atinge MAX_FALHAS_SEGUIDAS.
+        int zumbi = 0;
+        for (int i = 0; i < falharam.size(); i++) {
+            String nome = falharam.get(i);
+            WhatsappInstance inst = falharamInst.get(i);
+            int consec = FALHAS_SEGUIDAS.merge(nome, 1, Integer::sum);
+            if (consec >= MAX_FALHAS_SEGUIDAS) {
+                zumbi++;
+                log.error("[Watchdog] ZUMBI DETECTADO — {} falhou {} pings seguidos. " +
+                        "Marcando status=DESCONECTADA pra HealthJob tentar reconectar.",
+                        nome, consec);
+                try {
+                    inst.setStatus(WhatsappInstance.Status.DESCONECTADA);
+                    inst.setMotivoUltimaQueda("Watchdog: sessão zumbi (Evolution deixou de responder ao ping)");
+                    inst.setUltimaQuedaEm(LocalDateTime.now());
+                    repo.save(inst);
+                } catch (Exception e) {
+                    log.error("[Watchdog] falha ao marcar {} como DESCONECTADA: {}", nome, e.getMessage());
+                }
+                FALHAS_SEGUIDAS.put(nome, 0);
+            } else {
+                log.warn("[Watchdog] {} falhou ping #{} (precisa de {} pra intervir)",
+                        nome, consec, MAX_FALHAS_SEGUIDAS);
+            }
+        }
+
+        log.info("[Watchdog] tick — checadas={} ok={} falhou={} zumbi={} pctFalha={}%",
+                conectadas.size(), ok, falharam.size(), zumbi, pctFalha);
     }
 
     /**

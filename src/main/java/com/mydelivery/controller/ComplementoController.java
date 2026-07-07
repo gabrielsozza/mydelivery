@@ -83,6 +83,7 @@ public class ComplementoController {
                 .obrigatorio(boolOr(body, "obrigatorio", false))
                 .minEscolhas(intOr(body, "minEscolhas", 0))
                 .maxEscolhas(intOr(body, "maxEscolhas", 1))
+                .modoPreco(parseModoPreco(body.get("modoPreco")))
                 .itens(new java.util.ArrayList<>())  // garante coleção mutável
                 .build();
         // Adiciona itens ANTES de salvar — cascade.ALL persiste tudo numa só
@@ -106,6 +107,7 @@ public class ComplementoController {
         if (body.containsKey("obrigatorio"))  g.setObrigatorio(boolOr(body, "obrigatorio", false));
         if (body.containsKey("minEscolhas"))  g.setMinEscolhas(intOr(body, "minEscolhas", 0));
         if (body.containsKey("maxEscolhas"))  g.setMaxEscolhas(intOr(body, "maxEscolhas", 1));
+        if (body.containsKey("modoPreco"))    g.setModoPreco(parseModoPreco(body.get("modoPreco")));
 
         // ── Substituição completa dos itens (jeito canônico com orphanRemoval=true) ──
         // Antes: itemRepo.delete() em cada antigo + itemRepo.save() em cada novo. Isso
@@ -271,6 +273,8 @@ public class ComplementoController {
         out.put("obrigatorio", Boolean.TRUE.equals(g.getObrigatorio()));
         out.put("minEscolhas", g.getMinEscolhas() != null ? g.getMinEscolhas() : 0);
         out.put("maxEscolhas", g.getMaxEscolhas() != null ? g.getMaxEscolhas() : 1);
+        out.put("modoPreco", g.getModoPreco() != null
+                ? g.getModoPreco().name() : ComplementoGrupo.ModoPreco.SOMA.name());
         List<Map<String, Object>> itens = g.getItens() == null ? List.of()
                 : g.getItens().stream()
                     .filter(i -> incluirInativos || Boolean.TRUE.equals(i.getAtivo()))
@@ -325,5 +329,17 @@ public class ComplementoController {
         String s = v.toString().trim();
         if (s.isEmpty()) return null;
         try { int n = Integer.parseInt(s); return n > 0 ? n : null; } catch (Exception e) { return null; }
+    }
+
+    /**
+     * Parse tolerante do modoPreco vindo do front. Aceita "SOMA"/"MAIOR" (qualquer
+     * casing) e cai em SOMA (default retrocompat) se ausente, vazio ou inválido.
+     */
+    private static ComplementoGrupo.ModoPreco parseModoPreco(Object v) {
+        if (v == null) return ComplementoGrupo.ModoPreco.SOMA;
+        String s = v.toString().trim().toUpperCase();
+        if (s.isEmpty()) return ComplementoGrupo.ModoPreco.SOMA;
+        try { return ComplementoGrupo.ModoPreco.valueOf(s); }
+        catch (IllegalArgumentException e) { return ComplementoGrupo.ModoPreco.SOMA; }
     }
 }

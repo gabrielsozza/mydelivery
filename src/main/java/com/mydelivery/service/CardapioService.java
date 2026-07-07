@@ -43,11 +43,24 @@ public class CardapioService {
      * (cada cliente que abre o link puxa). Cache invalida sozinho em 60s,
      * entao alteracao do restaurante aparece pro cliente em ate 1 minuto.
      * Reducao de queries no banco: ~95% em horario de pico.
+     *
+     * Cache key inclui o dia da semana no fuso Brasil pra o filtro
+     * `diasSemanaAtivos` invalidar automaticamente na virada do dia. Sem isso,
+     * na segunda 23:59 o cache guardava produtos de segunda e na terça 00:01
+     * eles apareciam por até 60s a mais do que deveriam.
+     *
+     * Filtro por dia da semana: aplicado AQUI (antes era só em PublicController
+     * legado, que nao e o endpoint que o cardapio front consome — bug que fazia
+     * produtos com restricao de dia aparecerem em qualquer dia).
      */
-    @org.springframework.cache.annotation.Cacheable(value = "cardapio", key = "#slug")
+    @org.springframework.cache.annotation.Cacheable(
+            value = "cardapio",
+            key = "#slug + '::' + T(java.time.LocalDate).now(T(java.time.ZoneId).of('America/Sao_Paulo')).getDayOfWeek().name()")
     public List<CategoriaComProdutosResponse> getCardapioPublico(String slug) {
         Restaurante restaurante = restauranteRepository.findBySlug(slug)
                 .orElseThrow(() -> new RuntimeException("Restaurante não encontrado"));
+
+        final String hoje = codigoDiaSemanaAtual();
 
         List<Categoria> categorias = categoriaRepository
                 .findByRestauranteIdAndAtivoTrueOrderByOrdemAsc(restaurante.getId());
@@ -58,6 +71,9 @@ public class CardapioService {
                     .stream()
                     .filter(p -> p.getCategoria() != null &&
                                  p.getCategoria().getId().equals(cat.getId()))
+                    // Se o produto tem restrição de dias e hoje não está na lista, esconde.
+                    // Sem restrição (null/vazio) = aparece sempre (retrocompat pra 99% dos produtos).
+                    .filter(p -> diaSemanaAceita(p.getDiasSemanaAtivos(), hoje))
                     // Ordena por ordem (nulls last) — respeita reordenação do painel.
                     // Tie-breaker pelo id pra ordem estável quando vários têm ordem=0.
                     .sorted(java.util.Comparator
@@ -73,6 +89,31 @@ public class CardapioService {
                     .produtos(produtos)
                     .build();
         }).toList();
+    }
+
+    /** Código de 3 letras pro dia da semana atual (fuso Brasil). */
+    private static String codigoDiaSemanaAtual() {
+        java.time.DayOfWeek d = java.time.LocalDate.now(
+                java.time.ZoneId.of("America/Sao_Paulo")).getDayOfWeek();
+        switch (d) {
+            case MONDAY:    return "SEG";
+            case TUESDAY:   return "TER";
+            case WEDNESDAY: return "QUA";
+            case THURSDAY:  return "QUI";
+            case FRIDAY:    return "SEX";
+            case SATURDAY:  return "SAB";
+            case SUNDAY:    return "DOM";
+            default:        return "";
+        }
+    }
+
+    /** true se produto pode aparecer hoje. null/vazio = sempre visível. */
+    private static boolean diaSemanaAceita(String diasCsv, String hoje) {
+        if (diasCsv == null || diasCsv.isBlank()) return true;
+        for (String d : diasCsv.split(",")) {
+            if (d.trim().equalsIgnoreCase(hoje)) return true;
+        }
+        return false;
     }
 
     // ─── CATEGORIAS ──────────────────────────────────────────────────────
@@ -216,6 +257,7 @@ public class CardapioService {
                     .obrigatorio(gOrig.getObrigatorio())
                     .minEscolhas(gOrig.getMinEscolhas())
                     .maxEscolhas(gOrig.getMaxEscolhas())
+                    .modoPreco(gOrig.getModoPreco() != null ? gOrig.getModoPreco() : ComplementoGrupo.ModoPreco.SOMA)
                     .itens(new java.util.ArrayList<>())
                     .build();
             if (gOrig.getItens() != null) {

@@ -67,13 +67,12 @@ public class WhatsappBotService {
             java.util.concurrent.ThreadLocalRandom.current();
 
     /**
-     * Warmup do bot em conta nova (Jul/2026).
-     * Nas primeiras 24h após conectar, o bot fica calado — dono responde
-     * manualmente pra criar padrão humano na conta antes do bot entrar.
-     * Reduz shadow ban imediato em conta nova de forma significativa.
-     * Override via env var pra ajustar sem redeploy.
+     * Warmup do bot em conta nova. DESATIVADO por padrão a pedido do produto:
+     * operação grande não tolera 24h de silêncio pós-conexão — o bot precisa
+     * responder assim que o QR é escaneado. Deixado configurável via env var
+     * pra reativar em conta nova frágil, se necessário.
      */
-    @org.springframework.beans.factory.annotation.Value("${mydelivery.bot.warmup-horas:24}")
+    @org.springframework.beans.factory.annotation.Value("${mydelivery.bot.warmup-horas:0}")
     private int warmupHorasCfg;
 
     private int WARMUP_HORAS_BOT() { return warmupHorasCfg; }

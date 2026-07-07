@@ -403,6 +403,19 @@ public class WhatsappService {
                     inst.getInstanceName(), inst.getStatus());
             return;
         }
+
+        // ── RATE LIMIT anti-shadowban (Jul/2026) ─────────────────────────────
+        // Cap de envios por hora por instância. WhatsApp shadow bane conta que
+        // envia mais que ~80-100 msgs/hora sem histórico. Cap em 60 dá margem
+        // segura pra restaurante de volume alto SEM disparar heurística de bot.
+        // Se hitou o cap, DROPA a msg silenciosamente (log warning) — o cliente
+        // não recebe resposta nessa hora específica, mas a conta sobrevive
+        // o dia inteiro. Restaurante pode aumentar via env se souber o risco.
+        if (!rateLimitOk(inst)) {
+            log.warn("[WhatsApp:RATE_LIMIT] cap horário atingido pra {} — msg descartada. Ajuste MYDELIVERY_WA_RATE_LIMIT_HORA se realmente precisa.",
+                    inst.getInstanceName());
+            return;
+        }
         try {
             // Convenção interna: se a resposta do bot começa com "IMG::<url>::<caption>",
             // envia imagem com legenda em vez de texto puro. Resolve o "quadrado preto"
@@ -464,6 +477,42 @@ public class WhatsappService {
     /** Overload sem delay — mantém callers antigos. */
     public void enviarMensagem(WhatsappInstance inst, String numeroDestino, String texto) {
         enviarMensagem(inst, numeroDestino, texto, 0);
+    }
+
+    // ── RATE LIMIT ANTI-SHADOWBAN (Jul/2026) ────────────────────────────────
+    //
+    // Sliding window de 60 minutos por instância. Guarda timestamps dos últimos
+    // envios em uma queue. A cada check, expira envios com >60min. Se count
+    // atual < limite, autoriza e adiciona. Senão, dropa.
+    //
+    // Em memória (não persiste) — se app reiniciar, contador zera. Isso é
+    // aceito: o WA também "esquece" heurística de volume em janelas curtas.
+    // Se o backend cair no meio do dia, ganha algumas msgs a mais, mas
+    // reset natural depois.
+    //
+    // Storage: ConcurrentHashMap<instanceName, ArrayDeque<timestamp>>. Deque
+    // acessado dentro de synchronized na key. Baixo overhead — ~microsegundos.
+    private static final java.util.concurrent.ConcurrentHashMap<String, java.util.ArrayDeque<Long>> RATE_HIST =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    @org.springframework.beans.factory.annotation.Value("${mydelivery.wa.rate-limit-hora:60}")
+    private int rateLimitHora;
+
+    private boolean rateLimitOk(WhatsappInstance inst) {
+        if (rateLimitHora <= 0) return true; // desabilitado
+        String key = inst.getInstanceName();
+        java.util.ArrayDeque<Long> hist = RATE_HIST.computeIfAbsent(key, k -> new java.util.ArrayDeque<>());
+        long agora = System.currentTimeMillis();
+        long corte = agora - 3_600_000L; // 60min atrás
+        synchronized (hist) {
+            // Expira timestamps antigos
+            while (!hist.isEmpty() && hist.peekFirst() < corte) {
+                hist.pollFirst();
+            }
+            if (hist.size() >= rateLimitHora) return false;
+            hist.addLast(agora);
+            return true;
+        }
     }
 
     // ── diagnóstico de webhook ──

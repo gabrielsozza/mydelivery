@@ -815,59 +815,60 @@ public class WhatsappBotService {
         return montarApresentacao(r, null);
     }
 
-    /** Overload com EstadoNumero (compat) — usa saudação contextual por horário. */
+    /**
+     * SAUDAÇÃO CURTA (estilo Anotai — Jul/2026).
+     *
+     * Antes: 15 linhas com menu completo em toda saudação. Isso é fingerprint
+     * forte de bot pro algoritmo do WhatsApp (humano nunca responde "oi" com
+     * bíblia). Contribuía direto pros SHADOW_BAN_SUSPEITO observados no admin.
+     *
+     * Agora: 1 linha com saudação + nome + link (aberto) ou linha extra de
+     * aviso de fechado. Menu completo só quando cliente manda algo que o bot
+     * NÃO ENTENDE — aí faz sentido educacional listar tudo. Ver montarMenuCurto.
+     *
+     * Overload com EstadoNumero (compat) — usa saudação contextual por horário.
+     */
     private String montarApresentacao(Restaurante r, EstadoNumero st) {
         String link = montarLinkCardapio(r);
         boolean aberto = Boolean.TRUE.equals(r.getAberto());
-
-        // Saudação contextual: só horário do dia, sem nome próprio.
         String sauda = saudacaoHorario() + "!";
 
         StringBuilder sb = new StringBuilder();
-        sb.append(sauda).append(" 👋 Aqui é da *").append(r.getNome()).append("*.\n\n");
-
-        // Se loja fechada, sinaliza ANTES do menu — não induz compra.
-        if (!aberto) {
-            sb.append("⚠️ No momento estamos *fechados*.\n");
-            String linhaH = montarLinhaHorarioHoje(r);
-            if (notBlank(linhaH)) sb.append(linhaH).append("\n");
-            sb.append("\nVocê ainda pode tirar dúvidas comigo ou dar uma olhada no cardápio:\n");
-        } else {
-            sb.append("Como posso te ajudar hoje?\n\n");
-        }
-
-        sb.append("• 🍽️ *Cardápio*\n");
-        sb.append("• 🛵 *Taxa de entrega*\n");
-        sb.append("• 📍 *Endereço da loja* / *Regiões atendidas*\n");
-        sb.append("• 📞 *Telefone*\n");
-        sb.append("• ⏱️ *Tempo de entrega*\n");
-        sb.append("• 💰 *Pedido mínimo*\n");
-        sb.append("• 🕒 *Horário de funcionamento*\n");
-        sb.append("• 👤 *Falar com atendente*\n\n");
+        sb.append(sauda).append(" 👋 Aqui é da *").append(r.getNome()).append("*.");
 
         if (aberto) {
-            sb.append("Ou já faça seu pedido pelo cardápio 👉 ").append(link);
+            // Fluxo feliz: 1 linha com CTA direto pro cardápio. Fim.
+            sb.append("\nVocê pode pedir aqui: ").append(link);
         } else {
-            sb.append("Cardápio para visualização: ").append(link);
+            // Loja fechada: fica um pouco mais longo pra explicar, mas ainda
+            // sem o menu completo. Horário de hoje ajuda o cliente decidir.
+            sb.append("\n\n⚠️ No momento estamos *fechados*.");
+            String linhaH = montarLinhaHorarioHoje(r);
+            if (notBlank(linhaH)) sb.append("\n").append(linhaH);
+            sb.append("\n\nDá pra ver o cardápio aqui: ").append(link);
         }
         return comLogoSeHouver(r, sb.toString());
     }
 
     /**
-     * Fallback amigável quando a msg do cliente não casou com nenhuma intent.
-     * Lista as opções principais — sempre cordial, nunca culpa o cliente.
+     * Fallback quando a msg do cliente NÃO casou com nenhuma intent.
+     *
+     * AQUI sim faz sentido listar tudo — o cliente perguntou algo e a gente
+     * não entendeu, então damos as opções pra ele reformular. Diferente da
+     * saudação inicial (que só mostra o link direto).
      */
     private String montarMenuCurto(Restaurante r) {
         boolean aberto = Boolean.TRUE.equals(r.getAberto());
-        StringBuilder sb = new StringBuilder("Desculpe, não consegui entender. 😅\n\n");
+        StringBuilder sb = new StringBuilder("Desculpe, não entendi 😅\n\n");
         if (!aberto) sb.append("⚠️ Aviso: estamos *fechados* no momento.\n\n");
-        sb.append("Posso te ajudar com:\n")
+        sb.append("Você ainda pode tirar dúvidas comigo:\n")
           .append("• 🍽️ *Cardápio*\n")
-          .append("• 🕒 *Horário* de funcionamento\n")
-          .append("• 📍 *Endereço* da loja\n")
           .append("• 🛵 *Taxa de entrega*\n")
-          .append("• ⏱️ *Tempo* de entrega\n")
+          .append("• 📍 *Endereço da loja* / *Regiões atendidas*\n")
+          .append("• 📞 *Telefone*\n")
+          .append("• ⏱️ *Tempo de entrega*\n")
           .append("• 💰 *Pedido mínimo*\n")
+          .append("• 🕒 *Horário de funcionamento*\n")
           .append("• 👤 *Falar com atendente*\n\n")
           .append(aberto ? "Cardápio: " : "Cardápio (visualização): ")
           .append(montarLinkCardapio(r));

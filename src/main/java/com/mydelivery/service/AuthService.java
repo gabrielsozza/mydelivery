@@ -278,7 +278,11 @@ public class AuthService {
      *  vazar existência de login vs senha errada.)
      */
     private LoginResponse tentarLoginMembro(String login, String senha) {
-        var membroOpt = membroEquipeRepository.findByLoginIgnoreCase(login);
+        // Usa a query com JOIN FETCH pra carregar restaurante + usuario numa
+        // única transação. Sem isso, `m.getRestaurante().getUsuario().getEmail()`
+        // abaixo caía em "no session" (LazyInitializationException) fora do
+        // escopo transacional do repo.
+        var membroOpt = membroEquipeRepository.findParaLoginByLoginIgnoreCase(login);
         if (membroOpt.isEmpty()) return null;
         var m = membroOpt.get();
 

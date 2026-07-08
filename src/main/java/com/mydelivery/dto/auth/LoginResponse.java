@@ -16,4 +16,11 @@ public class LoginResponse {
     private String email;
     private String role;
     private String restauranteSlug;
+    // ── Novos campos (Fase Equipe) — só populados quando o login é de MEMBRO.
+    // Frontend usa pra saber que é login de equipe e ajustar sidebar/UI.
+    // Dono continua recebendo null nesses campos (retrocompat total).
+    /** Ex: "PROPRIETARIO" | "GERENTE" | "FUNCIONARIO". Null pro proprietário. */
+    private String cargo;
+    /** CSV de nomes de Permissao. Null pro proprietário (que tem todas). */
+    private String permissoes;
 }

@@ -41,6 +41,43 @@ public class JwtUtil {
     }
 
     /**
+     * Token pra MEMBRO da equipe. Subject continua = email do dono do
+     * restaurante (mantém compat com @AuthenticationPrincipal String email
+     * em 30+ controllers). Claims extras identificam o membro pro filter
+     * poder aplicar as permissões dele.
+     *
+     * membroId + tokenVersion permitem invalidar sessão SEM blocklist:
+     * bloqueio incrementa tokenVersion no DB → filter compara → 401.
+     */
+    public String gerarTokenMembro(String emailDono, String role, Long membroId, int tokenVersion) {
+        return Jwts.builder()
+                .subject(emailDono)
+                .claim("role", role)
+                .claim("membroId", membroId)
+                .claim("tokenVersion", tokenVersion)
+                .issuedAt(new Date())
+                .expiration(new Date(System.currentTimeMillis() + expiration))
+                .signWith(getSigningKey())
+                .compact();
+    }
+
+    /** null se JWT é de dono (sem claim membroId) ou token inválido. */
+    public Long extrairMembroId(String token) {
+        try {
+            Number n = extrairClaims(token).get("membroId", Number.class);
+            return n == null ? null : n.longValue();
+        } catch (Exception e) { return null; }
+    }
+
+    /** 0 se JWT é de dono. Filter usa pra checar contra o valor no banco. */
+    public int extrairTokenVersion(String token) {
+        try {
+            Number n = extrairClaims(token).get("tokenVersion", Number.class);
+            return n == null ? 0 : n.intValue();
+        } catch (Exception e) { return 0; }
+    }
+
+    /**
      * Gera token CURTO (15min) pra suporte/admin entrar como restaurante.
      * Inclui claim {@code impersonatedBy} pra auditoria nos logs do main app.
      */

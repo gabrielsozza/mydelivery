@@ -163,6 +163,7 @@ public class CardapioController {
 
     @DeleteMapping("/api/restaurante/{slug}/categorias/{id}")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @com.mydelivery.equipe.PermissaoRequerida(com.mydelivery.equipe.Permissao.EXCLUIR_CATEGORIAS)
     public ResponseEntity<Void> deletarCategoria(
             @PathVariable String slug,
             @AuthenticationPrincipal String email,
@@ -241,6 +242,7 @@ public class CardapioController {
 
     @DeleteMapping("/api/restaurante/{slug}/produtos/{id}")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @com.mydelivery.equipe.PermissaoRequerida(com.mydelivery.equipe.Permissao.EXCLUIR_PRODUTOS)
     public ResponseEntity<Void> deletarProduto(
             @PathVariable String slug,
             @AuthenticationPrincipal String email,

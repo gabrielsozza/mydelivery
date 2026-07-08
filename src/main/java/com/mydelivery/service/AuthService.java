@@ -32,6 +32,14 @@ public class AuthService {
     private final EmailService emailService;
     private final com.mydelivery.service.meta.MetaCapiService metaCapiService;
 
+    // Módulo Equipe: login unificado (dono OU membro). Injeção defensiva
+    // (required=false) pra não quebrar caso o bean não esteja disponível
+    // por qualquer motivo — cai no fluxo antigo de dono.
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.mydelivery.equipe.MembroEquipeRepository membroEquipeRepository;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.mydelivery.equipe.AuditoriaService auditoriaService;
+
     /** Webhook async pro myafiliados-api — só dispara se restaurante tem afiliadoCodigo. */
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.mydelivery.service.afiliados.AfiliadosWebhookService afiliadosWebhookService;
@@ -198,11 +206,34 @@ public class AuthService {
     }
 
     public LoginResponse login(LoginRequest request) {
-        authenticationManager.authenticate(
-                new UsernamePasswordAuthenticationToken(request.getEmail(), request.getSenha())
-        );
+        String identificador = request.getEmail() == null ? "" : request.getEmail().trim();
 
-        Usuario usuario = usuarioRepository.findByEmail(request.getEmail())
+        // ── Roteamento: se tem "@" ou bate com email de dono, é fluxo dono.
+        //    Senão, tenta como login de membro da equipe.
+        boolean pareceEmail = identificador.contains("@");
+        boolean tentouMembroPrimeiro = false;
+
+        if (!pareceEmail && membroEquipeRepository != null) {
+            LoginResponse resp = tentarLoginMembro(identificador, request.getSenha());
+            if (resp != null) return resp;
+            tentouMembroPrimeiro = true; // pra decidir mensagem de erro final
+        }
+
+        // Fluxo dono (comportamento original, preservado 100%)
+        try {
+            authenticationManager.authenticate(
+                    new UsernamePasswordAuthenticationToken(identificador, request.getSenha())
+            );
+        } catch (RuntimeException e) {
+            // Se veio SEM @ e falhou tanto membro quanto dono, mensagem só
+            // diz que credenciais estão erradas — não vaza qual dos dois.
+            if (tentouMembroPrimeiro) {
+                throw new RuntimeException("Login ou senha inválidos");
+            }
+            throw e;
+        }
+
+        Usuario usuario = usuarioRepository.findByEmail(identificador)
                 .orElseThrow(() -> new RuntimeException("Usuário não encontrado"));
 
         String slug = null;
@@ -215,6 +246,19 @@ public class AuthService {
         String accessToken = jwtUtil.gerarToken(usuario.getEmail(), usuario.getRole().name());
         String refreshToken = jwtUtil.gerarRefreshToken(usuario.getEmail());
 
+        // Auditoria de LOGIN (dono). Melhor esforço — nunca bloqueia.
+        if (auditoriaService != null && usuario.getRole() == Usuario.Role.RESTAURANTE) {
+            try {
+                Long restId = restauranteRepository.findByUsuarioEmail(usuario.getEmail())
+                        .map(Restaurante::getId).orElse(null);
+                if (restId != null) {
+                    auditoriaService.registrar(restId,
+                            com.mydelivery.equipe.AcaoAuditoria.LOGIN,
+                            "Usuario", String.valueOf(usuario.getId()), null);
+                }
+            } catch (Exception ignore) {}
+        }
+
         return LoginResponse.builder()
                 .accessToken(accessToken)
                 .refreshToken(refreshToken)
@@ -222,6 +266,62 @@ public class AuthService {
                 .email(usuario.getEmail())
                 .role(usuario.getRole().name())
                 .restauranteSlug(slug)
+                .build();
+    }
+
+    /**
+     * Tenta autenticar como MEMBRO da equipe. Retorna null se:
+     *   - login não existe
+     *   - senha errada
+     *   - membro bloqueado
+     * (Todos os falses geram RuntimeException uniforme no caller pra não
+     *  vazar existência de login vs senha errada.)
+     */
+    private LoginResponse tentarLoginMembro(String login, String senha) {
+        var membroOpt = membroEquipeRepository.findByLoginIgnoreCase(login);
+        if (membroOpt.isEmpty()) return null;
+        var m = membroOpt.get();
+
+        // Bloqueado nunca loga (mesmo com senha certa).
+        if (m.getStatus() != com.mydelivery.equipe.StatusMembro.ATIVO) {
+            throw new RuntimeException("Este acesso foi bloqueado pelo proprietário");
+        }
+        if (!passwordEncoder.matches(senha, m.getSenhaHash())) {
+            return null; // caller vai jogar exception uniforme
+        }
+
+        // Emite JWT com sub = email do dono (compat com controllers existentes)
+        // e claims extras pro filter aplicar as permissões deste membro.
+        String emailDono = m.getRestaurante().getUsuario().getEmail();
+        int tokenVersion = m.getTokenVersion() == null ? 0 : m.getTokenVersion();
+        String accessToken = jwtUtil.gerarTokenMembro(emailDono, "RESTAURANTE", m.getId(), tokenVersion);
+        String refreshToken = jwtUtil.gerarRefreshToken(emailDono);
+
+        // Marca último login (best-effort)
+        try {
+            m.setUltimoLoginEm(java.time.LocalDateTime.now());
+            membroEquipeRepository.save(m);
+        } catch (Exception ignore) {}
+
+        String slug = m.getRestaurante().getSlug();
+
+        if (auditoriaService != null) {
+            try {
+                auditoriaService.registrar(m.getRestaurante().getId(),
+                        com.mydelivery.equipe.AcaoAuditoria.LOGIN,
+                        "MembroEquipe", String.valueOf(m.getId()), null);
+            } catch (Exception ignore) {}
+        }
+
+        return LoginResponse.builder()
+                .accessToken(accessToken)
+                .refreshToken(refreshToken)
+                .nome(m.getNomeCompleto())
+                .email(emailDono)         // pra frontend saber o tenant
+                .role("RESTAURANTE")
+                .restauranteSlug(slug)
+                .cargo(m.getCargo() == null ? null : m.getCargo().name())
+                .permissoes(m.getPermissoesCsv())
                 .build();
     }
 

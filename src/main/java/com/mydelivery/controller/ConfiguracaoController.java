@@ -83,6 +83,7 @@ public class ConfiguracaoController {
 
     @PutMapping("/api/restaurante/configuracoes")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @com.mydelivery.equipe.PermissaoRequerida(com.mydelivery.equipe.Permissao.ALTERAR_CONFIGURACOES)
     public ResponseEntity<Restaurante> salvarConfiguracoes(
             @AuthenticationPrincipal String email,
             @RequestBody ConfiguracaoRequest request) {

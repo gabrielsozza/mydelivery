@@ -78,8 +78,19 @@ public class PedidoController {
     }
     @PatchMapping("/restaurante/{slug}/pedidos/{id}/status")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @com.mydelivery.equipe.PermissaoRequerida(com.mydelivery.equipe.Permissao.ALTERAR_STATUS_PEDIDOS)
     public ResponseEntity<PedidoResponse> atualizarStatus(@AuthenticationPrincipal String email,
             @PathVariable String slug, @PathVariable Long id, @Valid @RequestBody AtualizarStatusRequest request) {
+        // Se o novo status for CANCELADO, também exige CANCELAR_PEDIDOS
+        // (checagem manual porque @PermissaoRequerida acima é OR, não múltiplas independentes).
+        if (request != null && request.getStatus() != null
+                && "CANCELADO".equalsIgnoreCase(request.getStatus().toString())) {
+            if (!com.mydelivery.equipe.PermissaoContext.pode(com.mydelivery.equipe.Permissao.CANCELAR_PEDIDOS)) {
+                throw new org.springframework.web.server.ResponseStatusException(
+                        org.springframework.http.HttpStatus.FORBIDDEN,
+                        "Sem permissão pra cancelar pedidos");
+            }
+        }
         return ResponseEntity.ok(pedidoService.atualizarStatus(getRestauranteId(email), id, request));
     }
 

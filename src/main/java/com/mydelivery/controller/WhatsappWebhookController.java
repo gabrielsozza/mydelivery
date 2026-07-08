@@ -42,17 +42,46 @@ public class WhatsappWebhookController {
      * ruins: (a) Evolution podia timeoutar e retentar, gerando msg duplicada;
      * (b) bloqueava o thread do Tomcat por toda a duração.
      * Agora: devolve 200 em <50ms, processamento corre em pool separado.
-     * Pool fixo de 4 threads — suficiente pra dezenas de restaurantes,
-     * já que processamento real é ~100ms quando warm.
+     *
+     * Jul/2026: cresceu de 4 → 12 threads. Motivo: com 100+ restaurantes em
+     * horário de pico, 4 threads viravam gargalo. Se 1 instância travava no
+     * outbound (Evolution timeout ~4s), 4 tarefas ficavam presas e o BACKLOG
+     * de outros restaurantes se acumulava — o Tomcat continua respondendo 200
+     * rápido, mas o processamento efetivo do bot só rodava minutos depois. As
+     * threads são I/O-bound (aguardam Evolution), então 12 workers custam
+     * ~zero de CPU e resolvem o head-of-line.
      */
     private static final java.util.concurrent.ExecutorService BOT_EXEC =
             java.util.concurrent.Executors.newFixedThreadPool(
-                    4,
+                    12,
                     r -> {
                         Thread t = new Thread(r, "wa-bot-worker");
                         t.setDaemon(true);
                         return t;
                     });
+
+    /**
+     * Cache de dedup por messageId. Guarda por 5min ids já processados —
+     * qualquer webhook duplicado (retry da Evolution, replay de reconexão)
+     * cai aqui e é descartado ANTES de virar task no BOT_EXEC.
+     *
+     * Chave: instanceName + ":" + messageId (namespace por instância pra evitar
+     * colisão em restaurantes distintos gerarem ids semelhantes).
+     * Valor: Boolean.TRUE (só serve pra sinalizar presença).
+     *
+     * Caffeine expira automático em 5min, sem thread de limpeza — barato de
+     * memória mesmo com pico de tráfego. `putIfAbsent` é atômico → sem race.
+     *
+     * Por que 5min: Evolution retenta webhook em ate ~1min. Reconexão de
+     * Baileys pode fazer replay de mensagens até uns 3min atrás. 5min cobre
+     * ambos com margem sem ocupar muita memória (~5-10k entries em pico é
+     * <1MB).
+     */
+    private static final com.github.benmanes.caffeine.cache.Cache<String, Boolean> IDS_JA_VISTOS =
+            com.github.benmanes.caffeine.cache.Caffeine.newBuilder()
+                    .expireAfterWrite(java.time.Duration.ofMinutes(5))
+                    .maximumSize(50_000) // hard cap defensivo
+                    .build();
 
     /**
      * Scheduler pra retry de webhook quando a instância ainda não está no DB
@@ -218,6 +247,33 @@ public class WhatsappWebhookController {
         if (fromMe) return; // Não processa mensagens que NÓS enviamos
         if (remoteJid == null) return;
 
+        // ── DEDUP POR messageId ──────────────────────────────────────────
+        // Barreira PRIMÁRIA contra resposta duplicada. Antes o único guard
+        // era o throttle temporal de 4s no bot service, que NÃO cobria:
+        //   (a) retry HTTP da Evolution (ela retenta o webhook se nosso 200
+        //       demorar >~5s por Tomcat overload/GC pause) → mesmo messageId
+        //       chega de novo depois do throttle expirar
+        //   (b) replay de backlog na reconexão do Baileys — Evolution manda
+        //       eventos antigos que o WhatsApp reentregou pós-reconnect
+        //   (c) webhook DUPLICADO gerado pela Evolution em situações que
+        //       reportamos pra eles (bug conhecido em algumas versões 2.x)
+        //
+        // Idempotência forte: primeiro request com o id passa; qualquer
+        // request seguinte com o MESMO id é descartado silenciosamente por
+        // 5min. Sem falso-negativo em produção (dois clientes diferentes
+        // gerariam messageIds diferentes; Baileys usa hash único).
+        if (messageId != null) {
+            String chaveDedup = inst.getInstanceName() + ":" + messageId;
+            Boolean visto = IDS_JA_VISTOS.getIfPresent(chaveDedup);
+            if (visto != null) {
+                log.info("[WA-Webhook][DEDUP] mensagem {}*** ja processada — descartando webhook duplicado (inst={})",
+                        messageId.length() > 10 ? messageId.substring(0, 10) : messageId,
+                        inst.getInstanceName());
+                return;
+            }
+            IDS_JA_VISTOS.put(chaveDedup, Boolean.TRUE);
+        }
+
         // TRACKER DE REPLY-RATE (Jul/2026 v2): registra que este número respondeu.
         // Se estávamos "esperando resposta" (msg enviada por nós <48h atrás), essa
         // conversa vira "answered" no contador. WhatsApp usa unanswered-message
@@ -302,12 +358,24 @@ public class WhatsappWebhookController {
         // e desbloqueia o thread do Tomcat.
         // (NÃO passamos pushName — clientes com nome tipo "." ou emojis no
         // perfil ficavam com saudação estranha. Mantemos o bot impessoal.)
+        //
+        // Correlation ID: 8 chars derivados do messageId (curto o suficiente
+        // pra ler no log, longo o bastante pra ser único num intervalo grande).
+        // Todos os logs abaixo dessa chamada — bot service, whatsapp service,
+        // evolution client — herdam esse "wh" no MDC. `grep 'wh=abc12345'` no
+        // Railway devolve o ciclo completo daquela mensagem específica.
         final String remoteJidFinal = remoteJid;
+        final String corrId = messageId != null && messageId.length() >= 8
+                ? messageId.substring(0, 8)
+                : String.format("%08x", System.nanoTime() & 0xFFFFFFFFL);
         BOT_EXEC.submit(() -> {
             try {
+                org.slf4j.MDC.put("wh", corrId);
                 botService.processar(inst, remoteJidFinal, texto);
             } catch (Exception e) {
                 log.error("[WA-Webhook] erro assíncrono processando msg: {}", e.getMessage(), e);
+            } finally {
+                org.slf4j.MDC.remove("wh");
             }
         });
     }

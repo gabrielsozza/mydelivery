@@ -124,18 +124,35 @@ public class WhatsappWatchdogJob {
         // global (muitas falhas no mesmo tick = infra, não zumbi individual).
         java.util.List<String> falharam = new java.util.ArrayList<>();
         java.util.List<WhatsappInstance> falharamInst = new java.util.ArrayList<>();
+        java.util.Set<String> tratadasConnecting = new java.util.HashSet<>();
         int ok = 0;
         for (WhatsappInstance inst : conectadas) {
             String nome = inst.getInstanceName();
-            if (pingar(nome)) {
+            String state = pingarComEstado(nome);
+            if ("open".equalsIgnoreCase(state)) {
                 Integer previas = FALHAS_SEGUIDAS.remove(nome);
                 ok++;
                 if (previas != null && previas > 0) {
                     log.info("[Watchdog] {} recuperou após {} falhas", nome, previas);
                 }
+                CONNECTING_DESDE.remove(nome);
+            } else if ("cb_open".equals(state)) {
+                // Circuit aberto — não conta nem como sucesso nem falha
+                CONNECTING_DESDE.remove(nome);
             } else {
-                falharam.add(nome);
-                falharamInst.add(inst);
+                // Estado ruim ("connecting", "close", null). Verifica se é
+                // "connecting travado" — se sim, restart forçado e não conta
+                // como falha comum (pra não acumular no contador de zumbi
+                // enquanto o restart faz efeito).
+                boolean restartFeito = tratarConnectingTravado(nome, state, inst);
+                if (restartFeito) {
+                    tratadasConnecting.add(nome);
+                    // Zera contador de falhas — o restart é a intervenção
+                    FALHAS_SEGUIDAS.remove(nome);
+                } else {
+                    falharam.add(nome);
+                    falharamInst.add(inst);
+                }
             }
         }
 
@@ -182,8 +199,8 @@ public class WhatsappWatchdogJob {
             }
         }
 
-        log.info("[Watchdog] tick — checadas={} ok={} falhou={} zumbi={} pctFalha={}%",
-                conectadas.size(), ok, falharam.size(), zumbi, pctFalha);
+        log.info("[Watchdog] tick — checadas={} ok={} falhou={} zumbi={} connecting_restart={} pctFalha={}%",
+                conectadas.size(), ok, falharam.size(), zumbi, tratadasConnecting.size(), pctFalha);
     }
 
     /**
@@ -192,19 +209,81 @@ public class WhatsappWatchdogJob {
      * outro cenário (erro de rede, timeout, "close", "connecting").
      */
     private boolean pingar(String instanceName) {
+        return "open".equalsIgnoreCase(pingarComEstado(instanceName));
+    }
+
+    /**
+     * Versão que devolve o STATE cru — "open"/"close"/"connecting"/null.
+     * Usado pra detectar "connecting travado" e disparar restart forte
+     * em vez de só marcar DESCONECTADA (que não sara sessão presa no
+     * meio do handshake — Baileys precisa de reset completo).
+     * "cb_open" = circuit breaker Evolution aberto (não é falha nossa,
+     * não conta como zumbi mas também não confirma estado).
+     */
+    private String pingarComEstado(String instanceName) {
         try {
             @SuppressWarnings("unchecked")
             Map<String, Object> state = evolutionClient.consultarStatus(instanceName);
             String s = extrairState(state);
-            if ("open".equalsIgnoreCase(s)) return true;
+            if (s == null || s.isBlank()) return null;
             log.debug("[Watchdog] {} ping retornou state={}", instanceName, s);
-            return false;
+            return s.toLowerCase();
         } catch (EvolutionClient.EvolutionCircuitOpenException cb) {
-            // Circuit aberto = Evolution fora. NÃO conta como falha da
-            // instância — é problema global. Silêncio.
-            return true;
+            return "cb_open";
         } catch (Exception e) {
             log.warn("[Watchdog] ping {} falhou: {}", instanceName, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Detecção de "connecting travado".
+     *
+     * Chave = instanceName. Valor = LocalDateTime da primeira vez que vimos
+     * essa instância em connecting. Se persistir >MAX_CONNECTING_MINUTOS
+     * sem migrar pra open, forçamos POST /instance/restart — mais forte
+     * que marcar como DESCONECTADA porque o Baileys presa no handshake
+     * não é curada só desconectando + reconectando pelo HealthJob (que
+     * tenta pelo mesmo processo Baileys travado).
+     *
+     * Reseta ao ver estado != "connecting" (open/close = fluxo normal).
+     */
+    private static final java.util.concurrent.ConcurrentHashMap<String, LocalDateTime> CONNECTING_DESDE
+            = new java.util.concurrent.ConcurrentHashMap<>();
+
+    private static final int MAX_CONNECTING_MINUTOS = 10;
+
+    /**
+     * Se instância está travada em connecting há muito, força restart forte.
+     * Retorna true se agiu (restart disparado) — o caller pode pular a
+     * lógica normal de "marcar como zumbi" pra esse instance nesse tick.
+     */
+    private boolean tratarConnectingTravado(String instanceName, String state, WhatsappInstance inst) {
+        if (!"connecting".equalsIgnoreCase(state)) {
+            // Não está em connecting — limpa o tracker se havia entrada
+            CONNECTING_DESDE.remove(instanceName);
+            return false;
+        }
+        LocalDateTime desde = CONNECTING_DESDE.computeIfAbsent(instanceName, k -> LocalDateTime.now());
+        long minutos = java.time.Duration.between(desde, LocalDateTime.now()).toMinutes();
+        if (minutos < MAX_CONNECTING_MINUTOS) {
+            log.info("[Watchdog] {} em connecting há {}min (limite {}min) — aguardando", instanceName, minutos, MAX_CONNECTING_MINUTOS);
+            return false;
+        }
+        // Passou do limite — força restart via Evolution
+        log.error("[Watchdog:CONNECTING_TRAVADO] {} está em connecting há {}min. Forçando /instance/restart.",
+                instanceName, minutos);
+        try {
+            evolutionClient.restart(instanceName);
+            CONNECTING_DESDE.remove(instanceName); // reseta pra dar tempo do restart tomar efeito
+            try {
+                inst.setMotivoUltimaQueda("Watchdog: connecting travado por " + minutos + "min — restart forçado");
+                inst.setUltimaQuedaEm(LocalDateTime.now());
+                repo.save(inst);
+            } catch (Exception ignore) {}
+            return true;
+        } catch (Exception e) {
+            log.error("[Watchdog:CONNECTING_TRAVADO] falha ao reiniciar {}: {}", instanceName, e.getMessage());
             return false;
         }
     }

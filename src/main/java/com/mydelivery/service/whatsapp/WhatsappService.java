@@ -447,26 +447,21 @@ public class WhatsappService {
             trackerEnvio(inst.getInstanceName(), numeroDestino);
         } catch (RuntimeException e) {
             log.error("[WhatsApp] Falha ao enviar: {}", e.getMessage());
-            boolean fallbackOk = false;
-            // Fallback: se enviar mídia falhou (URL inválida etc), manda só o caption como texto
-            if (texto != null && texto.startsWith("IMG::")) {
-                String semPrefix = texto.substring(5);
-                int sep = semPrefix.indexOf("::");
-                if (sep > 0) {
-                    String fallback = semPrefix.substring(sep + 2);
-                    try {
-                        evolutionClient.enviarTexto(inst.getInstanceName(), inst.getInstanceToken(),
-                                numeroDestino, fallback, delayMs);
-                        marcarRespostaEnviada(inst);
-                        fallbackOk = true;
-                    } catch (RuntimeException e2) {
-                        log.error("[WhatsApp] Fallback texto também falhou: {}", e2.getMessage());
-                    }
-                }
-            }
-            // Só abre incidente se TUDO falhou (envio original + eventual fallback).
-            // Senão estaríamos abrindo incidente toda vez que cai no fallback de mídia.
-            if (!fallbackOk && incidenteService != null) {
+            // ─────────────────────────────────────────────────────────────────
+            // SEM FALLBACK PRA MÍDIA. Jul/2026: o antigo fallback re-enviava
+            // o caption como texto puro quando enviarMidia lançava exceção.
+            // Problema: quando Evolution dá TIMEOUT no response DEPOIS de já
+            // ter entregado a mensagem no WhatsApp (comum sob carga), o
+            // backend achava que falhou e disparava o fallback texto.
+            // Resultado: cliente via mídia + texto duplicado (2 msgs com
+            // mesmo conteúdo). Pior pra UX, pior pra anti-spam do WhatsApp.
+            //
+            // Trade-off aceito: em erros REAIS pré-envio (URL quebrada,
+            // Evolution fora), cliente fica sem resposta. Melhor UX ausente
+            // e rara do que duplicada e frequente. Incidente aberto abaixo
+            // pro admin ver e mexer.
+            // ─────────────────────────────────────────────────────────────────
+            if (incidenteService != null) {
                 try {
                     incidenteService.abrirSe(inst,
                             com.mydelivery.model.WhatsappIncidente.Tipo.ERRO_API_EVOLUTION,

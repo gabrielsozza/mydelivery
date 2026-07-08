@@ -54,6 +54,11 @@ public class ConfiguracaoRequest {
     private Boolean pararPedidosAntesFechamento;
     /** Toggle: habilita integração com balança de pesagem no Balcão (Web Serial API). */
     private Boolean balancaAtiva;
+    /**
+     * Valor (subtotal) a partir do qual o pedido ganha frete grátis. Null ou
+     * zero = feature desligada (sempre cobra a taxa configurada).
+     */
+    private BigDecimal freteGratisApartirDe;
     /** Quantos minutos antes do fechamento bloquear pedidos novos. */
     private Integer minutosAntesFechamento;
     /**

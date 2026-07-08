@@ -23,6 +23,8 @@ public class RestaurantePublicResponse {
      */
     private BigDecimal taxaEntrega;
     private BigDecimal pedidoMinimo;
+    /** Valor a partir do qual pedido tem frete grátis. Null = feature off. */
+    private BigDecimal freteGratisApartirDe;
     private List<String> modos;
     private List<String> pagamentos;
     /** Se true, cliente que escolher PIX deve receber a chave e mandar comprovante. */

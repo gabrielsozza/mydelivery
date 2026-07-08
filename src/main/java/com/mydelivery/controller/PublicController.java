@@ -71,6 +71,7 @@ public class PublicController {
                 .tempoEntrega(r.getTempoEntrega())
                 .taxaEntrega(r.getTaxaEntrega())  // legado — front novo ignora
                 .pedidoMinimo(r.getPedidoMinimo())
+                .freteGratisApartirDe(r.getFreteGratisApartirDe())
                 .modos(r.getModos())
                 .pagamentos(r.getPagamentos())
                 // PIX antecipado — só expõe a chave se a flag estiver ativa (evita vazar info sem motivo)

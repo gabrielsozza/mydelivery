@@ -318,6 +318,23 @@ public class PedidoService {
         pedido.setItens(itens);
         pedido.setSubtotal(subtotal);
 
+        // ── Frete grátis a partir de X ─────────────────────────────────────
+        // Recalcula a taxa (que foi setada acima no pedido) considerando o
+        // subtotal final: se restaurante configurou freteGratisApartirDe > 0
+        // e o subtotal atingiu esse valor, zera taxa. Aplicado APÓS o cálculo
+        // do subtotal pra ter o valor total dos itens antes do cupom (regra
+        // definida: frete grátis pelo VALOR bruto do pedido, não pelo líquido
+        // pós-cupom — evita cliente combinar cupom+frete grátis pra piorar
+        // muito a margem do restaurante).
+        BigDecimal freteGratisAt = restaurante.getFreteGratisApartirDe();
+        if ("delivery".equalsIgnoreCase(request.getModo())
+                && freteGratisAt != null
+                && freteGratisAt.signum() > 0
+                && subtotal.compareTo(freteGratisAt) >= 0) {
+            taxaEntrega = BigDecimal.ZERO;
+            pedido.setTaxaEntrega(BigDecimal.ZERO);
+        }
+
         // ── Aplicação de cupom ─────────────────────────────────────────────
         BigDecimal desconto = BigDecimal.ZERO;
         com.mydelivery.model.Cupom cupomAplicado = null;

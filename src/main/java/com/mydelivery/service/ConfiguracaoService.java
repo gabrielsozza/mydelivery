@@ -49,6 +49,13 @@ public class ConfiguracaoService {
         if (req.getTempoEntregaMax() != null) restaurante.setTempoEntregaMax(req.getTempoEntregaMax());
         if (req.getTaxaEntrega() != null)  restaurante.setTaxaEntrega(req.getTaxaEntrega());
         if (req.getPedidoMinimo() != null) restaurante.setPedidoMinimo(req.getPedidoMinimo());
+        // Frete grátis a partir de X. Valor ZERO tratado como "desligar"
+        // (mesmo efeito que null — feature off) pra evitar confusão do dono
+        // que zera o campo pensando que está desativando.
+        if (req.getFreteGratisApartirDe() != null) {
+            var v = req.getFreteGratisApartirDe();
+            restaurante.setFreteGratisApartirDe(v.signum() <= 0 ? null : v);
+        }
         if (req.getQtdMesas() != null)     restaurante.setQtdMesas(req.getQtdMesas());
         if (req.getModos() != null)        restaurante.setModos(req.getModos());
         if (req.getPagamentos() != null)   restaurante.setPagamentos(req.getPagamentos());

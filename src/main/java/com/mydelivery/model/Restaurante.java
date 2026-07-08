@@ -101,6 +101,19 @@ public class Restaurante {
     @Column(precision = 10, scale = 2)
     private BigDecimal pedidoMinimo;
 
+    /**
+     * Frete grátis a partir de X. Se subtotal do pedido (sem taxa) >= este
+     * valor, o checkout zera a taxa de entrega automaticamente.
+     *
+     * Null OU zero = feature desligada (comportamento original: sempre cobra
+     * a taxa configurada). Guardar como BigDecimal 10,2 mantém coerência com
+     * pedidoMinimo/taxaEntrega. Frontend do cardápio consome via endpoint
+     * público de cardápio e mostra badge "Frete grátis acima de R$ X" +
+     * barra de progresso durante compra ("Faltam R$ Y pra frete grátis").
+     */
+    @Column(name = "frete_gratis_apartir_de", precision = 10, scale = 2)
+    private BigDecimal freteGratisApartirDe;
+
     // ── Modos de atendimento ──
     @ElementCollection(fetch = FetchType.EAGER)
     @CollectionTable(name = "restaurante_modos", joinColumns = @JoinColumn(name = "restaurante_id"))

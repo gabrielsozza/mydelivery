@@ -74,6 +74,10 @@ public class ConfiguracaoService {
         if (req.getConfirmacaoWhatsappAtiva() != null)
             restaurante.setConfirmacaoWhatsappAtiva(req.getConfirmacaoWhatsappAtiva());
 
+        // Integração com balança de pesagem no Balcão (Web Serial API) — opt-in.
+        if (req.getBalancaAtiva() != null)
+            restaurante.setBalancaAtiva(req.getBalancaAtiva());
+
         // Automação de horário — toggles e cutoff
         if (req.getAberturaAutomatica() != null)
             restaurante.setAberturaAutomatica(req.getAberturaAutomatica());

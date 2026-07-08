@@ -52,6 +52,8 @@ public class ConfiguracaoRequest {
     private Boolean confirmacaoWhatsappAtiva;
     /** Toggle: para de aceitar pedidos N min antes do fechamento. */
     private Boolean pararPedidosAntesFechamento;
+    /** Toggle: habilita integração com balança de pesagem no Balcão (Web Serial API). */
+    private Boolean balancaAtiva;
     /** Quantos minutos antes do fechamento bloquear pedidos novos. */
     private Integer minutosAntesFechamento;
     /**

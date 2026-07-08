@@ -174,6 +174,26 @@ public class Restaurante {
     @Column(name = "notif_link_acomp_whatsapp")
     private Boolean notificarLinkAcompanhamentoWhatsapp = true;
 
+    // ── Integração com balança de pesagem (venda por peso) ──
+    /**
+     * Habilita integração com balança serial no módulo Balcão.
+     * Quando true, o Balcão carrega o módulo Web Serial (js/balanca/*),
+     * mostra widget de status no topo e abre modal de pesagem automática
+     * ao clicar em produtos com {@code precoVitrine=true}.
+     *
+     * Toggle no {@code configuracoes.html}. Default false: 100% dos restaurantes
+     * atuais continuam com o fluxo antigo (porções via complementos), sem
+     * carga extra de script na página.
+     *
+     * A conexão física com a balança é por-máquina (Chrome guarda a permissão
+     * de porta serial por origin), então esse campo só liga a FEATURE — cada
+     * PC do balcão escolhe a própria porta e o protocolo (Toledo, Filizola,
+     * Urano, Elgin) uma vez e salva em localStorage.
+     */
+    @Builder.Default
+    @Column(name = "balanca_ativa")
+    private Boolean balancaAtiva = false;
+
     // ── Integração iFood ──
     /**
      * UUID da loja no iFood (merchantId). Preenchido quando o dono autoriza

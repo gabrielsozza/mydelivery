@@ -104,13 +104,54 @@ public class SecurityConfig {
         return http.build();
     }
 
+    /**
+     * CORS resiliente (Jul/2026): usa {@code setAllowedOriginPatterns} em vez
+     * de {@code setAllowedOrigins} pra aceitar wildcards em subdomínios.
+     *
+     * <p>Motivo do refactor: cliente estava tomando <b>403 em
+     * POST /api/pedidos/novo</b> porque o CORS_ORIGINS da Railway não
+     * cobria domínios custom recém-criados (subdomínio de teste, Netlify
+     * preview, dominio-próprio-por-loja). O Spring rejeita CORS ANTES de
+     * chegar no controller — endpoint em permitAll não adianta se o
+     * Origin não bater.
+     *
+     * <p>Padrões default sempre aceitos (independem de env var):
+     * <ul>
+     *   <li>{@code https://*.mydeliveryfood.com.br} + apex</li>
+     *   <li>{@code https://*.mydelivery.app} + apex</li>
+     *   <li>{@code https://*.netlify.app} (preview/deploy do frontend)</li>
+     *   <li>{@code https://*.railway.app} (endpoints staging)</li>
+     *   <li>localhost e file:// pra dev local</li>
+     * </ul>
+     * O que vier de {@code CORS_ORIGINS} é SOMADO (não substitui).
+     */
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
-        config.setAllowedOrigins(List.of(allowedOrigins.split(",")));
+        java.util.List<String> patterns = new java.util.ArrayList<>(java.util.List.of(
+                "https://*.mydeliveryfood.com.br",
+                "https://mydeliveryfood.com.br",
+                "https://*.mydelivery.app",
+                "https://mydelivery.app",
+                "https://*.netlify.app",
+                "https://*.railway.app",
+                "http://localhost:*",
+                "http://127.0.0.1:*",
+                "file://*",
+                "null"
+        ));
+        if (allowedOrigins != null && !allowedOrigins.isBlank()) {
+            for (String o : allowedOrigins.split(",")) {
+                String t = o.trim();
+                if (!t.isEmpty() && !patterns.contains(t)) patterns.add(t);
+            }
+        }
+        config.setAllowedOriginPatterns(patterns);
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"));
         config.setAllowedHeaders(List.of("*"));
+        config.setExposedHeaders(List.of("X-Correlation-Id"));
         config.setAllowCredentials(true);
+        config.setMaxAge(3600L);
         return request -> config;
     }
 

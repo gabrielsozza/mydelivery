@@ -12,13 +12,29 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 
 @RestController @RequestMapping("/api") @RequiredArgsConstructor
+@lombok.extern.slf4j.Slf4j
 public class PedidoController {
     private final PedidoService pedidoService;
     private final RestauranteRepository restauranteRepository;
 
+    /**
+     * Entrada pública do checkout — cliente final SEM auth cria pedido.
+     * Log de entrada + saída pra rastrear rejeições silenciosas em prod
+     * (403 recente foi CORS antes do controller — mantivemos log pra
+     * garantir que se voltar acontecer a gente saiba onde parou).
+     */
     @PostMapping("/pedidos/novo")
     public ResponseEntity<PedidoResponse> criarPedido(@Valid @RequestBody NovoPedidoRequest request) {
-        return ResponseEntity.ok(pedidoService.criarPedido(request));
+        log.info("[Pedidos-Novo] request slug={} modo={} pagamento={} qtdItens={}",
+                request == null ? null : request.getSlug(),
+                request == null ? null : request.getModo(),
+                request == null ? null : request.getPagamento(),
+                request == null || request.getItens() == null ? 0 : request.getItens().size());
+        PedidoResponse resp = pedidoService.criarPedido(request);
+        log.info("[Pedidos-Novo] criado pedidoId={} total={}",
+                resp == null ? null : resp.getId(),
+                resp == null ? null : resp.getTotal());
+        return ResponseEntity.ok(resp);
     }
     @GetMapping("/pedidos/{id}/acompanhar")
     public ResponseEntity<PedidoResponse> acompanharPedido(@PathVariable Long id) {

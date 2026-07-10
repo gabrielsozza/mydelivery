@@ -308,6 +308,37 @@ public class UazapiClient {
     }
 
     /**
+     * Lista TODAS as instâncias do servidor Uazapi <b>com o payload cru</b>.
+     * Preserva todos os campos que o Uazapi devolve — usado pelo sync no boot
+     * ({@code UazapiBootSyncService}) pra determinar status real, phone,
+     * token, etc, sem precisar chamar {@code /instance/status} pra cada uma.
+     *
+     * <p>Retorna lista vazia em qualquer falha (fail-safe — sync fica sem
+     * dados mas backend continua vivo).
+     */
+    @SuppressWarnings("unchecked")
+    public List<Map<String, Object>> fetchInstancesRaw() {
+        try {
+            Object resp = executar("GET", "/instance/all", adminToken(), null, Object.class);
+            List<Map<String, Object>> out = new ArrayList<>();
+            List<?> lista = null;
+            if (resp instanceof List<?> l) lista = l;
+            else if (resp instanceof Map<?, ?> m) {
+                Object inner = ((Map<String, Object>) m).get("instances");
+                if (inner instanceof List<?> l2) lista = l2;
+            }
+            if (lista == null) return out;
+            for (Object o : lista) {
+                if (o instanceof Map<?, ?> item) out.add((Map<String, Object>) item);
+            }
+            return out;
+        } catch (RuntimeException e) {
+            log.warn("[Uazapi] fetchInstancesRaw falhou: {}", e.getMessage());
+            return Collections.emptyList();
+        }
+    }
+
+    /**
      * Lista TODAS as instâncias do servidor Uazapi. Traduz cada item pro
      * formato Evolution (chave {@code name}) pra callers legados funcionarem.
      */

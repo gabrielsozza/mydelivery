@@ -109,7 +109,24 @@ public class UazapiClient {
     public Map<String, Object> criarInstancia(String instanceName, String webhookUrl, String proxyPool) {
         Map<String, Object> body = new HashMap<>();
         body.put("name", instanceName);
-        Map<String, Object> resp = executar("POST", "/instance/create", adminToken(), body, Map.class);
+        Map<String, Object> resp;
+        try {
+            resp = executar("POST", "/instance/create", adminToken(), body, Map.class);
+        } catch (RuntimeException e) {
+            // Conflito comum: nome já em uso no Uazapi (loja tentou reconectar
+            // sem que a instância antiga tivesse sido apagada). Em vez de gastar
+            // outro slot com nome diferente, RECUPERA a existente via /instance/all
+            // e retorna o token dela — assim reusamos a mesma instância.
+            String msg = e.getMessage() == null ? "" : e.getMessage().toLowerCase();
+            if (msg.contains("exist") || msg.contains("use") || msg.contains("dupl")
+                    || msg.contains("conflict") || msg.contains("409") || msg.contains("400")) {
+                log.info("[Uazapi][create] {} já existe no Uazapi — recuperando existente via /instance/all",
+                        instanceName);
+                var existente = recuperarInstanciaExistente(instanceName);
+                if (existente != null) return existente;
+            }
+            throw e;
+        }
         // Log diagnóstico do body cru — essencial pra diagnosticar formato divergente
         // ("token" vs "hash" vs aninhado). Só as chaves top-level pra não vazar secret.
         log.info("[Uazapi][create] instance={} resp-keys={} resp-size~={}",
@@ -436,6 +453,48 @@ public class UazapiClient {
     // ═══════════════════════════════════════════════════════════════════════
     // Tradução Uazapi → Formato Evolution (pra WhatsappService não mudar)
     // ═══════════════════════════════════════════════════════════════════════
+
+    /**
+     * Fallback quando /instance/create dá conflito: busca no /instance/all
+     * (admin) por instância cujo {@code name} bate. Retorna resposta no
+     * mesmo shape que {@link #montarRespostaCriacao} produz — o caller
+     * (WhatsappService) não percebe diferença.
+     */
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> recuperarInstanciaExistente(String instanceName) {
+        try {
+            Object resp = executar("GET", "/instance/all", adminToken(), null, Object.class);
+            java.util.List<?> lista = null;
+            if (resp instanceof java.util.List<?> l) lista = l;
+            else if (resp instanceof Map<?, ?> m && ((Map<?, ?>) m).get("instances") instanceof java.util.List<?> l2) {
+                lista = l2;
+            }
+            if (lista == null) return null;
+            for (Object o : lista) {
+                if (!(o instanceof Map<?, ?> m)) continue;
+                Map<String, Object> item = (Map<String, Object>) m;
+                Object nm = item.get("name");
+                if (nm != null && instanceName.equals(nm.toString())) {
+                    Object id = item.get("id");
+                    Object tk = item.get("token");
+                    if (tk == null) tk = item.get("apitoken");
+                    log.info("[Uazapi] recuperei instância existente {} (id={} token={}chars)",
+                            instanceName,
+                            id != null ? id.toString() : "?",
+                            tk != null ? tk.toString().length() : 0);
+                    return montarRespostaCriacao(
+                            instanceName,
+                            id != null ? id.toString() : null,
+                            tk != null ? tk.toString() : null);
+                }
+            }
+            log.warn("[Uazapi] /instance/all não achou instância com name={}", instanceName);
+            return null;
+        } catch (Exception e) {
+            log.warn("[Uazapi] recuperarInstanciaExistente({}) falhou: {}", instanceName, e.getMessage());
+            return null;
+        }
+    }
 
     /** Emula {@code { instance: {instanceId, instanceName}, hash: {apikey} }}. */
     private Map<String, Object> montarRespostaCriacao(String name, String id, String token) {

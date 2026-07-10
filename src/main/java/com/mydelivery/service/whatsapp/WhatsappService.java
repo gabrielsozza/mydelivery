@@ -910,11 +910,13 @@ public class WhatsappService {
         // imediatamente. Quando Evolution emitir webhook, nossa linha
         // já está no banco. Zero race condition.
         //
-        // Usa sufixo timestamp direto — sem tentar reusar nome base que
-        // sabidamente está em uso. Evita sequência de erros logout/delete
-        // que viviam dando 500/400 na Evolution.
+        // Nome ESTÁVEL sem timestamp: "mydelivery-rest-{id}". No Uazapi,
+        // cada instância criada consome um slot do plano (300 no plano PRO).
+        // Timestamp faria cada Reset+Conectar consumir slot novo. Se der
+        // conflito ("name já existe"), o UazapiClient trata via fallback
+        // (GET /instance/all + reusa token da existente).
 
-        String nome = nomeInstancia(restaurante) + "-" + (System.currentTimeMillis() / 1000);
+        String nome = nomeInstancia(restaurante);
         String webhookUrl = props.getWebhookBaseUrl() + "/api/webhooks/whatsapp/" + nome;
 
         // Distribui round-robin entre os pools configurados pra reduzir

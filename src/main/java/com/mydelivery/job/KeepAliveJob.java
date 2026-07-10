@@ -8,7 +8,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.mydelivery.model.WhatsappInstance;
 import com.mydelivery.repository.WhatsappInstanceRepository;
-import com.mydelivery.service.whatsapp.EvolutionClient;
+import com.mydelivery.service.whatsapp.UazapiClient;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -43,7 +43,7 @@ import lombok.extern.slf4j.Slf4j;
 public class KeepAliveJob {
 
     private final WhatsappInstanceRepository whatsappRepo;
-    private final EvolutionClient evolutionClient;
+    private final UazapiClient evolutionClient;
 
     /**
      * Roda a cada 4 minutos. {@code initialDelay} = 2min pra nao bater junto

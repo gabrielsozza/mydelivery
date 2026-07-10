@@ -379,18 +379,26 @@ public class UazapiClient {
      * em memória. Executa via {@code ApplicationReadyEvent} pra garantir
      * que o repositório está pronto.
      */
+    /**
+     * Setter injection opcional pro repositório. Usar {@code @Autowired} em
+     * parâmetro de {@code @EventListener} não funciona (Spring passa o evento
+     * como argumento, não resolve dependência) — por isso a injeção fica aqui.
+     */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setWhatsappInstanceRepository(com.mydelivery.repository.WhatsappInstanceRepository repo) {
+        this.repoRef = repo;
+    }
+
     @org.springframework.context.event.EventListener(
             org.springframework.boot.context.event.ApplicationReadyEvent.class)
-    public void bootstrapTokens(
-            @org.springframework.beans.factory.annotation.Autowired(required = false)
-            com.mydelivery.repository.WhatsappInstanceRepository repo) {
-        // Guarda ref pro fallback runtime usar quando cache in-memory falhar
-        // (ex: worker novo, thread que não passou por criarInstancia).
-        this.repoRef = repo;
-        if (repo == null) return;
+    public void bootstrapTokens() {
+        if (repoRef == null) {
+            log.info("[Uazapi] bootstrapTokens: repo não injetado — pulando");
+            return;
+        }
         try {
             int carregados = 0;
-            for (var inst : repo.findAll()) {
+            for (var inst : repoRef.findAll()) {
                 if (inst.getInstanceName() != null && inst.getInstanceToken() != null
                         && !inst.getInstanceToken().isBlank()) {
                     tokensPorNome.put(inst.getInstanceName(), inst.getInstanceToken());

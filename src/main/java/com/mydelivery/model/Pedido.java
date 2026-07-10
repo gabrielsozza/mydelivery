@@ -27,6 +27,12 @@ import java.util.ArrayList;
 public class Pedido {
     @Id @GeneratedValue(strategy=GenerationType.IDENTITY) private Long id;
     @ManyToOne @JoinColumn(name="restaurante_id",nullable=false) private Restaurante restaurante;
+    /** Cliente do pedido. Excluído de equals/hashCode/toString porque
+     *  {@link Cliente#getUltimoPedido()} aponta de volta pra cá — o ciclo
+     *  bidirecional derrubava o criar-pedido com StackOverflowError no
+     *  {@code @Data} do Lombok (log Railway 10/jul/2026). */
+    @lombok.EqualsAndHashCode.Exclude
+    @lombok.ToString.Exclude
     @ManyToOne @JoinColumn(name="cliente_id") private Cliente cliente;
     @ManyToOne(fetch=FetchType.LAZY) @JoinColumn(name="entregador_id") private Entregador entregador;
 

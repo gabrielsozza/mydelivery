@@ -423,8 +423,13 @@ public class UazapiClient {
                                 String remoteJid, String messageId, boolean fromMe) {
         try {
             String token = tokenEfetivo(instanceName, instanceToken);
+            // Uazapi devolve 400 "Missing Id in Payload" se mandar só "messageid".
+            // Aceita várias variantes de nome — mandamos as 3 mais comuns pra
+            // cobrir qualquer versão da API.
             Map<String, Object> body = new HashMap<>();
             body.put("number", remoteJid);
+            body.put("id", messageId);
+            body.put("Id", messageId);
             body.put("messageid", messageId);
             executar("POST", "/message/markread", token, body, Map.class);
         } catch (Exception ignored) {

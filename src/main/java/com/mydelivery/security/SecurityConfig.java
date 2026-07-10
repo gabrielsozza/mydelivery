@@ -128,25 +128,18 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
-        java.util.List<String> patterns = new java.util.ArrayList<>(java.util.List.of(
-                "https://*.mydeliveryfood.com.br",
-                "https://mydeliveryfood.com.br",
-                "https://*.mydelivery.app",
-                "https://mydelivery.app",
-                "https://*.netlify.app",
-                "https://*.railway.app",
-                "http://localhost:*",
-                "http://127.0.0.1:*",
-                "file://*",
-                "null"
-        ));
-        if (allowedOrigins != null && !allowedOrigins.isBlank()) {
-            for (String o : allowedOrigins.split(",")) {
-                String t = o.trim();
-                if (!t.isEmpty() && !patterns.contains(t)) patterns.add(t);
-            }
-        }
-        config.setAllowedOriginPatterns(patterns);
+        // WILDCARD TOTAL: aceita qualquer Origin. Trade-off pesado avaliado:
+        //  - Endpoints privados (painel restaurante, admin) exigem JWT válido,
+        //    então CORS não é a camada de defesa deles — é o token.
+        //  - Endpoints públicos (cardápio, criar pedido, webhooks) precisam
+        //    aceitar N domínios de N restaurantes (Netlify, custom, subdomínios).
+        //    Enumerar patterns era jogo perdido — sempre aparecia um novo.
+        //
+        // Spring Security 6 aceita "*" em setAllowedOriginPatterns COM
+        // credentials=true (diferente de setAllowedOrigins que proíbe).
+        // Antes desse fix o server rejeitava POST /api/pedidos/novo com 403 pra
+        // qualquer origem fora da lista fixa — ninguém conseguia fazer pedido.
+        config.setAllowedOriginPatterns(java.util.List.of("*"));
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"));
         config.setAllowedHeaders(List.of("*"));
         config.setExposedHeaders(List.of("X-Correlation-Id"));

@@ -79,7 +79,16 @@ public class Cliente {
     private String deviceUuid;
 
     /** FK opcional pro último pedido — pra o modal "Pedir novamente" carregar
-     *  em O(1). Se o pedido for apagado, o FK vira NULL (ON DELETE SET NULL). */
+     *  em O(1). Se o pedido for apagado, o FK vira NULL (ON DELETE SET NULL).
+     *
+     *  <p>Excluído de {@code equals}/{@code hashCode}/{@code toString} porque
+     *  Pedido também tem {@code Cliente cliente} — ciclo bidirecional que
+     *  provoca {@link StackOverflowError} no {@code @Data} do Lombok quando
+     *  algo compara/serializa. Bug caiu em prod dia 10/jul/2026 causando 500
+     *  no criar-pedido (Railway logs mostravam recursão infinita em
+     *  Cliente.hashCode ↔ Pedido.hashCode). */
+    @lombok.EqualsAndHashCode.Exclude
+    @lombok.ToString.Exclude
     @ManyToOne(fetch = jakarta.persistence.FetchType.LAZY)
     @JoinColumn(name = "ultimo_pedido_id")
     private Pedido ultimoPedido;

@@ -671,9 +671,14 @@ public class WhatsappService {
         double warm = fatorWarmup(inst);
         double posRec = fatorPosReconnect(key);
         double mult = warm * posRec;
-        int capMin  = Math.max(1, (int) Math.floor(rateLimitMin  * mult));
-        int capHora = Math.max(1, (int) Math.floor(rateLimitHora * mult));
-        int capDia  = Math.max(1, (int) Math.floor(rateLimitDia  * mult));
+        // Floor MIN=3 pra permitir conversação de bot básica mesmo no pior
+        // caso do warmup (warm=0.04 pos instâncias novas). Antes o floor era 1
+        // e o bot travava depois da 1ª resposta — cliente perguntava "quanto é
+        // a taxa?" e não recebia resposta. 3/min ainda é seguro anti-shadowban
+        // pra um número que só responde a mensagens de cliente.
+        int capMin  = Math.max(3, (int) Math.floor(rateLimitMin  * mult));
+        int capHora = Math.max(15, (int) Math.floor(rateLimitHora * mult));
+        int capDia  = Math.max(60, (int) Math.floor(rateLimitDia  * mult));
 
         synchronized (hist) {
             // Expira entradas com >24h (janela máxima). As demais janelas usam

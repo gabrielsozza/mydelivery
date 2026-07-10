@@ -60,20 +60,45 @@ public class UazapiWebhookController {
             return ResponseEntity.ok().build();
         }
 
+        // Log DIAGNÓSTICO — payload cru pra descobrir o formato real
+        // (o OpenAPI da Uazapi diverge do que eles enviam na prática).
+        // Dump top-level keys + valores curtos + chaves aninhadas de "data",
+        // "message", "connection" pra achar onde vem o instance name e o texto.
+        log.info("[Uazapi-Webhook] === RAW payload ===");
+        for (var entry : payload.entrySet()) {
+            Object v = entry.getValue();
+            if (v instanceof Map<?, ?> m) {
+                log.info("[Uazapi-Webhook]   {} = (Map) keys={}", entry.getKey(), m.keySet());
+            } else if (v instanceof java.util.List<?> l) {
+                log.info("[Uazapi-Webhook]   {} = (List size={})", entry.getKey(), l.size());
+            } else {
+                String vs = v == null ? "null" : v.toString();
+                if (vs.length() > 120) vs = vs.substring(0, 117) + "...";
+                log.info("[Uazapi-Webhook]   {} = {}", entry.getKey(), vs);
+            }
+        }
+        log.info("[Uazapi-Webhook] === END raw ===");
+
         String eventUazapi = strDe(payload, "EventType");
         if (eventUazapi == null) eventUazapi = strDe(payload, "event");
+        if (eventUazapi == null) eventUazapi = strDe(payload, "type");
         String instanceName = extrairInstanceName(payload);
         if (instanceName == null || instanceName.isBlank()) {
-            log.warn("[Uazapi-Webhook] payload sem instance name — descartando. keys={}", payload.keySet());
+            log.warn("[Uazapi-Webhook] payload sem instance name — descartando. event={} keys={}",
+                    eventUazapi, payload.keySet());
             return ResponseEntity.ok().build();
         }
+
+        log.info("[Uazapi-Webhook] event={} instance={} → traduzindo",
+                eventUazapi, instanceName);
 
         // TRADUZ pro formato Evolution e delega pro handler central.
         Map<String, Object> evoPayload = traduzir(eventUazapi, payload);
         if (evoPayload == null) {
-            // Evento sem tradução conhecida (ex: presence) — ignora.
+            log.info("[Uazapi-Webhook] event={} sem tradução conhecida — ignorado", eventUazapi);
             return ResponseEntity.ok().build();
         }
+        log.info("[Uazapi-Webhook] delegando ao handler Evolution — evoEvent={}", evoPayload.get("event"));
         return evolutionHandler.processarWebhookEvolution(instanceName, evoPayload);
     }
 
@@ -209,18 +234,24 @@ public class UazapiWebhookController {
      */
     @SuppressWarnings("unchecked")
     private String extrairInstanceName(Map<String, Object> payload) {
-        String[] chaves = { "owner", "instance", "instance_name", "instanceName", "name" };
+        String[] chaves = {
+                "owner", "instance", "instance_name", "instanceName",
+                "instanceId", "instance_id", "name", "token"
+        };
         for (String k : chaves) {
             Object v = payload.get(k);
             if (v != null && !v.toString().isBlank()) return v.toString();
         }
-        // Talvez dentro de data.
-        Object d = payload.get("data");
-        if (d instanceof Map<?, ?> dm) {
-            Map<String, Object> dMap = (Map<String, Object>) dm;
-            for (String k : chaves) {
-                Object v = dMap.get(k);
-                if (v != null && !v.toString().isBlank()) return v.toString();
+        // Talvez dentro de data / message / instance (aninhado)
+        String[] wrappers = { "data", "message", "instance" };
+        for (String w : wrappers) {
+            Object d = payload.get(w);
+            if (d instanceof Map<?, ?> dm) {
+                Map<String, Object> dMap = (Map<String, Object>) dm;
+                for (String k : chaves) {
+                    Object v = dMap.get(k);
+                    if (v != null && !v.toString().isBlank()) return v.toString();
+                }
             }
         }
         return null;

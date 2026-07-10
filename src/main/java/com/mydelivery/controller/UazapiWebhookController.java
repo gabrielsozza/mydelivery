@@ -52,6 +52,17 @@ import lombok.extern.slf4j.Slf4j;
 public class UazapiWebhookController {
 
     private final WhatsappWebhookController evolutionHandler;
+    private final com.mydelivery.repository.WhatsappInstanceRepository instanceRepo;
+    private final com.mydelivery.service.whatsapp.UazapiClient uazapiClient;
+
+    /**
+     * Cache número WhatsApp → nome da instância. Uazapi manda webhooks com
+     * {@code owner=5527988387661} (número, não nome). O primeiro hit resolve
+     * via BD (findByPhone) ou {@code /instance/all}; próximos batem no cache.
+     * Sem esse cache cada mensagem gastava uma chamada HTTP pro Uazapi.
+     */
+    private final java.util.concurrent.ConcurrentHashMap<String, String> numeroParaNome =
+            new java.util.concurrent.ConcurrentHashMap<>();
 
     @PostMapping("/api/webhooks/whatsapp/uazapi")
     public ResponseEntity<Void> receber(@RequestBody(required = false) Map<String, Object> payload) {
@@ -87,6 +98,29 @@ public class UazapiWebhookController {
             log.warn("[Uazapi-Webhook] payload sem instance name — descartando. event={} keys={}",
                     eventUazapi, payload.keySet());
             return ResponseEntity.ok().build();
+        }
+
+        // ── RESOLVE NÚMERO → NOME ─────────────────────────────────────────
+        // Uazapi manda owner=5527988387661 (número do WhatsApp conectado)
+        // em vez do nome da instância. Antes desse resolver, o handler
+        // buscava por nome, não achava, descartava a mensagem — bot mudo.
+        // Resolução em 3 camadas: cache → BD (findByPhone) → /instance/all.
+        // Assim que descobrir o nome, PERSISTE o phone no BD pra próximos
+        // webhooks baterem direto por findByPhone (sem chamada HTTP).
+        if (instanceName.matches("\\d{10,15}")) {
+            String numero = instanceName;
+            String nomeReal = numeroParaNome.get(numero);
+            if (nomeReal == null) {
+                nomeReal = resolverNomePeloNumero(numero);
+                if (nomeReal != null) {
+                    numeroParaNome.put(numero, nomeReal);
+                    log.info("[Uazapi-Webhook] resolvido número {} → instância '{}'", numero, nomeReal);
+                } else {
+                    log.warn("[Uazapi-Webhook] não consegui resolver número {} pra nome de instância — descartando", numero);
+                    return ResponseEntity.ok().build();
+                }
+            }
+            instanceName = nomeReal;
         }
 
         log.info("[Uazapi-Webhook] event={} instance={} → traduzindo",
@@ -261,5 +295,81 @@ public class UazapiWebhookController {
         if (m == null) return null;
         Object v = m.get(k);
         return v == null ? null : v.toString();
+    }
+
+    /**
+     * Resolve o NÚMERO WhatsApp ({@code 5527988387661}) pro nome da instância
+     * ({@code mydelivery-rest-21}). Estratégia em cascata:
+     *
+     * <ol>
+     *   <li><b>BD</b>: {@code findByPhone} — se algum boot anterior já capturou
+     *       o número via Uazapi ou webhook connection, tá salvo aqui.</li>
+     *   <li><b>Uazapi</b>: {@code /instance/all} — varre todas as instâncias
+     *       e procura pela que tem {@code jid.user}/{@code owner}/{@code wuid}
+     *       batendo o número. Quando acha, PERSISTE o phone no BD pra próximos
+     *       webhooks resolverem direto pelo passo 1.</li>
+     * </ol>
+     *
+     * Retorna {@code null} se nenhuma camada resolveu (webhook fica descartado
+     * — não tem como saber pra qual restaurante entregar).
+     */
+    private String resolverNomePeloNumero(String numero) {
+        // Camada 1: BD (fast path)
+        try {
+            var opt = instanceRepo.findByPhone(numero);
+            if (opt.isPresent()) return opt.get().getInstanceName();
+        } catch (Exception e) {
+            log.warn("[Uazapi-Webhook] findByPhone falhou: {}", e.getMessage());
+        }
+        // Camada 2: /instance/all + persiste phone no BD
+        try {
+            var todas = uazapiClient.fetchInstancesRaw();
+            for (var u : todas) {
+                String numeroUazapi = extrairNumeroDaInstancia(u);
+                if (numeroUazapi == null || !numeroUazapi.equals(numero)) continue;
+                Object name = u.get("name");
+                if (name == null) continue;
+                String nome = name.toString();
+
+                // Persiste phone no BD (best-effort — se falhar cache in-memory
+                // ainda evita re-chamada)
+                try {
+                    instanceRepo.findByInstanceName(nome).ifPresent(inst -> {
+                        if (inst.getPhone() == null || !numero.equals(inst.getPhone())) {
+                            inst.setPhone(numero);
+                            instanceRepo.save(inst);
+                            log.info("[Uazapi-Webhook] phone {} persistido no BD pra {}", numero, nome);
+                        }
+                    });
+                } catch (Exception e) {
+                    log.warn("[Uazapi-Webhook] erro salvando phone no BD: {}", e.getMessage());
+                }
+                return nome;
+            }
+            log.warn("[Uazapi-Webhook] /instance/all tem {} instâncias mas nenhuma bate número {}",
+                    todas.size(), numero);
+        } catch (Exception e) {
+            log.warn("[Uazapi-Webhook] fetchInstancesRaw falhou: {}", e.getMessage());
+        }
+        return null;
+    }
+
+    @SuppressWarnings("unchecked")
+    private String extrairNumeroDaInstancia(Map<String, Object> u) {
+        Object jid = u.get("jid");
+        if (jid instanceof Map<?, ?> jm) {
+            Object user = ((Map<String, Object>) jm).get("user");
+            if (user != null) {
+                String s = user.toString();
+                if (s.matches("\\d+")) return s;
+            }
+        }
+        for (String k : new String[]{ "owner", "wuid", "number", "phone", "whatsappNumber" }) {
+            Object v = u.get(k);
+            if (v == null) continue;
+            String s = v.toString().replaceAll("[^0-9]", "");
+            if (s.length() >= 10 && s.length() <= 15) return s;
+        }
+        return null;
     }
 }

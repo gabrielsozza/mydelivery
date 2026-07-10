@@ -13,6 +13,14 @@ public interface WhatsappInstanceRepository extends JpaRepository<WhatsappInstan
 
     Optional<WhatsappInstance> findByInstanceName(String instanceName);
 
+    /**
+     * Usado pelo webhook Uazapi: quando o webhook vem com o NÚMERO do WhatsApp
+     * como identificador (owner=5527988387661) em vez do nome da instância,
+     * fallback pra buscar pela coluna phone. Uazapi manda o número no root
+     * do payload em várias situações.
+     */
+    Optional<WhatsappInstance> findByPhone(String phone);
+
     /** Usado pelo KeepAliveJob pra pingar Evolution e manter sessao Baileys ativa. */
     List<WhatsappInstance> findAllByStatus(WhatsappInstance.Status status);
 }

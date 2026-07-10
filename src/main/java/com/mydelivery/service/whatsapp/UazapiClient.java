@@ -186,7 +186,55 @@ public class UazapiClient {
                 instanceName,
                 resp == null ? "null" : resp.keySet(),
                 resp != null && (resp.containsKey("qrcode") || resp.containsKey("qr") || resp.containsKey("base64")));
+        // Extrai o número do WhatsApp se veio (instância já conectada) — salva
+        // no cache pro WhatsappService consultar depois via getPhone().
+        capturarPhoneDaResposta(instanceName, resp);
         return traduzirQrParaFormatoEvolution(resp);
+    }
+
+    /** Cache paralelo: nome da instância → número WhatsApp conectado (só dígitos). */
+    private final java.util.concurrent.ConcurrentMap<String, String> phonesPorNome =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * Extrai {@code jid.user} de qualquer response do Uazapi e guarda no cache.
+     * Formato típico: {@code { jid: { user: "5511999...", server: "s.whatsapp.net" } }}.
+     */
+    @SuppressWarnings("unchecked")
+    private void capturarPhoneDaResposta(String instanceName, Map<String, Object> resp) {
+        if (resp == null || instanceName == null) return;
+        Object jid = resp.get("jid");
+        // Pode estar aninhado em instance.jid ou status.jid
+        if (jid == null) {
+            Object inst = resp.get("instance");
+            if (inst instanceof Map<?, ?> im) jid = ((Map<String, Object>) im).get("jid");
+        }
+        if (jid == null) {
+            Object st = resp.get("status");
+            if (st instanceof Map<?, ?> sm) jid = ((Map<String, Object>) sm).get("jid");
+        }
+        if (jid instanceof Map<?, ?> jm) {
+            Object user = ((Map<String, Object>) jm).get("user");
+            if (user != null) {
+                String phone = user.toString().replaceAll("[^0-9]", "");
+                if (phone.length() >= 10) {
+                    phonesPorNome.put(instanceName, phone);
+                    log.info("[Uazapi] phone capturado pra {}: {}***",
+                            instanceName,
+                            phone.length() > 4 ? phone.substring(0, 4) : phone);
+                }
+            }
+        }
+    }
+
+    /**
+     * Retorna o número WhatsApp conectado da instância (só dígitos), ou {@code null}.
+     * WhatsappService usa após {@code criarNova}/{@code conectar} pra salvar no
+     * {@link com.mydelivery.model.WhatsappInstance#phone} — assim o webhook
+     * subsequente que vem com o NÚMERO como identificador acha a linha certa.
+     */
+    public String getPhone(String instanceName) {
+        return phonesPorNome.get(instanceName);
     }
 
     /**
@@ -230,6 +278,7 @@ public class UazapiClient {
             return Map.of("instance", Map.of("state", "close"));
         }
         Map<String, Object> resp = executar("GET", "/instance/status", token, null, Map.class);
+        capturarPhoneDaResposta(instanceName, resp);
         return traduzirStatusParaFormatoEvolution(resp);
     }
 

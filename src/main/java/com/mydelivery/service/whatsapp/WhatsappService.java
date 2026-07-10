@@ -739,9 +739,26 @@ public class WhatsappService {
 
     // ── webhook helpers ──
 
-    /** Lookup por nome de instância (usado pelo WebhookController). */
+    /**
+     * Lookup por nome de instância (usado pelo WebhookController).
+     * <p>Fallback: se {@code instanceName} parece um NÚMERO de WhatsApp
+     * (só dígitos, 10-15 chars) e não achou pela coluna instance_name,
+     * tenta pela coluna phone. Isso é essencial pro webhook do Uazapi,
+     * que envia o número do WhatsApp como identificador principal
+     * ({@code owner=5527988387661}) em vez do nome que a gente passou
+     * no {@code /instance/create}.
+     */
     public WhatsappInstance buscarPorNome(String instanceName) {
-        return repo.findByInstanceName(instanceName).orElse(null);
+        if (instanceName == null) return null;
+        var inst = repo.findByInstanceName(instanceName).orElse(null);
+        if (inst != null) return inst;
+        // Fallback: identificador parece número puro?
+        String soDigitos = instanceName.replaceAll("[^0-9]", "");
+        if (soDigitos.length() >= 10 && soDigitos.length() <= 15
+                && soDigitos.equals(instanceName)) {
+            return repo.findByPhone(soDigitos).orElse(null);
+        }
+        return null;
     }
 
     /** Busca a instância do restaurante (ou null se não tem). Read-only. */
@@ -1053,6 +1070,17 @@ public class WhatsappService {
             } else if ("close".equalsIgnoreCase(state)) {
                 if (inst.getStatus() == WhatsappInstance.Status.CONECTADA) {
                     inst.setStatus(WhatsappInstance.Status.DESCONECTADA);
+                }
+            }
+            // Sync do phone: se o Uazapi capturou o número via jid.user na
+            // resposta e o campo ainda tá vazio (webhook connection nunca
+            // chegou), persiste agora. Assim webhooks futuros que vêm com o
+            // número como identificador vão bater no findByPhone().
+            if (inst.getPhone() == null || inst.getPhone().isBlank()) {
+                String phone = evolutionClient.getPhone(inst.getInstanceName());
+                if (phone != null && !phone.isBlank()) {
+                    inst.setPhone(phone);
+                    log.info("[WhatsApp] phone {} associado à instância {}", phone, inst.getInstanceName());
                 }
             }
         } catch (RuntimeException e) {

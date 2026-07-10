@@ -60,6 +60,37 @@ public class Cliente {
     @Column(name = "endereco_referencia", length = 200)
     private String enderecoReferencia;
 
+    @Column(name = "endereco_cidade", length = 120)
+    private String enderecoCidade;
+
+    @Column(name = "endereco_estado", length = 10)
+    private String enderecoEstado;
+
+    @Column(name = "endereco_cep", length = 10)
+    private String enderecoCep;
+
+    /**
+     * UUID gerado no dispositivo do cliente e persistido no localStorage
+     * do navegador. Escopado por restaurante: unique composto (restaurante_id,
+     * device_uuid) — mesmo aparelho pedindo em 2 lojas gera 2 UUIDs distintos.
+     * Isso mantém o isolamento por design (não vaza cliente entre lojas).
+     */
+    @Column(name = "device_uuid", length = 36)
+    private String deviceUuid;
+
+    /** FK opcional pro último pedido — pra o modal "Pedir novamente" carregar
+     *  em O(1). Se o pedido for apagado, o FK vira NULL (ON DELETE SET NULL). */
+    @ManyToOne(fetch = jakarta.persistence.FetchType.LAZY)
+    @JoinColumn(name = "ultimo_pedido_id")
+    private Pedido ultimoPedido;
+
+    @Column(name = "ultimo_pedido_em")
+    private LocalDateTime ultimoPedidoEm;
+
+    /** Contador desnormalizado — evita COUNT(*) toda vez que o admin abre a ficha. */
+    @Column(name = "total_pedidos", nullable = false)
+    private Integer totalPedidos = 0;
+
     @CreationTimestamp
     private LocalDateTime criadoEm;
 }

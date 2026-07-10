@@ -42,6 +42,16 @@ public class MpPaymentResponse {
     @JsonProperty("external_reference")
     private String externalReference;
 
+    /**
+     * Data em que o pagamento foi aprovado (ISO 8601 com timezone, ex:
+     * "2026-07-05T14:30:00.000-03:00"). Usada pela reconciliação manual
+     * pra registrar {@code PagamentoMensalidade.pagoEm} com a data REAL
+     * do MP (não a hora em que o admin rodou o batch). Nulo quando ainda
+     * não aprovado.
+     */
+    @JsonProperty("date_approved")
+    private String dateApproved;
+
     /** Detalhes específicos do PIX. */
     @JsonProperty("point_of_interaction")
     private PointOfInteraction pointOfInteraction;

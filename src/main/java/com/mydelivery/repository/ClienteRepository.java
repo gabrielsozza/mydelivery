@@ -12,4 +12,11 @@ public interface ClienteRepository extends JpaRepository<Cliente, Long> {
 
     /** Lista todos os clientes de um restaurante (usado pela aba Clientes). */
     List<Cliente> findByRestauranteIdOrderByNomeAsc(Long restauranteId);
+
+    /**
+     * Lookup do cliente pelo dispositivo — usado pelo modal "Pedir novamente".
+     * O escopo (restaurante_id, device_uuid) é UNIQUE no banco, então é O(log n).
+     * NUNCA use só device_uuid sem restaurante_id — quebra o isolamento por loja.
+     */
+    Optional<Cliente> findByRestauranteIdAndDeviceUuid(Long restauranteId, String deviceUuid);
 }

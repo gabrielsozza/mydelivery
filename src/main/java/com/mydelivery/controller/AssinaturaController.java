@@ -44,6 +44,7 @@ public class AssinaturaController {
     private final com.mydelivery.repository.AssinaturaRepository assinaturaRepository;
     private final com.mydelivery.security.JwtUtil jwtUtil;
     private final com.mydelivery.service.CardapioReplicaService cardapioReplicaService;
+    private final com.mydelivery.service.ReconciliacaoAssinaturaService reconciliacaoService;
 
     @GetMapping("/status")
     @PreAuthorize("hasRole('RESTAURANTE')")
@@ -422,6 +423,48 @@ public class AssinaturaController {
             "role", usuario.getRole().name(),
             "expiresIn", 15 * 60 * 1000
         ));
+    }
+
+    /**
+     * USO INTERNO ADMIN — reconcilia PIX/cartão de assinatura pago mas não
+     * processado pelo webhook (webhook do MP não chegou, DNS, etc).
+     *
+     * Body: { mpPaymentId }
+     * Header: X-Admin-Secret
+     *
+     * Fluxo:
+     *  - Consulta MP com token admin
+     *  - Valida: status=approved, external_reference no formato "assinatura-*"
+     *  - Ativa plano (idempotente) + registra pagamento no relatório financeiro
+     *    do admin com a data REAL do MP
+     *
+     * Idempotente — pode rodar N vezes pro mesmo mpPaymentId sem duplicar
+     * receita nem estender a vigência do plano.
+     */
+    @PostMapping("/reconciliar-pagamento-admin")
+    public ResponseEntity<Map<String, Object>> reconciliarPagamentoAdmin(
+            @org.springframework.web.bind.annotation.RequestHeader(value = "X-Admin-Secret", required = false) String secret,
+            @RequestBody Map<String, Object> body,
+            @org.springframework.beans.factory.annotation.Value("${mydelivery.admin.internal-secret:}") String esperado) {
+        if (esperado == null || esperado.isBlank() || !esperado.equals(secret)) {
+            return ResponseEntity.status(org.springframework.http.HttpStatus.FORBIDDEN)
+                    .body(Map.of("erro", "Secret inválido"));
+        }
+        Object raw = body == null ? null : body.get("mpPaymentId");
+        if (raw == null || String.valueOf(raw).isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("erro", "Informe mpPaymentId"));
+        }
+        Long mpPaymentId;
+        try {
+            mpPaymentId = Long.valueOf(String.valueOf(raw).trim());
+        } catch (NumberFormatException e) {
+            return ResponseEntity.badRequest().body(Map.of("erro", "mpPaymentId inválido"));
+        }
+        Map<String, Object> resp = reconciliacaoService.reconciliarPorMpPaymentId(mpPaymentId);
+        boolean ok = Boolean.TRUE.equals(resp.get("ok"));
+        return ok
+                ? ResponseEntity.ok(resp)
+                : ResponseEntity.status(org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY).body(resp);
     }
 
     /**

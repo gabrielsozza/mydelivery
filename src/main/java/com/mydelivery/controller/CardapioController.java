@@ -21,6 +21,7 @@ import com.mydelivery.dto.cardapio.CategoriaComProdutosResponse;
 import com.mydelivery.dto.cardapio.CategoriaRequest;
 import com.mydelivery.dto.cardapio.ProdutoRequest;
 import com.mydelivery.dto.cardapio.ProdutoResponse;
+import com.mydelivery.dto.cardapio.UltimoPedidoResponse;
 import com.mydelivery.model.Categoria;
 import com.mydelivery.model.Restaurante;
 import com.mydelivery.repository.RestauranteRepository;
@@ -37,6 +38,7 @@ public class CardapioController {
     private final RestauranteRepository restauranteRepository;
     private final com.mydelivery.repository.CategoriaRepository categoriaRepository;
     private final com.mydelivery.repository.ClienteRepository clienteRepository;
+    private final com.mydelivery.repository.PedidoItemRepository pedidoItemRepository;
 
     /**
      * Auto-preenchimento de checkout — pra cliente recorrente.
@@ -81,6 +83,112 @@ public class CardapioController {
         resp.put("telefone", c.getTelefone());
         resp.put("endereco", endereco);
         return ResponseEntity.ok(resp);
+    }
+
+    /**
+     * "Pedir novamente" — retorna o último pedido do cliente pelo dispositivo.
+     *
+     * SEGURANÇA:
+     *  - Escopo composto (slug, device_uuid) — sem os DOIS não retorna nada.
+     *  - Query com WHERE restaurante_id sempre presente. Impossível pegar
+     *    pedido de outra loja mesmo com bug no repositório.
+     *  - Retorna 204 (No Content) pra QUALQUER UUID sem match — não
+     *    distingue "não existe" de "existe em outra loja".
+     *  - UUID validado no formato canônico. Strings estranhas caem em 204.
+     *
+     * PERFORMANCE:
+     *  - Lookup por índice único (restaurante_id, device_uuid) → O(log n).
+     *  - Itens carregados com JOIN FETCH em produto → 1 SQL só, sem N+1.
+     *  - Reconciliação de preço/disponibilidade no próprio endpoint —
+     *    frontend recebe pronto pra renderizar.
+     */
+    @GetMapping("/api/cardapio/{slug}/cliente/{deviceUuid}/ultimo-pedido")
+    public ResponseEntity<UltimoPedidoResponse> ultimoPedidoPorDispositivo(
+            @PathVariable String slug,
+            @PathVariable String deviceUuid) {
+        if (deviceUuid == null || deviceUuid.isBlank()) return ResponseEntity.noContent().build();
+        String uuid = deviceUuid.trim();
+        // Anti-lixo: UUID canônico tem 32-36 chars (hex/traços). Bloqueia strings
+        // malformadas antes de chegar no banco.
+        if (uuid.length() < 32 || uuid.length() > 36 || !uuid.matches("[a-fA-F0-9\\-]+")) {
+            return ResponseEntity.noContent().build();
+        }
+        Restaurante r = restauranteRepository.findBySlug(slug).orElse(null);
+        if (r == null) return ResponseEntity.noContent().build();
+        var cliente = clienteRepository.findByRestauranteIdAndDeviceUuid(r.getId(), uuid).orElse(null);
+        if (cliente == null || cliente.getUltimoPedido() == null) {
+            return ResponseEntity.noContent().build();
+        }
+        var pedido = cliente.getUltimoPedido();
+        // Guard-rail EXTRA: tenant-check. Mesmo com FK bem posta, garante
+        // que ninguém consiga puxar pedido cross-restaurante por mais que
+        // tente manipular o UUID.
+        if (pedido.getRestaurante() == null
+                || !pedido.getRestaurante().getId().equals(r.getId())) {
+            return ResponseEntity.noContent().build();
+        }
+        var itens = pedidoItemRepository.findByPedidoIdComProduto(pedido.getId());
+        if (itens == null || itens.isEmpty()) return ResponseEntity.noContent().build();
+
+        UltimoPedidoResponse resp = new UltimoPedidoResponse();
+        resp.setNome(cliente.getNome());
+        resp.setTelefone(cliente.getTelefone());
+        UltimoPedidoResponse.EnderecoDto end = new UltimoPedidoResponse.EnderecoDto();
+        end.setRua(cliente.getEnderecoRua());
+        end.setNumero(cliente.getEnderecoNumero());
+        end.setComplemento(cliente.getEnderecoComplemento());
+        end.setBairro(cliente.getEnderecoBairro());
+        end.setCidade(cliente.getEnderecoCidade());
+        end.setEstado(cliente.getEnderecoEstado());
+        end.setCep(cliente.getEnderecoCep());
+        end.setReferencia(cliente.getEnderecoReferencia());
+        resp.setEndereco(end);
+        resp.setPedidoId(pedido.getId());
+        resp.setPedidoEm(pedido.getCriadoEm());
+        resp.setTotalAnterior(pedido.getTotal());
+
+        boolean algumMudou = false;
+        boolean algumRemovido = false;
+        java.math.BigDecimal totalAtual = java.math.BigDecimal.ZERO;
+        java.util.List<UltimoPedidoResponse.ItemDto> itensOut = new java.util.ArrayList<>();
+        for (var it : itens) {
+            UltimoPedidoResponse.ItemDto d = new UltimoPedidoResponse.ItemDto();
+            d.setPedidoItemId(it.getId());
+            d.setNome(it.getNomeProduto());
+            d.setQuantidade(it.getQuantidade());
+            d.setPrecoOriginal(it.getPrecoUnitario());
+            d.setObservacao(it.getObservacao());
+            var prod = it.getProduto();
+            boolean disponivel = prod != null
+                    && Boolean.TRUE.equals(prod.getDisponivel())
+                    && prod.getRestaurante() != null
+                    && prod.getRestaurante().getId().equals(r.getId());
+            d.setDisponivel(disponivel);
+            if (disponivel) {
+                d.setProdutoId(prod.getId());
+                d.setFotoUrl(prod.getFotoUrl());
+                d.setPrecoAtual(prod.getPreco());
+                boolean mudou = it.getPrecoUnitario() != null
+                        && prod.getPreco() != null
+                        && prod.getPreco().compareTo(it.getPrecoUnitario()) != 0;
+                d.setPrecoMudou(mudou);
+                if (mudou) algumMudou = true;
+                totalAtual = totalAtual.add(prod.getPreco()
+                        .multiply(java.math.BigDecimal.valueOf(it.getQuantidade())));
+            } else {
+                d.setPrecoAtual(it.getPrecoUnitario());
+                d.setPrecoMudou(false);
+                algumRemovido = true;
+            }
+            itensOut.add(d);
+        }
+        resp.setItens(itensOut);
+        resp.setTotalAtual(totalAtual);
+        resp.setAlgumPrecoMudou(algumMudou);
+        resp.setAlgumItemRemovido(algumRemovido);
+        return ResponseEntity.ok()
+                .header("Cache-Control", "no-store")
+                .body(resp);
     }
 
     // ─── PÚBLICO ──────────────────────────────────────────────────────────

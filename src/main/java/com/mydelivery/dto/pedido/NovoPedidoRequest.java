@@ -64,6 +64,14 @@ public class NovoPedidoRequest {
 
         @NotBlank(message = "Telefone do cliente é obrigatório")
         private String telefone;
+
+        /**
+         * UUID gerado no browser do cliente. Opcional pra compat com fluxos
+         * antigos (comanda de mesa, retirada rápida). Se vier, o backend
+         * associa o cliente ao dispositivo — próxima visita ao cardápio
+         * reconhece e oferece "repetir pedido".
+         */
+        private String deviceUuid;
     }
 
     @Data

@@ -87,22 +87,40 @@ public class PedidoService {
             // vindos de diferentes pontos do sistema apontem pro mesmo cliente.
             String telefone = com.mydelivery.util.TelefoneUtil.normalizar(request.getCliente().getTelefone());
             String nome = request.getCliente().getNome();
-            cliente = clienteRepository.findByTelefoneAndRestauranteId(telefone, restaurante.getId())
-                    .orElseGet(() -> {
-                        Cliente c = new Cliente();
-                        c.setRestaurante(restaurante);
-                        c.setNome(nome);
-                        c.setTelefone(telefone);
-                        return clienteRepository.save(c);
-                    });
-            if (nome != null) {
-                cliente.setNome(nome);
-                clienteRepository.save(cliente);
+            String deviceUuid = request.getCliente().getDeviceUuid();
+            // Sanitiza UUID: só aceita formato canônico pra evitar injection ou
+            // strings gigantes tentando estourar a coluna VARCHAR(36).
+            if (deviceUuid != null) {
+                deviceUuid = deviceUuid.trim();
+                if (deviceUuid.isEmpty() || deviceUuid.length() > 36
+                        || !deviceUuid.matches("[a-fA-F0-9\\-]{32,36}")) {
+                    deviceUuid = null;
+                }
             }
+            // Tenta primeiro pelo UUID (mais preciso — mesmo cliente que trocou
+            // de telefone continua o mesmo). Fallback pelo telefone.
+            final String deviceUuidFinal = deviceUuid;
+            cliente = null;
+            if (deviceUuidFinal != null) {
+                cliente = clienteRepository.findByRestauranteIdAndDeviceUuid(
+                        restaurante.getId(), deviceUuidFinal).orElse(null);
+            }
+            if (cliente == null) {
+                cliente = clienteRepository.findByTelefoneAndRestauranteId(telefone, restaurante.getId())
+                        .orElseGet(() -> {
+                            Cliente c = new Cliente();
+                            c.setRestaurante(restaurante);
+                            c.setNome(nome);
+                            c.setTelefone(telefone);
+                            c.setTotalPedidos(0);
+                            return clienteRepository.save(c);
+                        });
+            }
+            if (nome != null) cliente.setNome(nome);
+            if (telefone != null) cliente.setTelefone(telefone);
+            if (deviceUuidFinal != null) cliente.setDeviceUuid(deviceUuidFinal);
             // ── Atualiza ÚLTIMO endereço estruturado do cliente ──────────
             // Só pra DELIVERY (mesa/retirada não tem endereço de entrega).
-            // Permite pré-preencher checkout em pedidos futuros e reduzir
-            // atrito ("já sei seu endereço, escolha o pagamento").
             if ("delivery".equalsIgnoreCase(request.getModo())
                     && request.getEndereco() != null && !request.getEndereco().isEmpty()) {
                 var end = request.getEndereco();
@@ -111,8 +129,11 @@ public class PedidoService {
                 cliente.setEnderecoComplemento(end.getOrDefault("complemento", null));
                 cliente.setEnderecoBairro(end.getOrDefault("bairro", null));
                 cliente.setEnderecoReferencia(end.getOrDefault("referencia", null));
-                clienteRepository.save(cliente);
+                cliente.setEnderecoCidade(end.getOrDefault("cidade", null));
+                cliente.setEnderecoEstado(end.getOrDefault("estado", null));
+                cliente.setEnderecoCep(end.getOrDefault("cep", null));
             }
+            clienteRepository.save(cliente);
         }
         // ── Taxa de entrega (só DELIVERY) ──
         // Mesa e retirada não cobram taxa. Delivery faz lookup por bairro.
@@ -363,6 +384,27 @@ public class PedidoService {
 
         // Agendamento opcional já está setado acima — só pra deixar claro
         Pedido salvo = pedidoRepository.save(pedido);
+
+        // ── Memória "Pedir novamente" ──────────────────────────────────────
+        // Aponta o ponteiro ultimoPedido do cliente pro pedido recém-criado.
+        // Faz isso ANTES de qualquer outra coisa que possa falhar (pagamento,
+        // cupom, fidelidade) porque é operação leve e não-bloqueante — se
+        // qualquer coisa daqui pra frente estourar, o pedido já foi salvo E
+        // o cliente já tem a referência pro modal "Pedir novamente" da
+        // próxima visita ao cardápio.
+        if (cliente != null) {
+            try {
+                cliente.setUltimoPedido(salvo);
+                cliente.setUltimoPedidoEm(salvo.getCriadoEm() != null
+                        ? salvo.getCriadoEm() : java.time.LocalDateTime.now());
+                int atual = cliente.getTotalPedidos() == null ? 0 : cliente.getTotalPedidos();
+                cliente.setTotalPedidos(atual + 1);
+                clienteRepository.save(cliente);
+            } catch (Exception e) {
+                // Nunca deve bloquear a criação do pedido — memória do
+                // último pedido é feature de conveniência, não crítica.
+            }
+        }
 
         // ── Pagamento ──────────────────────────────────────────────────────
         // Cria o Pagamento associado. Pra PIX online, gera o BR Code aqui mesmo.

@@ -5,6 +5,8 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.ZoneId;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 import org.springframework.stereotype.Service;
@@ -25,6 +27,12 @@ import com.mydelivery.model.Restaurante;
  * Horários cruzando madrugada (ex: abertura 18:00, fechamento 02:00):
  * tratamos como "fim > início" → range invertido, ainda funciona.
  * Se fechamento <= abertura, consideramos que cruza meia-noite.
+ *
+ * Múltiplas janelas por dia (ex: almoço 11:00-14:00 + jantar 18:00-23:00):
+ * o JSON do dia pode ter {@code intervalos: [{abertura,fechamento},...]} —
+ * a loja fica "aberta" enquanto o relógio estiver dentro de QUALQUER
+ * intervalo. Se só houver {@code abertura/fechamento} (formato antigo),
+ * tratamos como 1 intervalo — 100% backward-compatible.
  */
 @Service
 public class HorarioLojaService {
@@ -32,11 +40,24 @@ public class HorarioLojaService {
     private static final ZoneId TZ = ZoneId.of("America/Sao_Paulo");
     private static final ObjectMapper JSON = new ObjectMapper();
 
+    /** Um intervalo de funcionamento (uma "janela") no dia. */
+    public static class Intervalo {
+        public final LocalTime abertura;
+        public final LocalTime fechamento;
+        public Intervalo(LocalTime a, LocalTime f) { this.abertura = a; this.fechamento = f; }
+    }
+
     /** Resultado consolidado pro caller decidir o que fazer. */
     public static class EstadoHorario {
         public boolean horarioConfigurado;  // tem horario pra hoje cadastrado?
-        public boolean dentroHorario;       // hora atual ∈ [abertura, fechamento]
-        public boolean dentroCutoff;        // estamos nos N min antes do fechamento?
+        public boolean dentroHorario;       // hora atual ∈ qualquer intervalo
+        public boolean dentroCutoff;        // estamos nos N min antes do fim do intervalo atual?
+        /** Todos os intervalos do dia (pode ser vazio). Sempre != null. */
+        public List<Intervalo> intervalos = new ArrayList<>();
+        /**
+         * Compat com callers antigos: primeira janela do dia. NÃO representa
+         * a janela ATIVA nem o horário exposto ao cliente — use {@link #intervalos}.
+         */
         public LocalTime abertura;
         public LocalTime fechamento;
 
@@ -58,25 +79,63 @@ public class HorarioLojaService {
         Object abertoFlag = hoje.get("aberto");
         if (abertoFlag != null && Boolean.FALSE.equals(abertoFlag)) return e;
 
-        LocalTime ab = parseHora(hoje.get("abertura"));
-        LocalTime fc = parseHora(hoje.get("fechamento"));
-        if (ab == null || fc == null) return e;
+        List<Intervalo> intervalos = extrairIntervalos(hoje);
+        if (intervalos.isEmpty()) return e;
 
         e.horarioConfigurado = true;
-        e.abertura = ab;
-        e.fechamento = fc;
-        e.dentroHorario = estaDentro(agora.toLocalTime(), ab, fc);
-        if (e.dentroHorario && Boolean.TRUE.equals(r.getPararPedidosAntesFechamento())) {
+        e.intervalos = intervalos;
+        e.abertura = intervalos.get(0).abertura;
+        e.fechamento = intervalos.get(intervalos.size() - 1).fechamento;
+
+        // Verifica cada janela; a primeira que "conter" o momento atual manda.
+        LocalTime agoraLT = agora.toLocalTime();
+        Intervalo ativo = null;
+        for (Intervalo iv : intervalos) {
+            if (estaDentro(agoraLT, iv.abertura, iv.fechamento)) { ativo = iv; break; }
+        }
+        e.dentroHorario = ativo != null;
+
+        if (ativo != null && Boolean.TRUE.equals(r.getPararPedidosAntesFechamento())) {
             int cutoff = r.getMinutosAntesFechamento() != null ? r.getMinutosAntesFechamento() : 0;
             if (cutoff > 0) {
-                // Faltam <= cutoff minutos pro fechamento? Bloqueia pedidos.
-                LocalTime corte = fc.minusMinutes(cutoff);
-                // Se cruza madrugada, "agora" pode estar no dia seguinte do fechamento
-                // mas mesmo assim a comparação por LocalTime funciona com o helper abaixo.
-                e.dentroCutoff = estaDentro(agora.toLocalTime(), corte, fc);
+                // Cutoff é relativo AO FIM DA JANELA ATIVA — pra funcionar tanto
+                // com 1 intervalo (compat) quanto com almoço/jantar separados.
+                LocalTime corte = ativo.fechamento.minusMinutes(cutoff);
+                e.dentroCutoff = estaDentro(agoraLT, corte, ativo.fechamento);
             }
         }
         return e;
+    }
+
+    /**
+     * Extrai a lista de intervalos do map do dia. Aceita:
+     *  - Formato NOVO: {@code {aberto, intervalos: [{abertura,fechamento}, ...]}}
+     *  - Formato ANTIGO: {@code {aberto, abertura, fechamento}} → 1 intervalo
+     *  - Ambos formatos coexistindo: prioriza {@code intervalos} se tiver ≥1
+     *    janela válida (a chave antiga vira o "padrão de exibição" mas ignorada).
+     *
+     * Intervalos com abertura/fechamento inválidos são silenciosamente descartados.
+     */
+    @SuppressWarnings("unchecked")
+    public static List<Intervalo> extrairIntervalos(Map<String, ?> diaMap) {
+        List<Intervalo> out = new ArrayList<>();
+        if (diaMap == null) return out;
+        Object raw = diaMap.get("intervalos");
+        if (raw instanceof List<?> lst && !lst.isEmpty()) {
+            for (Object it : lst) {
+                if (!(it instanceof Map<?, ?> m)) continue;
+                Map<String, Object> mm = (Map<String, Object>) m;
+                LocalTime a = parseHora(mm.get("abertura"));
+                LocalTime f = parseHora(mm.get("fechamento"));
+                if (a != null && f != null) out.add(new Intervalo(a, f));
+            }
+            if (!out.isEmpty()) return out;
+        }
+        // Fallback ANTIGO — abertura/fechamento no root
+        LocalTime a = parseHora(diaMap.get("abertura"));
+        LocalTime f = parseHora(diaMap.get("fechamento"));
+        if (a != null && f != null) out.add(new Intervalo(a, f));
+        return out;
     }
 
     /** Pega o objeto do dia atual do horariosJson. */
@@ -104,7 +163,7 @@ public class HorarioLojaService {
         };
     }
 
-    private LocalTime parseHora(Object o) {
+    private static LocalTime parseHora(Object o) {
         if (o == null) return null;
         try { return LocalTime.parse(o.toString().trim()); }
         catch (Exception e) { return null; }

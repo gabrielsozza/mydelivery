@@ -168,7 +168,16 @@ public class WhatsappWebhookController {
     public ResponseEntity<Void> receber(
             @PathVariable String instanceName,
             @RequestBody(required = false) Map<String, Object> payload) {
+        return processarWebhookEvolution(instanceName, payload);
+    }
 
+    /**
+     * Handler central — extraído pra permitir reuso pelo webhook Uazapi
+     * (que traduz o payload e chama este método).
+     *
+     * <p>Payload esperado (formato Evolution): {@code { event, data: {...} }}.
+     */
+    public ResponseEntity<Void> processarWebhookEvolution(String instanceName, Map<String, Object> payload) {
         if (payload == null) {
             log.debug("[WA-Webhook] {} sem body", instanceName);
             return ResponseEntity.ok().build();

@@ -48,7 +48,7 @@ public class WhatsappHealthService {
     // EvolutionClient é injetado por field pra evitar ciclo de injeção em construtor
     // quando WhatsappService também depende deste health service.
     @Autowired
-    private EvolutionClient evolutionClient;
+    private UazapiClient evolutionClient;
 
     // Janelas — heartbeat FRACO (qualquer evento, inclusive keep-alive Evolution)
     private static final int MIN_FRACO_OPERACIONAL = 15;   // até 15min = ok

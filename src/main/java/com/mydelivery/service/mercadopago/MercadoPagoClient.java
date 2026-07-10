@@ -127,6 +127,45 @@ public class MercadoPagoClient {
     }
 
     /**
+     * GET /v1/payments/search — lista pagamentos aprovados dentro de uma janela.
+     *
+     * Usado pelo job de reconciliação automática: varre PIX/cartão de assinatura
+     * aprovados nas últimas horas cujo webhook não caiu, resgatando o cliente
+     * SEM intervenção manual. Filtro por status=approved + external_reference
+     * começando com "assinatura-" via prefix na query.
+     *
+     * @param accessToken   token da conta ADMIN (assinaturas caem lá)
+     * @param dateFrom      ISO 8601 (ex: "2026-07-01T00:00:00.000-03:00"). Null = MP usa 12h atrás.
+     * @param dateTo        ISO 8601 ou null pra "agora"
+     * @return payload cru do MP (com {@code results: [...]}). Vazio se nada.
+     */
+    @SuppressWarnings("unchecked")
+    public java.util.Map<String, Object> buscarPagamentosAprovados(String accessToken,
+                                                                    String dateFrom,
+                                                                    String dateTo) {
+        try {
+            return restClient.get()
+                    .uri(uriBuilder -> {
+                        var b = uriBuilder.path("/v1/payments/search")
+                                .queryParam("status", "approved")
+                                .queryParam("sort", "date_created")
+                                .queryParam("criteria", "desc")
+                                .queryParam("limit", 50);
+                        if (dateFrom != null) b.queryParam("range", "date_created")
+                                                .queryParam("begin_date", dateFrom);
+                        if (dateTo != null)   b.queryParam("end_date", dateTo);
+                        return b.build();
+                    })
+                    .headers(h -> h.setBearerAuth(accessToken))
+                    .retrieve()
+                    .body(java.util.Map.class);
+        } catch (RestClientResponseException e) {
+            log.warn("MP /v1/payments/search falhou [{}]: {}", e.getStatusCode(), e.getResponseBodyAsString());
+            return java.util.Map.of("results", java.util.List.of());
+        }
+    }
+
+    /**
      * Faz uma chamada leve ao MP só pra confirmar que o accessToken é válido.
      * Usamos GET /users/me — endpoint barato, não cria nada, retorna 401 se o token é inválido.
      *

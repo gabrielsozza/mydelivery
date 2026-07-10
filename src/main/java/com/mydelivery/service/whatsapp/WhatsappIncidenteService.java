@@ -42,7 +42,7 @@ public class WhatsappIncidenteService {
     private final WhatsappIncidenteRepository incidenteRepo;
     private final WhatsappAcaoAutomaticaRepository acaoRepo;
     private final WhatsappInstanceRepository instanceRepo;
-    private final EvolutionClient evolutionClient;
+    private final UazapiClient evolutionClient;
 
     // Janelas dos detectores — calibradas pra evitar falso positivo em
     // restaurantes de baixo volume (manhã sem cliente) mas pegar zumbi real.

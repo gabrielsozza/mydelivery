@@ -897,7 +897,8 @@ public class WhatsappBotService {
     }
 
     /**
-     * Lê horariosJson e devolve "Funcionamos hoje das 18h às 23h" ou similar.
+     * Lê horariosJson e devolve "Funcionamos hoje das 18h às 23h" (1 janela)
+     * ou "Funcionamos hoje das 8h às 12h e das 14h às 18h" (múltiplas).
      * Se hoje for "fechado", indica e tenta sugerir o próximo dia aberto.
      * Retorna string vazia se não tiver nada cadastrado.
      */
@@ -925,25 +926,42 @@ public class WhatsappBotService {
                             @SuppressWarnings("unchecked")
                             java.util.Map<String, Object> mm2 = (java.util.Map<String, Object>) m2;
                             if (!Boolean.FALSE.equals(mm2.get("aberto"))) {
-                                String ab2 = formatarHora(strOf(mm2.get("abertura")));
-                                String fc2 = formatarHora(strOf(mm2.get("fechamento")));
-                                if (notBlank(ab2) && notBlank(fc2)) {
+                                String hor = formatarIntervalos(mm2);
+                                if (notBlank(hor)) {
                                     return "Hoje estamos fechados. Próxima " + nomes[idx]
-                                            + " funcionamos das *" + ab2 + "* às *" + fc2 + "*.";
+                                            + " funcionamos " + hor + ".";
                                 }
                             }
                         }
                     }
                     return "Hoje estamos fechados.";
                 }
-                String ab = formatarHora(strOf(mm.get("abertura")));
-                String fc = formatarHora(strOf(mm.get("fechamento")));
-                if (notBlank(ab) && notBlank(fc)) {
-                    return "Funcionamos hoje das *" + ab + "* às *" + fc + "*.";
-                }
+                String hor = formatarIntervalos(mm);
+                if (notBlank(hor)) return "Funcionamos hoje " + hor + ".";
             }
         } catch (Exception ignore) {}
         return "";
+    }
+
+    /**
+     * Formata os intervalos do dia pra texto do bot (em negrito com asterisco).
+     * "das *8h* às *12h* e das *14h* às *18h*". Aceita formato antigo (abertura/
+     * fechamento no root) e novo (intervalos: [...]).
+     */
+    private static String formatarIntervalos(java.util.Map<String, Object> diaMap) {
+        java.util.List<com.mydelivery.service.HorarioLojaService.Intervalo> ivs =
+                com.mydelivery.service.HorarioLojaService.extrairIntervalos(diaMap);
+        if (ivs.isEmpty()) return null;
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < ivs.size(); i++) {
+            var iv = ivs.get(i);
+            String ab = formatarHora(iv.abertura.toString());
+            String fc = formatarHora(iv.fechamento.toString());
+            if (ab == null || fc == null) continue;
+            if (i > 0) sb.append(i == ivs.size() - 1 ? " e " : ", ");
+            sb.append("das *").append(ab).append("* às *").append(fc).append("*");
+        }
+        return sb.length() == 0 ? null : sb.toString();
     }
 
     private static String strOf(Object o) { return o == null ? null : o.toString(); }

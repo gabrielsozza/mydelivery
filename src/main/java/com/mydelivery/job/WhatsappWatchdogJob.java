@@ -1,5 +1,7 @@
 package com.mydelivery.job;
 
+import com.mydelivery.service.whatsapp.UazapiClient;
+
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -57,7 +59,7 @@ import lombok.extern.slf4j.Slf4j;
 public class WhatsappWatchdogJob {
 
     private final WhatsappInstanceRepository repo;
-    private final EvolutionClient evolutionClient;
+    private final UazapiClient evolutionClient;
 
     /**
      * Kill-switch. Padrão ON — detecção precoce de zumbi é feature crítica.

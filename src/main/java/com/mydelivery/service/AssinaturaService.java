@@ -414,6 +414,29 @@ public class AssinaturaService {
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.REQUIRES_NEW,
                    noRollbackFor = Exception.class)
     public void registrarPagamentoOk(Restaurante r, Plano plano, String metodo, Long mpPaymentId) {
+        registrarPagamentoOk(r, plano, metodo, mpPaymentId, null);
+    }
+
+    /**
+     * Overload com {@code pagoEm} explícito — usado pela reconciliação manual
+     * pra registrar o pagamento com a data REAL vinda do MP (não a hora em
+     * que o admin rodou o batch). Se null, usa {@code LocalDateTime.now()}.
+     *
+     * Idempotente por {@code mpPaymentId}: se já existe PagamentoMensalidade
+     * PAGO com esse ID, não cria linha duplicada.
+     */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.REQUIRES_NEW,
+                   noRollbackFor = Exception.class)
+    public void registrarPagamentoOk(Restaurante r, Plano plano, String metodo,
+                                      Long mpPaymentId, LocalDateTime pagoEm) {
+        // Idempotência: quando reconciliação manual roda 2x pro mesmo mpPaymentId,
+        // não duplica linha no relatório financeiro do admin.
+        if (mpPaymentId != null
+                && pagamentoMensalidadeRepository.existsByMpPaymentIdAndStatus(
+                        mpPaymentId, com.mydelivery.model.PagamentoMensalidade.Status.PAGO)) {
+            log.info("[Pagamento] mpPaymentId={} já contabilizado como PAGO — no-op", mpPaymentId);
+            return;
+        }
         try {
             com.mydelivery.model.PagamentoMensalidade p = com.mydelivery.model.PagamentoMensalidade.builder()
                     .restaurante(r)
@@ -421,7 +444,7 @@ public class AssinaturaService {
                     .status(com.mydelivery.model.PagamentoMensalidade.Status.PAGO)
                     .metodoPagamento(metodo)
                     .plano(plano)
-                    .pagoEm(LocalDateTime.now())
+                    .pagoEm(pagoEm != null ? pagoEm : LocalDateTime.now())
                     .mpPaymentId(mpPaymentId)
                     .build();
             pagamentoMensalidadeRepository.save(p);

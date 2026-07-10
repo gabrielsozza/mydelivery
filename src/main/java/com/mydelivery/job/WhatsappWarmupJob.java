@@ -1,11 +1,12 @@
 package com.mydelivery.job;
 
+import com.mydelivery.service.whatsapp.UazapiClient;
+
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import com.mydelivery.model.WhatsappInstance;
 import com.mydelivery.repository.WhatsappInstanceRepository;
-import com.mydelivery.service.whatsapp.EvolutionClient;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -34,7 +35,7 @@ import lombok.extern.slf4j.Slf4j;
 public class WhatsappWarmupJob {
 
     private final WhatsappInstanceRepository repo;
-    private final EvolutionClient evolutionClient;
+    private final UazapiClient evolutionClient;
 
     @Scheduled(fixedRate = 90_000L, initialDelay = 60_000L)
     public void warmup() {

@@ -1,5 +1,7 @@
 package com.mydelivery.job;
 
+import com.mydelivery.service.whatsapp.UazapiClient;
+
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -10,7 +12,6 @@ import org.springframework.stereotype.Component;
 
 import com.mydelivery.model.WhatsappInstance;
 import com.mydelivery.repository.WhatsappInstanceRepository;
-import com.mydelivery.service.whatsapp.EvolutionClient;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -44,7 +45,7 @@ import lombok.extern.slf4j.Slf4j;
 public class WhatsappReconnectJob {
 
     private final WhatsappInstanceRepository repo;
-    private final EvolutionClient evolutionClient;
+    private final UazapiClient evolutionClient;
 
     /**
      * Kill-switch. Padrão DESABILITADO — restart preventivo cego causou mais

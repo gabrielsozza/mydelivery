@@ -32,7 +32,7 @@ public class WhatsappService {
 
     private final WhatsappInstanceRepository repo;
     private final WhatsappHealthLogRepository healthLogRepo;
-    private final EvolutionClient evolutionClient;
+    private final UazapiClient evolutionClient;
     private final EvolutionProperties props;
     /** Pra commitar saves intermediários ANTES de chamar Evolution.
      *  Sem isso, a transação @Transactional do conectar() mantém a inst

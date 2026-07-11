@@ -685,6 +685,26 @@ public class PedidoService {
             }
         }
 
+        // ── NOTIFICAÇÃO PRO CLIENTE VIA WHATSAPP ──────────────────────────
+        // Async — nunca bloqueia a transição no painel. Dedup por (pedido,
+        // status) dentro do próprio serviço evita 2× o mesmo aviso quando o
+        // dono reclica. Só notifica DELIVERY/RETIRADA nos status que fazem
+        // sentido pro cliente (CONFIRMADO, EM_PREPARO, SAIU_ENTREGA, ENTREGUE)
+        // — SAIU_ENTREGA é o mais crítico pra reduzir "cadê meu pedido?".
+        if (whatsappBotService != null
+                && statusNovo != statusAntigo
+                && salvo.getCliente() != null
+                && salvo.getCliente().getTelefone() != null) {
+            try {
+                whatsappBotService.notificarStatusPedidoAsync(
+                        salvo.getRestaurante(),
+                        salvo.getId(),
+                        statusNovo == null ? null : statusNovo.name(),
+                        salvo.getTipo() == null ? null : salvo.getTipo().name(),
+                        salvo.getCliente().getTelefone());
+            } catch (Exception ignored) { /* fail-safe total */ }
+        }
+
         return toResponse(salvo);
     }
 

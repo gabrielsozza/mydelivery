@@ -61,10 +61,32 @@ public class WhatsappBotService {
      *  por mensagem entre TYPING_MIN_MS e TYPING_MAX_MS. Resultado: parece
      *  humano variando velocidade de digitação. Resolve quedas recorrentes
      *  em restaurantes de alto volume (alvo principal do shadow ban). */
-    private static final int TYPING_MIN_MS = 2000;
-    private static final int TYPING_MAX_MS = 4000;
+    private static final int TYPING_MIN_MS = 1000;
+    private static final int TYPING_MAX_MS = 2000;
     private static final java.util.concurrent.ThreadLocalRandom RNG =
             java.util.concurrent.ThreadLocalRandom.current();
+
+    /**
+     * Delay adaptativo por tamanho da resposta (jul/2026, refino de UX):
+     *  - msg curta (<50 chars) → ~1s (mais responsivo)
+     *  - msg longa (>200 chars) → ~2s (parece "digitando bastante")
+     *  - meio termo → interpola linearmente
+     * Sempre com jitter ±150ms pra quebrar padrão constante.
+     */
+    private static int typingDelayFor(String texto) {
+        if (texto == null || texto.isEmpty()) return TYPING_MIN_MS;
+        int len = texto.length();
+        int base;
+        if (len <= 50)       base = TYPING_MIN_MS;
+        else if (len >= 200) base = TYPING_MAX_MS;
+        else {
+            // interpola 1000→2000 conforme len 50→200
+            base = TYPING_MIN_MS + (int)((TYPING_MAX_MS - TYPING_MIN_MS) * (len - 50L) / 150.0);
+        }
+        int jitter = java.util.concurrent.ThreadLocalRandom.current().nextInt(-150, 151);
+        int total = base + jitter;
+        return Math.max(700, Math.min(2200, total)); // clamp seguro
+    }
 
     /**
      * Warmup do bot em conta nova. DESATIVADO por padrão a pedido do produto:
@@ -286,7 +308,8 @@ public class WhatsappBotService {
             // que chegar agora vai bater no throttle e ignorar.
             st.ultimaResposta = agora;
             st.saudou = true;
-            typingDelay = randomTypingDelay();
+            // Delay adaptativo pelo tamanho da resposta (1-2s)
+            typingDelay = typingDelayFor(resposta);
 
             if (st.pediuAtendente) {
                 st.silencioAte = agora.plusMinutes(props.getBot().getSilencioMinutos());
@@ -673,30 +696,122 @@ public class WhatsappBotService {
                 return;
             }
 
-            // Delay aleatório 15-90s — simula humano vendo pedido e indo avisar
-            int delayMs = BotVariations.randomNotificacaoDelayMs();
-            try {
-                Thread.sleep(delayMs);
-            } catch (InterruptedException ie) {
-                Thread.currentThread().interrupt();
-                return;
-            }
-
-            // Reconfere horário após o sleep
-            if (!BotVariations.dentroHorarioNotificacao()) return;
-
+            // Sem sleep artificial — cliente acabou de fechar pedido e espera
+            // confirmação IMEDIATA (jul/2026, refino de UX). O único delay é
+            // o "digitando..." dentro do enviarMensagem (1-2s), que já basta
+            // pra parecer natural. Antes tinha sleep aleatório de 15-90s que
+            // simulava "humano vendo pedido" — feedback: clientes achavam
+            // que o pedido não foi registrado e ligavam pra loja.
             String link = "https://mydeliveryfood.com.br/acompanhar.html?id=" + pedidoId;
             String msg = BotVariations.montarMensagemAcompanhamento(pedidoId, link);
-            whatsappService.enviarMensagem(inst, numero, msg, randomTypingDelay());
+            whatsappService.enviarMensagem(inst, numero, msg, typingDelayFor(msg));
             ultimaNotificacaoPorNumero.put(numero, java.time.LocalDateTime.now());
 
-            log.info("[Bot:Notif] link de acompanhamento enviado — pedido#{}, rest={}, tel={}***, delay={}s",
+            log.info("[Bot:Notif] link de acompanhamento enviado — pedido#{}, rest={}, tel={}***",
                     pedidoId, restaurante.getId(),
-                    numero.length() > 5 ? numero.substring(0, 5) : numero,
-                    delayMs / 1000);
+                    numero.length() > 5 ? numero.substring(0, 5) : numero);
         } catch (Exception e) {
             // CRÍTICO: nunca propagar — criação do pedido NÃO PODE depender disso.
             log.warn("[Bot:Notif] falha enviando link — pedido#{}: {}", pedidoId, e.getMessage());
+        }
+    }
+
+    /**
+     * Anti-duplicata pra {@link #notificarStatusPedidoAsync}. Chave =
+     * pedidoId + status. Se o restaurante clica no mesmo status 2× (comum
+     * quando painel trava e ele reclica), a 2ª chamada é ignorada. TTL
+     * curto — 1h basta, depois o pedido já mudou de estágio.
+     */
+    private final java.util.concurrent.ConcurrentHashMap<String, java.time.LocalDateTime>
+            ultimaNotificacaoStatus = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * Avisa o cliente por WhatsApp quando o restaurante muda o status do pedido.
+     * Chamado do {@link com.mydelivery.service.PedidoService#atualizarStatus}
+     * como async — nunca bloqueia a transição no painel.
+     *
+     * <p>Status notificados: CONFIRMADO, EM_PREPARO, SAIU_ENTREGA, ENTREGUE.
+     * SAIU_ENTREGA é o mais importante pro cliente (reduz "cadê meu pedido?").
+     *
+     * <p>Dedup: (pedidoId, status) — se o dono clica 2× no mesmo status, só
+     * a 1ª manda. TTL curto porque um pedido não fica no mesmo status por
+     * horas em condição normal.
+     */
+    @org.springframework.scheduling.annotation.Async
+    public void notificarStatusPedidoAsync(
+            Restaurante restaurante,
+            Long pedidoId,
+            String statusNovoNome,
+            String tipo,
+            String telefoneCliente) {
+        try {
+            if (restaurante == null || pedidoId == null || statusNovoNome == null) return;
+            if (telefoneCliente == null || telefoneCliente.isBlank()) return;
+
+            // Mensagem por status. Se o status não tem mensagem, sai
+            // silenciosamente (nada a notificar).
+            String msg = mensagemPorStatus(statusNovoNome, tipo);
+            if (msg == null) return;
+
+            // Dedup por (pedido, status)
+            String chaveDedup = pedidoId + ":" + statusNovoNome.toUpperCase();
+            java.time.LocalDateTime agora = java.time.LocalDateTime.now();
+            java.time.LocalDateTime ultima = ultimaNotificacaoStatus.get(chaveDedup);
+            if (ultima != null
+                    && java.time.Duration.between(ultima, agora).toMinutes() < 60) {
+                log.info("[Bot:Status] dedup — pedido#{} status={} já notificado", pedidoId, statusNovoNome);
+                return;
+            }
+
+            String numero = limparNumero(telefoneCliente);
+            if (numero.length() < 10) return;
+
+            WhatsappInstance inst = whatsappService.buscar(restaurante);
+            if (inst == null
+                    || inst.getStatus() != WhatsappInstance.Status.CONECTADA
+                    || !Boolean.TRUE.equals(inst.getBotAtivo())) {
+                log.info("[Bot:Status] WA não conectado/ativo — pulando pedido#{} status={}",
+                        pedidoId, statusNovoNome);
+                return;
+            }
+
+            whatsappService.enviarMensagem(inst, numero, msg, typingDelayFor(msg));
+            ultimaNotificacaoStatus.put(chaveDedup, agora);
+
+            log.info("[Bot:Status] status={} enviado pra pedido#{}, rest={}, tel={}***",
+                    statusNovoNome, pedidoId, restaurante.getId(),
+                    numero.length() > 5 ? numero.substring(0, 5) : numero);
+        } catch (Exception e) {
+            log.warn("[Bot:Status] falha enviando status — pedido#{}: {}", pedidoId, e.getMessage());
+        }
+    }
+
+    /**
+     * Mensagem por status. Retorna {@code null} pros status que não devem
+     * disparar notificação (PENDENTE, AGUARDANDO_PAGAMENTO, PRONTO — este
+     * último pra evitar spam antes do SAIU_ENTREGA, e CANCELADO fica com
+     * o painel avisando manual).
+     *
+     * <p>Só notifica DELIVERY/RETIRADA — mesa é atendimento presencial.
+     */
+    private String mensagemPorStatus(String statusNome, String tipo) {
+        if (tipo != null && "MESA".equalsIgnoreCase(tipo)) return null;
+        boolean retirada = tipo != null && "RETIRADA".equalsIgnoreCase(tipo);
+        switch (statusNome.toUpperCase()) {
+            case "CONFIRMADO":
+                return "✅ Seu pedido foi *confirmado*! Já vamos começar a preparar. 🍽️";
+            case "EM_PREPARO":
+                return "👨‍🍳 Seu pedido tá *em preparo* agora. Tô caprichando aqui! 🔥";
+            case "SAIU_ENTREGA":
+                return retirada
+                        ? "🛍️ Seu pedido tá *pronto pra retirada*! Pode vir buscar. 🙌"
+                        : "🛵 Seu pedido *saiu pra entrega*! Já tá a caminho. 🎉";
+            case "ENTREGUE":
+                return retirada
+                        ? "🙏 Obrigado por retirar seu pedido! Volta sempre. 💛"
+                        : "🎉 Pedido *entregue*! Aproveita e volta sempre. 💛";
+            default:
+                return null;
         }
     }
 

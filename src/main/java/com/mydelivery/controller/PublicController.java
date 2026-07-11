@@ -119,6 +119,7 @@ public class PublicController {
                             .precoVitrine(Boolean.TRUE.equals(p.getPrecoVitrine()))
                             .unidadePreco(p.getUnidadePreco())
                             .precoAPartirDe(Boolean.TRUE.equals(p.getPrecoAPartirDe()))
+                            .maisDe18(Boolean.TRUE.equals(p.getMaisDe18()))
                             .build())
                             .toList();
 

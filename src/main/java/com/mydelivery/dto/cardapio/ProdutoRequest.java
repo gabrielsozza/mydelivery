@@ -27,6 +27,9 @@ public class ProdutoRequest {
     private String fotoUrl;
     private Boolean disponivel = true;
     private Boolean destaque = false;
+    /** Produto +18 (bebida alcoólica, tabaco). Cardápio público mostra
+     *  badge e exige confirmação de idade antes de adicionar ao carrinho. */
+    private Boolean maisDe18 = false;
 
     /** Quando true, o preço é só REFERENCIAL (vitrine). O valor real cobrado
      *  vem dos complementos (porções). Exemplo: feijão tropeiro R$ 59,99/kg

@@ -21,6 +21,9 @@ public class ProdutoResponse {
     private String fotoUrl;
     private Boolean disponivel;
     private Boolean destaque;
+    /** +18 (bebida alcoólica, tabaco). Frontend pinta badge no card e exige
+     *  confirmação de idade no cardápio público. */
+    private Boolean maisDe18;
     private Long categoriaId;
     private String categoriaNome;
     /** Posição do produto dentro da categoria (menor = aparece primeiro). */

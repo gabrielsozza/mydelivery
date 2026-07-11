@@ -60,6 +60,25 @@ public class AuthController {
     }
 
     /**
+     * Troca senha do usuário LOGADO — precisa da senha atual pra confirmar
+     * identidade. Alternativa ao fluxo esqueci-senha via email, pra quem
+     * já está autenticado no painel.
+     *
+     * <p>Body: {@code { senhaAtual: "...", novaSenha: "..." }} — mínimo 6
+     * chars. Retorna 200 em sucesso, 400 com mensagem em falha.
+     */
+    @PostMapping("/alterar-senha")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Map<String, String>> alterarSenha(
+            @AuthenticationPrincipal String email,
+            @RequestBody Map<String, String> body) {
+        String senhaAtual = body == null ? null : body.get("senhaAtual");
+        String novaSenha  = body == null ? null : body.get("novaSenha");
+        authService.alterarSenhaAutenticado(email, senhaAtual, novaSenha);
+        return ResponseEntity.ok(Map.of("mensagem", "Senha alterada com sucesso"));
+    }
+
+    /**
      * Devolve o "quem sou eu" — cargo + permissões efetivas do JWT atual.
      * Frontend chama uma vez no boot pra montar sidebar e cachear em
      * localStorage.

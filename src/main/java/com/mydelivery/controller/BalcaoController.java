@@ -51,6 +51,11 @@ public class BalcaoController {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> itens = (List<Map<String, Object>>) body.get("itens");
+        // Pagamento dividido (opcional) — array com até N partes {forma, valor}.
+        // Se ausente/vazio, service usa só formaPagamento como antes.
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> pagamentos =
+                body.get("pagamentos") instanceof List<?> ? (List<Map<String, Object>>) body.get("pagamentos") : null;
         try {
             var resp = balcaoService.criarPedido(
                     r,
@@ -58,7 +63,8 @@ public class BalcaoController {
                     strOf(body.get("telefoneCliente")),
                     itens,
                     strOf(body.get("observacao")),
-                    strOf(body.get("formaPagamento")));
+                    strOf(body.get("formaPagamento")),
+                    pagamentos);
             return ResponseEntity.status(HttpStatus.CREATED).body(resp);
         } catch (IllegalArgumentException e) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());

@@ -48,6 +48,16 @@ public class Pedido {
     @Enumerated(EnumType.STRING) @Column(nullable=false, length=30) private Status status;
     @Enumerated(EnumType.STRING) @Column(nullable=false, length=20) private Tipo tipo;
     @Enumerated(EnumType.STRING) @Column(nullable=false, length=30) private FormaPagamento formaPagamento;
+    /**
+     * Pagamentos parciais (Balcão apenas, jul/2026) — quando o operador
+     * divide entre 2 formas ex.: PIX + Dinheiro, o array JSON fica aqui
+     * pros relatórios financeiros contabilizarem cada parte corretamente.
+     * <p>Formato: {@code [{"forma":"PIX","valor":20.00},{"forma":"DINHEIRO","valor":15.00}]}
+     * — string JSON pra evitar entity nova nesse ciclo. Se null/vazio, o
+     * pedido usa {@link #formaPagamento} única (comportamento clássico).
+     * A soma dos valores DEVE ser igual ao {@link #total}.
+     */
+    @Column(name="pagamentos_json", columnDefinition="TEXT") private String pagamentosJson;
     @Column(precision=10,scale=2) private BigDecimal subtotal;
     @Column(precision=10,scale=2) private BigDecimal taxaEntrega=BigDecimal.ZERO;
     @Column(precision=10,scale=2) private BigDecimal desconto=BigDecimal.ZERO;

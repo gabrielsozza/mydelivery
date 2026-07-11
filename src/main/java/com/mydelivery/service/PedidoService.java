@@ -59,6 +59,18 @@ public class PedidoService {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.mydelivery.service.whatsapp.WhatsappBotService whatsappBotService;
 
+    /** Opcional — só usado no modo RAIO. Calcula taxa por distância
+     *  Haversine + zona circular do restaurante. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private EntregaService entregaService;
+
+    private static java.math.BigDecimal decDoEndereco(java.util.Map<String, String> end, String chave) {
+        if (end == null) return null;
+        String v = end.get(chave);
+        if (v == null || v.isBlank()) return null;
+        try { return new java.math.BigDecimal(v); } catch (Exception e) { return null; }
+    }
+
     @Transactional
     public PedidoResponse criarPedido(NovoPedidoRequest request) {
         Restaurante restaurante = restauranteRepository.findBySlug(request.getSlug())
@@ -136,17 +148,33 @@ public class PedidoService {
             clienteRepository.save(cliente);
         }
         // ── Taxa de entrega (só DELIVERY) ──
-        // Mesa e retirada não cobram taxa. Delivery faz lookup por bairro.
+        // Mesa e retirada não cobram taxa. Modo dual (jul/2026):
+        //  - BAIRRO (default): lookup por bairro na tabela taxas_bairro.
+        //  - RAIO: cliente já geocodificou no checkout e mandou lat/lng.
+        //          Sistema aplica taxa da zona circular que cobre a distância.
         BigDecimal taxaEntrega = BigDecimal.ZERO;
         if ("delivery".equalsIgnoreCase(request.getModo())) {
-            String bairroCliente = request.getEndereco() == null ? null
-                    : request.getEndereco().getOrDefault("bairro", null);
-            if (bairroCliente == null || bairroCliente.isBlank()) {
-                throw new RuntimeException("Informe o bairro de entrega.");
-            }
-            taxaEntrega = buscarTaxaPorBairro(restaurante, bairroCliente);
-            if (taxaEntrega == null) {
-                throw new RuntimeException("Desculpe, nossa loja ainda não entrega nessa região.");
+            boolean modoRaio = "RAIO".equalsIgnoreCase(restaurante.getModoTaxa());
+            if (modoRaio && entregaService != null) {
+                java.math.BigDecimal lat = decDoEndereco(request.getEndereco(), "latitude");
+                java.math.BigDecimal lng = decDoEndereco(request.getEndereco(), "longitude");
+                if (lat == null || lng == null) {
+                    throw new RuntimeException("Endereço não localizado no mapa — confira e tente novamente.");
+                }
+                taxaEntrega = entregaService.calcularTaxaPorRaio(restaurante, lat.doubleValue(), lng.doubleValue());
+                if (taxaEntrega == null) {
+                    throw new RuntimeException("Desculpe, sua localização está fora da nossa área de entrega.");
+                }
+            } else {
+                String bairroCliente = request.getEndereco() == null ? null
+                        : request.getEndereco().getOrDefault("bairro", null);
+                if (bairroCliente == null || bairroCliente.isBlank()) {
+                    throw new RuntimeException("Informe o bairro de entrega.");
+                }
+                taxaEntrega = buscarTaxaPorBairro(restaurante, bairroCliente);
+                if (taxaEntrega == null) {
+                    throw new RuntimeException("Desculpe, nossa loja ainda não entrega nessa região.");
+                }
             }
         }
 

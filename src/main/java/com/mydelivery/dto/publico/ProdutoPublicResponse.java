@@ -29,4 +29,8 @@ public class ProdutoPublicResponse {
      *  (ex: feijoada base + adicionais). Diferente de precoVitrine — este é
      *  cosmético, o preço base ainda é o mínimo cobrado. */
     private Boolean precoAPartirDe;
+    /** Produto +18 (bebida alcoólica, tabaco). Cardápio público pinta badge
+     *  vermelho no card e exige confirmação de idade antes de adicionar ao
+     *  carrinho. Não bloqueia a EXIBIÇÃO — só a compra. */
+    private Boolean maisDe18;
 }

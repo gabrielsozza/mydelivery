@@ -376,6 +376,7 @@ public class CardapioService {
         produto.setFotoUrl(request.getFotoUrl());
         produto.setDisponivel(request.getDisponivel());
         produto.setDestaque(request.getDestaque());
+        produto.setMaisDe18(Boolean.TRUE.equals(request.getMaisDe18()));
         if (request.getPrecoVitrine() != null) produto.setPrecoVitrine(request.getPrecoVitrine());
         if (request.getUnidadePreco() != null) produto.setUnidadePreco(request.getUnidadePreco());
         if (request.getPrecoAPartirDe() != null) produto.setPrecoAPartirDe(request.getPrecoAPartirDe());
@@ -419,6 +420,7 @@ public class CardapioService {
         if (request.getFotoUrl() != null)      produto.setFotoUrl(request.getFotoUrl());
         if (request.getDisponivel() != null)   produto.setDisponivel(request.getDisponivel());
         if (request.getDestaque() != null)     produto.setDestaque(request.getDestaque());
+        if (request.getMaisDe18() != null)     produto.setMaisDe18(request.getMaisDe18());
         if (request.getPrecoVitrine() != null) produto.setPrecoVitrine(request.getPrecoVitrine());
         if (request.getUnidadePreco() != null) produto.setUnidadePreco(request.getUnidadePreco());
         if (request.getPrecoAPartirDe() != null) produto.setPrecoAPartirDe(request.getPrecoAPartirDe());
@@ -482,6 +484,7 @@ public class CardapioService {
                 .fotoUrl(p.getFotoUrl())
                 .disponivel(p.getDisponivel())
                 .destaque(p.getDestaque())
+                .maisDe18(Boolean.TRUE.equals(p.getMaisDe18()))
                 .categoriaId(p.getCategoria() != null ? p.getCategoria().getId() : null)
                 .categoriaNome(p.getCategoria() != null ? p.getCategoria().getNome() : null)
                 .ordem(p.getOrdem())

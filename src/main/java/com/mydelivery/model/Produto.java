@@ -62,6 +62,19 @@ public class Produto {
     @Column(nullable = false)
     private Boolean destaque = false;
 
+    /**
+     * Produto +18 (bebida alcoólica, tabaco, etc). No cardápio público mostra
+     * badge "+18" e exige confirmação de idade antes de adicionar ao carrinho.
+     *
+     * <p>Bug fix jul/2026: o front sempre enviou {@code maisDe18} no payload,
+     * mas a coluna nunca existiu — Jackson descartava o campo silenciosamente
+     * e o valor voltava desmarcado ao reabrir. Ninguém tinha percebido porque
+     * até então nenhuma loja tinha bebida alcoólica no cardápio.
+     */
+    @Builder.Default
+    @Column(name = "mais_de_18", nullable = false)
+    private Boolean maisDe18 = false;
+
     @Builder.Default
     private Integer ordem = 0;
 

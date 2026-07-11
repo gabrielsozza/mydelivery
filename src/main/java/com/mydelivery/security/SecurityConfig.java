@@ -49,6 +49,7 @@ public class SecurityConfig {
                 .requestMatchers("/api/pedidos/novo").permitAll()
                 .requestMatchers("/api/pedidos/*/acompanhar").permitAll()
                 .requestMatchers("/api/restaurante/publico/**").permitAll()
+                .requestMatchers(HttpMethod.GET, "/api/publico/**").permitAll()
                 // Uploads (logo/capa do restaurante, etc.) — públicos pra cardápio do cliente
                 .requestMatchers("/uploads/**").permitAll()
                 // carrinho: só POST e DELETE são públicos (cardápio do cliente)

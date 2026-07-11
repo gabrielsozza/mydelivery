@@ -43,6 +43,10 @@ public class BalcaoService {
     private final ProdutoRepository produtoRepo;
     private final SenhaBalcaoRepository senhaRepo;
     private final ClienteRepository clienteRepo;
+    /** Opcional pra não quebrar boot se algum teste rodar sem o service.
+     *  Vincula pedido → movimentação do caixa aberto, best-effort. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private CaixaService caixaService;
 
     /**
      * Cria pedido de balcão. Itens vêm validados (id+qtd). Total recalculado
@@ -51,12 +55,34 @@ public class BalcaoService {
      *
      * @return Map com pedidoId, senhaNumero, total — pra o caixa imprimir
      */
+    /** Overload sem pagamentos divididos — mantém compat com callers antigos. */
     @Transactional
     public Map<String, Object> criarPedido(Restaurante r, String nomeChamada,
                                             String telefoneCliente,
                                             List<Map<String, Object>> itensReq,
                                             String observacao,
                                             String formaPagamentoStr) {
+        return criarPedido(r, nomeChamada, telefoneCliente, itensReq, observacao, formaPagamentoStr, null);
+    }
+
+    /**
+     * Overload com {@code pagamentos} — pagamento DIVIDIDO. Cada elemento
+     * é {@code {"forma": "...", "valor": 0.0}}. Regras:
+     * <ul>
+     *   <li>Se {@code pagamentos} vier com 2+ elementos, a soma tem que
+     *       bater com o total do pedido (tolerância 1 centavo pra float).</li>
+     *   <li>{@code formaPagamento} do Pedido vira a primeira forma da lista
+     *       (pra retrocompat de relatórios legados).</li>
+     *   <li>O JSON completo fica em {@link Pedido#getPagamentosJson}.</li>
+     * </ul>
+     */
+    @Transactional
+    public Map<String, Object> criarPedido(Restaurante r, String nomeChamada,
+                                            String telefoneCliente,
+                                            List<Map<String, Object>> itensReq,
+                                            String observacao,
+                                            String formaPagamentoStr,
+                                            List<Map<String, Object>> pagamentos) {
         if (itensReq == null || itensReq.isEmpty()) {
             throw new IllegalArgumentException("itens vazio");
         }
@@ -70,7 +96,16 @@ public class BalcaoService {
         p.setRestaurante(r);
         p.setTipo(Pedido.Tipo.BALCAO);
         p.setStatus(Pedido.Status.CONFIRMADO);
-        Pedido.FormaPagamento fp = parseFormaPag(formaPagamentoStr);
+        // Se veio dividido, a formaPagamento passa a ser a PRIMEIRA parte —
+        // relatórios legados que só olham formaPagamento ainda enxergam algo
+        // sensato. O detalhe fica em pagamentos_json pros relatórios novos.
+        Pedido.FormaPagamento fp;
+        if (pagamentos != null && !pagamentos.isEmpty()) {
+            String primeiraForma = String.valueOf(pagamentos.get(0).get("forma"));
+            fp = parseFormaPag(primeiraForma);
+        } else {
+            fp = parseFormaPag(formaPagamentoStr);
+        }
         p.setFormaPagamento(fp);
         p.setModoPagamento(Pedido.ModoPagamento.NA_ENTREGA);
         // Se o caixa JÁ escolheu a forma de pagamento real (Dinheiro/PIX/Cartão),
@@ -158,7 +193,58 @@ public class BalcaoService {
         p.setTotal(subtotal);
         p.setItens(itens);
 
+        // ── Pagamento dividido: valida soma e serializa JSON ──
+        if (pagamentos != null && !pagamentos.isEmpty()) {
+            BigDecimal somaPagamentos = BigDecimal.ZERO;
+            java.util.List<Map<String, Object>> normalizados = new java.util.ArrayList<>();
+            for (Map<String, Object> pg : pagamentos) {
+                if (pg == null) continue;
+                String forma = String.valueOf(pg.get("forma"));
+                BigDecimal valor = decOf(pg.get("valor"));
+                if (valor == null || valor.signum() <= 0) {
+                    throw new IllegalArgumentException("Valor inválido em uma das formas de pagamento");
+                }
+                // Valida forma
+                parseFormaPag(forma);
+                somaPagamentos = somaPagamentos.add(valor);
+                Map<String, Object> norm = new java.util.LinkedHashMap<>();
+                norm.put("forma", forma.toUpperCase());
+                norm.put("valor", valor);
+                normalizados.add(norm);
+            }
+            // Tolerância de 1 centavo pra arredondamento float do frontend
+            BigDecimal diff = somaPagamentos.subtract(subtotal).abs();
+            if (diff.compareTo(new BigDecimal("0.01")) > 0) {
+                throw new IllegalArgumentException(
+                        "Soma dos pagamentos (R$ " + somaPagamentos + ") não bate com o total (R$ " + subtotal + ")");
+            }
+            // Serialização manual pra evitar depender de ObjectMapper injetado aqui.
+            // Formato compacto — array de objetos com 2 campos.
+            StringBuilder sb = new StringBuilder("[");
+            for (int i = 0; i < normalizados.size(); i++) {
+                if (i > 0) sb.append(',');
+                Map<String, Object> n = normalizados.get(i);
+                sb.append("{\"forma\":\"").append(n.get("forma")).append("\",")
+                  .append("\"valor\":").append(((BigDecimal) n.get("valor")).setScale(2, java.math.RoundingMode.HALF_UP))
+                  .append('}');
+            }
+            sb.append(']');
+            p.setPagamentosJson(sb.toString());
+        }
+
         Pedido salvo = pedidoRepo.save(p);
+
+        // ── Módulo Caixa: vincula automaticamente ao caixa aberto ──
+        // Idempotente + fail-safe. Se não tem caixa aberto, ignora silêncio;
+        // se qualquer coisa falhar, log warn — nunca bloqueia o pedido.
+        if (caixaService != null) {
+            try {
+                caixaService.registrarVendaDoPedido(r.getId(), salvo);
+            } catch (Exception e) {
+                log.warn("[Balcao] falha vinculando pedido#{} ao caixa: {}",
+                        salvo.getId(), e.getMessage());
+            }
+        }
 
         // Gera senha sequencial diária
         SenhaBalcao senha = gerarSenha(r.getId(), salvo.getId(), nomeChamada);

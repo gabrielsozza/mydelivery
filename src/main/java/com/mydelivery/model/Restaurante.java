@@ -85,6 +85,32 @@ public class Restaurante {
     private String cidade;
     private String estado;
 
+    /**
+     * Coordenadas geográficas do restaurante — usadas SÓ quando
+     * {@link #modoTaxa} = RAIO. Dono ajusta no mapa Leaflet do painel
+     * (arrasta o pin). Se null, sistema tenta geocodificar via CEP no
+     * primeiro save do painel; falha silenciosa não bloqueia salvamento.
+     */
+    @Column(name = "endereco_latitude", precision = 10, scale = 7)
+    private java.math.BigDecimal enderecoLatitude;
+
+    @Column(name = "endereco_longitude", precision = 10, scale = 7)
+    private java.math.BigDecimal enderecoLongitude;
+
+    /**
+     * Modo de cálculo da taxa de entrega:
+     * <ul>
+     *   <li>{@code BAIRRO} (default, retrocompat) — cliente escolhe bairro,
+     *       taxa vem da tabela {@code taxas_bairro}.</li>
+     *   <li>{@code RAIO} — cliente digita endereço/CEP, sistema geocodifica
+     *       e aplica taxa da zona circular correspondente
+     *       (ver {@code zonas_entrega}).</li>
+     * </ul>
+     */
+    @Builder.Default
+    @Column(name = "modo_taxa", length = 10, nullable = false)
+    private String modoTaxa = "BAIRRO";
+
     // ── Operação ──
     @Builder.Default
     private Boolean aberto = false;

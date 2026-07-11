@@ -113,13 +113,73 @@ public class MercadoPagoClient {
         };
     }
 
-    /** Extrai mensagem útil do JSON de erro do MP (que tem formato { message, error, status, cause: [...] }). */
+    /**
+     * Extrai mensagem AMIGÁVEL pt-BR do JSON de erro do MP (formato
+     * {@code { message, error, status, cause: [{ code, description, data }] }}).
+     *
+     * <p>Mapa de códigos conhecidos:
+     * <ul>
+     *   <li><b>13253</b> — collector user tem restrição financeira: conta
+     *     do restaurante não regularizada pra receber (falta doc, CPF/CNPJ
+     *     não verificado, ou access_token de conta pessoal em vez de vendedor).</li>
+     *   <li><b>1013</b> — payment method inválido pra collector.</li>
+     *   <li><b>2001</b> — X-Idempotency-Key duplicado com body diferente.</li>
+     *   <li><b>2002</b> — pagamento não encontrado.</li>
+     *   <li><b>3034</b> — CPF inválido no payer.identification.</li>
+     *   <li><b>4050</b> — email do payer inválido.</li>
+     * </ul>
+     * Códigos não mapeados devolvem a description bruta do MP.
+     */
     private String extrairMensagem(RestClientResponseException e) {
         String body = e.getResponseBodyAsString();
         if (body == null || body.isBlank()) return "HTTP " + e.getStatusCode();
-        // Não vamos parsear: log já tem o body completo, mensagem curta pro usuário basta.
-        if (body.length() > 200) return body.substring(0, 200) + "...";
-        return body;
+        try {
+            var json = new com.fasterxml.jackson.databind.ObjectMapper().readTree(body);
+            String codigo = null, description = null;
+            var cause = json.path("cause");
+            if (cause.isArray() && cause.size() > 0) {
+                codigo = cause.get(0).path("code").asText(null);
+                description = cause.get(0).path("description").asText(null);
+            }
+            String message = json.path("message").asText(null);
+            String amigavel = mapearMensagemAmigavel(codigo);
+            if (amigavel != null) return amigavel;
+            // Fallback: description do cause, depois message do MP
+            if (description != null && !description.isBlank()) {
+                return "Mercado Pago rejeitou: " + description
+                        + (codigo != null ? " (código " + codigo + ")" : "");
+            }
+            if (message != null && !message.isBlank()) return message;
+        } catch (Exception ignored) { /* body não é JSON — devolve raw curto */ }
+        return body.length() > 200 ? body.substring(0, 200) + "..." : body;
+    }
+
+    /**
+     * Traduz códigos conhecidos do MP pra mensagem que faz sentido pro dono
+     * do restaurante e/ou pro cliente. Retorna {@code null} se código
+     * desconhecido — caller cai no fallback com a description bruta.
+     */
+    private static String mapearMensagemAmigavel(String codigo) {
+        if (codigo == null) return null;
+        switch (codigo) {
+            case "13253":
+                return "A conta Mercado Pago da loja não está habilitada pra receber pagamentos online. "
+                        + "O dono precisa concluir a verificação de identidade no painel do Mercado Pago "
+                        + "(https://www.mercadopago.com.br/settings) e liberar recebimento por PIX/cartão.";
+            case "1013":
+                return "Método de pagamento não disponível pra essa conta. Confira em "
+                        + "https://www.mercadopago.com.br/settings/account/payment_methods se PIX/cartão estão ativos.";
+            case "2001":
+                return "Chave de idempotência conflitante — recarregue a tela e tente de novo.";
+            case "2002":
+                return "Pagamento não encontrado no Mercado Pago.";
+            case "3034":
+                return "CPF inválido — confira e tente novamente.";
+            case "4050":
+                return "Email inválido — confira e tente novamente.";
+            default:
+                return null;
+        }
     }
 
     public MercadoPagoProperties props() {

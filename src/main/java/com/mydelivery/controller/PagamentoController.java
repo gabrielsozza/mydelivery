@@ -44,8 +44,12 @@ public class PagamentoController {
      */
     @PostMapping("/api/pagamentos/pix")
     public ResponseEntity<Map<String, Object>> pagarPix(@Valid @RequestBody PagarPixRequest req) {
-        Pagamento p = pagamentoService.criarPagamentoPixOnline(req);
-        return ResponseEntity.ok(montarResposta(p));
+        try {
+            Pagamento p = pagamentoService.criarPagamentoPixOnline(req);
+            return ResponseEntity.ok(montarResposta(p));
+        } catch (RuntimeException e) {
+            return respostaErroPagamento(e, "pix");
+        }
     }
 
     /**
@@ -54,8 +58,28 @@ public class PagamentoController {
      */
     @PostMapping("/api/pagamentos/cartao")
     public ResponseEntity<Map<String, Object>> pagarCartao(@Valid @RequestBody PagarCartaoRequest req) {
-        Pagamento p = pagamentoService.processarCartao(req);
-        return ResponseEntity.ok(montarResposta(p));
+        try {
+            Pagamento p = pagamentoService.processarCartao(req);
+            return ResponseEntity.ok(montarResposta(p));
+        } catch (RuntimeException e) {
+            return respostaErroPagamento(e, "cartao");
+        }
+    }
+
+    /**
+     * Estrutura resposta 400 amigável quando o MP rejeita a criação do
+     * pagamento — front mostra {@code erro} pro cliente, {@code sugestao}
+     * orienta o dono. Antes disso o erro caía no GlobalExceptionHandler
+     * como 400 com o JSON cru do MP (impossível de ler pra cliente final).
+     */
+    private ResponseEntity<Map<String, Object>> respostaErroPagamento(RuntimeException e, String metodo) {
+        String msg = e.getMessage() == null ? "Falha ao processar pagamento" : e.getMessage();
+        Map<String, Object> body = new HashMap<>();
+        body.put("erro", msg);
+        body.put("metodo", metodo);
+        // Sugestão de fallback pro cliente final — sempre pode pagar na entrega.
+        body.put("sugestao", "Tente novamente ou escolha \"Pagar na entrega\" pra concluir o pedido.");
+        return ResponseEntity.status(org.springframework.http.HttpStatus.BAD_REQUEST).body(body);
     }
 
     private Map<String, Object> montarResposta(Pagamento p) {

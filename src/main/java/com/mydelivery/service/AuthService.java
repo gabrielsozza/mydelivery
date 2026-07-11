@@ -334,10 +334,12 @@ public class AuthService {
         Usuario usuario = usuarioRepository.findByEmail(request.getEmail())
                 .orElseThrow(() -> new RuntimeException("E-mail não encontrado"));
 
-        // Remove tokens antigos
-        tokenRepository.deleteByUsuarioId(usuario.getId());
-
-        // Gera novo token
+        // Limpeza dos tokens antigos DEPOIS do save — ordem antiga (delete→save)
+        // podia colidir com flush automático do Hibernate quando havia FK
+        // uniqueness em cenários específicos. Novo pattern: cria o novo,
+        // deleta os anteriores em try isolado (best-effort — se falhar, não
+        // bloqueia o novo). Correção jul/2026: dono reclamava de erro
+        // intermitente ao pedir recuperação de senha.
         String token = UUID.randomUUID().toString();
         PasswordResetToken resetToken = PasswordResetToken.builder()
                 .usuario(usuario)
@@ -346,8 +348,50 @@ public class AuthService {
                 .usado(false)
                 .build();
         tokenRepository.save(resetToken);
+        Long novoTokenId = resetToken.getId();
+        try {
+            // Marca os antigos como usados em vez de deletar — mantém histórico
+            // e evita qualquer risco de FK/cascade em ambientes com constraint
+            // pendente. Só marca os que NÃO são o token que acabamos de criar.
+            tokenRepository.findAll().stream()
+                    .filter(t -> t.getUsuario() != null
+                            && t.getUsuario().getId().equals(usuario.getId())
+                            && !t.getId().equals(novoTokenId)
+                            && !Boolean.TRUE.equals(t.getUsado()))
+                    .forEach(t -> { t.setUsado(true); tokenRepository.save(t); });
+        } catch (Exception e) {
+            log.warn("[Senha] falha invalidando tokens antigos do usuário {} (ignorado, novo token já salvo): {}",
+                    usuario.getEmail(), e.getMessage());
+        }
 
-        emailService.enviarRecuperacaoSenha(usuario.getEmail(), usuario.getNome(), token);
+        try {
+            emailService.enviarRecuperacaoSenha(usuario.getEmail(), usuario.getNome(), token);
+        } catch (Exception e) {
+            log.error("[Senha] erro enviando email pra {}: {}", usuario.getEmail(), e.getMessage());
+            // Não propaga — token já foi salvo, dono pode reusar link se
+            // receber o email. Se não receber, pede de novo.
+        }
+    }
+
+    /**
+     * Fluxo de troca de senha AUTENTICADO — usuário logado que quer trocar
+     * a senha sem passar pelo email. Valida senha atual antes de aplicar
+     * a nova. Retorna sem body em caso de sucesso; lança RuntimeException
+     * em falha (senha atual errada, nova muito curta, etc).
+     */
+    @Transactional
+    public void alterarSenhaAutenticado(String email, String senhaAtual, String novaSenha) {
+        if (novaSenha == null || novaSenha.length() < 6) {
+            throw new RuntimeException("Nova senha precisa ter no mínimo 6 caracteres");
+        }
+        Usuario usuario = usuarioRepository.findByEmail(email)
+                .orElseThrow(() -> new RuntimeException("Usuário não encontrado"));
+        if (senhaAtual == null || !passwordEncoder.matches(senhaAtual, usuario.getSenhaHash())) {
+            throw new RuntimeException("Senha atual incorreta");
+        }
+        usuario.setSenhaHash(passwordEncoder.encode(novaSenha));
+        usuarioRepository.save(usuario);
+        log.info("[Senha] usuário {} alterou senha (fluxo autenticado)", email);
     }
 
     @Transactional

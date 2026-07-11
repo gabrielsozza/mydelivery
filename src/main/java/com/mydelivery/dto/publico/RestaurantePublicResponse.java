@@ -55,4 +55,17 @@ public class RestaurantePublicResponse {
      * null/blank → restaurante não habilitou pagamento online.
      */
     private String mpPublicKey;
+
+    /** Modo de cálculo de taxa: BAIRRO (legado) ou RAIO (jul/2026).
+     *  Cardápio público usa isso pra decidir: modo bairro faz lookup por
+     *  nome; modo raio geocodifica endereço + Haversine. */
+    private String modoTaxa;
+
+    /** Cidade — só usada no modo RAIO pra melhorar a query do geocoder
+     *  ("Rua X, Serra ES" tem match muito melhor que só "Rua X"). */
+    private String cidade;
+
+    /** UF — mesma razão do campo {@code cidade}: enriquece a query
+     *  do Nominatim pra evitar homônimos em outras regiões do Brasil. */
+    private String estado;
 }

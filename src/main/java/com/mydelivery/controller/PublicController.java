@@ -79,8 +79,11 @@ public class PublicController {
                 .chavePixAntecipado(Boolean.TRUE.equals(r.getExigirPixAntecipado()) ? r.getChavePixAntecipado() : null)
                 .tipoChavePixAntecipado(Boolean.TRUE.equals(r.getExigirPixAntecipado()) ? r.getTipoChavePixAntecipado() : null)
                 .telefone(r.getTelefone())
+                .cidade(r.getCidade())
+                .estado(r.getEstado())
                 .bairrosAtendidos(bairros)
                 .mpPublicKey(mpPublicKey)
+                .modoTaxa(r.getModoTaxa() == null ? "BAIRRO" : r.getModoTaxa())
                 .build();
 
         // no-cache: cliente final sempre recebe dados atuais (logo, capa, status)

@@ -57,6 +57,12 @@ public class AssinaturaPagamentoService {
     @org.springframework.beans.factory.annotation.Autowired
     private PlanoCatalogoService planoCatalogoService;
 
+    /** Persistência de PagamentoMensalidade PENDENTE ao emitir PIX
+     *  — dá visibilidade no faturamento antes da aprovação e serve de âncora
+     *  pro upsert PENDENTE→PAGO quando o webhook chegar. */
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.mydelivery.repository.PagamentoMensalidadeRepository pagamentoMensalidadeRepository;
+
     public AssinaturaPagamentoService(
             MercadoPagoClient mpClient,
             @Value("${mydelivery.mercadopago.admin-access-token:${ADMIN_MP_ACCESS_TOKEN:}}") String adminAccessToken,
@@ -350,12 +356,21 @@ public class AssinaturaPagamentoService {
 
     /**
      * Cria cobrança PIX. Retorna { qrCode, qrCodeBase64, paymentId, valor, expiraEm }.
+     *
+     * Além de chamar o MP, grava um {@code PagamentoMensalidade} PENDENTE
+     * com o {@code mpPaymentId} devolvido. Quando o webhook (ou o job de
+     * reconciliação) confirmar approved, essa linha é promovida a PAGO
+     * via {@code AssinaturaService.registrarPagamentoOk} — em vez de inserir
+     * nova. Ganhos: (a) admin vê tentativas em aberto; (b) rastreamento
+     * end-to-end de PIX que "sumiram" fica trivial (basta consultar o mpPaymentId).
      */
     public Map<String, Object> criarPix(Restaurante r, Plano plano) {
         exigirCredenciais();
+        String externalRef = "assinatura-" + r.getId() + "-" + plano.name() + "-" + System.currentTimeMillis();
         String idempotencyKey = "mydelivery-assinatura-" + r.getId() + "-" + plano.name()
                 + "-pix-" + System.currentTimeMillis();
         LocalDateTime expiraEm = LocalDateTime.now().plusMinutes(30);
+        java.math.BigDecimal valor = planoCatalogoService.valorPara(r, plano);
 
         MpPayer payer = MpPayer.builder()
                 .email(adminPayerEmail)
@@ -364,25 +379,51 @@ public class AssinaturaPagamentoService {
                 .build();
 
         MpPaymentRequest body = MpPaymentRequest.builder()
-                .transactionAmount(planoCatalogoService.valorPara(r, plano))
+                .transactionAmount(valor)
                 .paymentMethodId("pix")
                 .description("MyDelivery — Assinatura " + plano.getNomeExibicao() + " (Restaurante #" + r.getId() + ")")
-                .externalReference("assinatura-" + r.getId() + "-" + plano.name() + "-" + System.currentTimeMillis())
+                .externalReference(externalRef)
                 .notificationUrl(publicBaseUrl + "/api/webhooks/mercadopago")
                 .dateOfExpiration(formatarExpiracao(expiraEm))
                 .payer(payer)
                 .build();
 
-        log.info("[AssPag][PIX] criando — restaurante={}, plano={}, valor={}, idem={}",
-                r.getId(), plano, planoCatalogoService.valorPara(r, plano), idempotencyKey);
+        log.info("[AssPag][PIX] criando — restaurante={}, plano={}, valor={}, extRef={}, idem={}",
+                r.getId(), plano, valor, externalRef, idempotencyKey);
         MpPaymentResponse resp = mpClient.criarPagamento(adminAccessToken, idempotencyKey, body);
+
+        Long mpPaymentId = resp.getId();
+        log.info("[AssPag][PIX] MP respondeu — restaurante={}, plano={}, mpPaymentId={}, status={}",
+                r.getId(), plano, mpPaymentId, resp.getStatus());
+
+        // Persiste linha PENDENTE (fail-safe — se falhar aqui, o webhook/job
+        // ainda vai criar via registrarPagamentoOk; só perdemos visibilidade
+        // do "aguardando confirmação" no relatório).
+        try {
+            if (mpPaymentId != null) {
+                com.mydelivery.model.PagamentoMensalidade pendente = com.mydelivery.model.PagamentoMensalidade.builder()
+                        .restaurante(r)
+                        .valor(valor)
+                        .status(com.mydelivery.model.PagamentoMensalidade.Status.PENDENTE)
+                        .metodoPagamento("PIX_MP")
+                        .plano(plano)
+                        .mpPaymentId(mpPaymentId)
+                        .referenciaGateway(externalRef)
+                        .build();
+                pagamentoMensalidadeRepository.save(pendente);
+            }
+        } catch (Exception e) {
+            log.warn("[AssPag][PIX] falha ao persistir PENDENTE (não bloqueia — webhook cobre): {}",
+                    e.getMessage());
+        }
 
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("tipo", "PIX");
-        out.put("paymentId", resp.getId());
+        out.put("paymentId", mpPaymentId);
         out.put("status", resp.getStatus());
-        out.put("valor", planoCatalogoService.valorPara(r, plano));
+        out.put("valor", valor);
         out.put("expiraEm", expiraEm.toString());
+        out.put("externalReference", externalRef);
         if (resp.getPointOfInteraction() != null
                 && resp.getPointOfInteraction().getTransactionData() != null) {
             out.put("qrCode", resp.getPointOfInteraction().getTransactionData().getQrCode());

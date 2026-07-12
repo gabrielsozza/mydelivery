@@ -47,6 +47,7 @@ public class MercadoPagoWebhookService {
     private final RestauranteRepository restauranteRepository;
     private final AssinaturaService assinaturaService;
     private final String adminAccessToken;
+    private final String adminWebhookSecret;
 
     public MercadoPagoWebhookService(
             PagamentoRepository pagamentoRepository,
@@ -57,7 +58,8 @@ public class MercadoPagoWebhookService {
             MercadoPagoClient mpClient,
             RestauranteRepository restauranteRepository,
             AssinaturaService assinaturaService,
-            @Value("${mydelivery.mercadopago.admin-access-token:${ADMIN_MP_ACCESS_TOKEN:}}") String adminAccessToken) {
+            @Value("${mydelivery.mercadopago.admin-access-token:${ADMIN_MP_ACCESS_TOKEN:}}") String adminAccessToken,
+            @Value("${mydelivery.mercadopago.admin-webhook-secret:${ADMIN_MP_WEBHOOK_SECRET:}}") String adminWebhookSecret) {
         this.pagamentoRepository = pagamentoRepository;
         this.pedidoRepository = pedidoRepository;
         this.configRepo = configRepo;
@@ -67,6 +69,7 @@ public class MercadoPagoWebhookService {
         this.restauranteRepository = restauranteRepository;
         this.assinaturaService = assinaturaService;
         this.adminAccessToken = adminAccessToken;
+        this.adminWebhookSecret = adminWebhookSecret;
     }
 
     /**
@@ -215,7 +218,12 @@ public class MercadoPagoWebhookService {
      */
     private Resultado tentarProcessarComoAssinatura(Long mpPaymentId, WebhookInput input) {
         if (adminAccessToken == null || adminAccessToken.isBlank()) {
-            log.debug("[Webhook:Assinatura] ADMIN_MP_ACCESS_TOKEN não configurado — pulando fallback");
+            // Antes era log.debug — falhava silenciosamente em produção quando a env
+            // sumia do Railway. Agora WARN pra o operador saber imediatamente que
+            // PIX de assinatura não vai ser processado até configurar a env.
+            log.warn("[Webhook:Assinatura] ADMIN_MP_ACCESS_TOKEN vazio — impossível consultar "
+                    + "payment {} pra saber se é assinatura. Configure a env no Railway.",
+                    mpPaymentId);
             return null;
         }
         MpPaymentResponse atual;
@@ -229,6 +237,32 @@ public class MercadoPagoWebhookService {
         String extRef = atual.getExternalReference();
         if (extRef == null || !extRef.startsWith("assinatura-")) {
             return null; // não é assinatura — caller segue fluxo padrão
+        }
+
+        // Validação HMAC — só se o secret dedicado estiver configurado.
+        // Sem secret configurado, mantemos comportamento anterior (processa
+        // sem validar) e alertamos no log — retrocompatível pra não bloquear
+        // clientes em produção antes da env ser setada. IMPORTANTE: signature
+        // pode estar ausente quando MP dispara certos payment.updated — nesse
+        // caso, também prosseguimos com aviso; a fonte da verdade continua sendo
+        // a consulta ao MP acima (que já garante autenticidade do paymentId).
+        if (adminWebhookSecret != null && !adminWebhookSecret.isBlank()) {
+            if (input.signatureHeader() == null) {
+                log.warn("[Webhook:Assinatura] x-signature ausente em payment {} — prosseguindo "
+                        + "porque status já foi confirmado por consulta direta ao MP", mpPaymentId);
+            } else {
+                boolean ok = signatureValidator.valido(
+                        input.signatureHeader(), input.eventId(), input.dataId(), adminWebhookSecret);
+                if (!ok) {
+                    log.warn("[Webhook:Assinatura] assinatura HMAC inválida pra payment {} — "
+                            + "rejeitando com 401", mpPaymentId);
+                    return Resultado.INVALIDO;
+                }
+            }
+        } else {
+            log.warn("[Webhook:Assinatura] ADMIN_MP_ACCESS_TOKEN configurado mas "
+                    + "ADMIN_MP_WEBHOOK_SECRET vazio — assinatura HMAC NÃO validada. "
+                    + "Configure a env pra ativar validação de origem.");
         }
 
         // Parse: assinatura-{restauranteId}-{PLANO}-{timestamp}

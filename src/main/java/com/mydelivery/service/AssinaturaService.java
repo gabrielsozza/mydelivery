@@ -438,16 +438,36 @@ public class AssinaturaService {
             return;
         }
         try {
-            com.mydelivery.model.PagamentoMensalidade p = com.mydelivery.model.PagamentoMensalidade.builder()
-                    .restaurante(r)
-                    .valor(planoCatalogoService.valorAtual(plano))
-                    .status(com.mydelivery.model.PagamentoMensalidade.Status.PAGO)
-                    .metodoPagamento(metodo)
-                    .plano(plano)
-                    .pagoEm(pagoEm != null ? pagoEm : LocalDateTime.now())
-                    .mpPaymentId(mpPaymentId)
-                    .build();
+            LocalDateTime pago = pagoEm != null ? pagoEm : LocalDateTime.now();
+
+            // Upsert: se existir linha PENDENTE criada em criarPix, promove pra PAGO
+            // em vez de inserir nova (evita duplicidade na visão do admin).
+            com.mydelivery.model.PagamentoMensalidade p = null;
+            if (mpPaymentId != null) {
+                p = pagamentoMensalidadeRepository.findByMpPaymentId(mpPaymentId).orElse(null);
+            }
+            if (p != null) {
+                log.info("[Pagamento] promovendo linha existente id={} status={} → PAGO (mpPaymentId={})",
+                        p.getId(), p.getStatus(), mpPaymentId);
+                p.setStatus(com.mydelivery.model.PagamentoMensalidade.Status.PAGO);
+                p.setMetodoPagamento(metodo);
+                p.setPlano(plano);
+                p.setPagoEm(pago);
+                p.setValor(planoCatalogoService.valorAtual(plano));
+            } else {
+                p = com.mydelivery.model.PagamentoMensalidade.builder()
+                        .restaurante(r)
+                        .valor(planoCatalogoService.valorAtual(plano))
+                        .status(com.mydelivery.model.PagamentoMensalidade.Status.PAGO)
+                        .metodoPagamento(metodo)
+                        .plano(plano)
+                        .pagoEm(pago)
+                        .mpPaymentId(mpPaymentId)
+                        .build();
+            }
             pagamentoMensalidadeRepository.save(p);
+            log.info("[Pagamento] ✅ registrado PAGO — restaurante={}, plano={}, metodo={}, mpPaymentId={}, pagoEm={}",
+                    r.getId(), plano, metodo, mpPaymentId, pago);
         } catch (Exception e) {
             log.warn("[Pagamento] falha ao registrar PAGO: {}", e.getMessage());
         }

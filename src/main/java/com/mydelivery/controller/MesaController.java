@@ -41,6 +41,15 @@ public class MesaController {
     private final MesaRepository mesaRepo;
     private final RestauranteRepository restauranteRepo;
     private final PedidoService pedidoService;
+    /** Opcionais — só usados no DELETE /api/mesas/{id} pra limpar FKs.
+     *  Se algum caller antigo (teste) instanciar o controller sem os beans,
+     *  o delete só falha se for chamado — resto do controller funciona. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.mydelivery.repository.PedidoRepository pedidoRepo;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.mydelivery.repository.MesaSessaoRepository mesaSessaoRepo;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.mydelivery.repository.ChamadaGarcomRepository chamadaGarcomRepo;
 
     /** Lista as mesas do restaurante logado. */
     @GetMapping("/api/mesas")
@@ -136,24 +145,63 @@ public class MesaController {
      * Equivalente ao "fechar conta" no balcão. Não altera mesa em si.
      */
     @PostMapping("/api/mesas/{id}/fechar-comanda")
-    @PreAuthorize("hasRole('RESTAURANTE')")
+    @PreAuthorize("hasAnyRole('RESTAURANTE', 'ADMIN')")
     public ResponseEntity<Map<String, Object>> fecharComanda(
             @AuthenticationPrincipal String email,
-            @PathVariable Long id) {
+            @PathVariable Long id,
+            @RequestBody(required = false) Map<String, Object> body) {
         Restaurante r = restauranteRepo.findByUsuarioEmail(email).orElseThrow();
-        int fechados = pedidoService.fecharComandaMesa(r.getId(), id);
+        // Pagamento dividido opcional (jul/2026) — operador que cobra a mesa
+        // pode dividir entre 2 formas (PIX + Dinheiro etc). Se veio, o
+        // service distribui a mesma divisão nos pedidos abertos (JSON copiado
+        // em cada). Nao veio? Mantém formaPagamento única já persistida.
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> pagamentos = body != null && body.get("pagamentos") instanceof List<?>
+                ? (List<Map<String, Object>>) body.get("pagamentos") : null;
+        int fechados = pedidoService.fecharComandaMesa(r.getId(), id, pagamentos);
         return ResponseEntity.ok(Map.of("ok", true, "pedidosFechados", fechados));
     }
 
-    /** Remove mesa (não apaga pedidos passados — apenas remove o QR ativo). */
+    /**
+     * Remove mesa e limpa vínculos pra evitar constraint violation.
+     * <p>Pedidos históricos: {@code mesa_id} vira NULL (preserva histórico
+     * financeiro, o {@code nome_cliente_mesa} guarda quem consumiu).
+     * <p>Chamadas de garçom + sessões abertas: deletadas em cascata via
+     * queries dedicadas (FK obrigatória, não daria pra "detachar").
+     * <p>Bloqueia deleção se houver sessão ABERTA — evita perder pedido
+     * em andamento por engano.
+     */
     @DeleteMapping("/api/mesas/{id}")
-    @PreAuthorize("hasRole('RESTAURANTE')")
+    @PreAuthorize("hasAnyRole('RESTAURANTE', 'ADMIN')")
+    @org.springframework.transaction.annotation.Transactional
     public ResponseEntity<Void> remover(@AuthenticationPrincipal String email, @PathVariable Long id) {
         Restaurante r = restauranteRepo.findByUsuarioEmail(email).orElseThrow();
         Mesa m = mesaRepo.findById(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Mesa não encontrada"));
         if (!m.getRestaurante().getId().equals(r.getId())) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+        }
+        // Bloqueio de segurança: não deleta mesa com sessão ABERTA (fechamento
+        // em andamento). Dono precisa fechar comanda antes de excluir.
+        if (mesaSessaoRepo != null) {
+            long abertas = mesaSessaoRepo.findByMesaIdAndFechamentoEmIsNull(id).size();
+            if (abertas > 0) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT,
+                        "Essa mesa tem comanda aberta. Feche a conta antes de excluir.");
+            }
+        }
+        // Desliga o vínculo mesa em pedidos históricos — pedido continua no
+        // sistema com nome_cliente_mesa preenchido, só perde referência física.
+        if (pedidoRepo != null) {
+            pedidoRepo.desvincularMesa(id);
+        }
+        // Apaga chamadas de garçom (FK NOT NULL — não dá pra "detachar").
+        if (chamadaGarcomRepo != null) {
+            chamadaGarcomRepo.deleteByMesaId(id);
+        }
+        // Apaga sessões fechadas dessa mesa (as abertas já bloquearam acima).
+        if (mesaSessaoRepo != null) {
+            mesaSessaoRepo.deleteByMesaId(id);
         }
         mesaRepo.delete(m);
         return ResponseEntity.noContent().build();

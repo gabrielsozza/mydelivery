@@ -70,4 +70,11 @@ public interface PedidoRepository extends JpaRepository<Pedido, Long> {
            "ORDER BY p.criadoEm DESC")
     List<Pedido> findUltimosDoTelefone(Long restauranteId, String telefone,
                                        LocalDateTime desde);
+
+    /** Zera a FK mesa em pedidos históricos — usado no DELETE de mesa
+     *  pra permitir excluir sem violar constraint. Pedido continua com
+     *  nome_cliente_mesa preenchido (histórico financeiro preservado). */
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.data.jpa.repository.Query("UPDATE Pedido p SET p.mesa = null WHERE p.mesa.id = :mesaId")
+    void desvincularMesa(@org.springframework.data.repository.query.Param("mesaId") Long mesaId);
 }

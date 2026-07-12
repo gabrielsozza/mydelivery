@@ -23,4 +23,14 @@ public interface MesaSessaoRepository extends JpaRepository<MesaSessao, Long> {
     /** Sessões abertas há mais de N tempo SEM interação — base do alerta de
      *  mesa esquecida (job a cada 2min). */
     List<MesaSessao> findByFechamentoEmIsNullAndUltimaInteracaoEmLessThan(LocalDateTime corte);
+
+    /** Sessões abertas de uma mesa — usado no DELETE de mesa pra bloquear
+     *  exclusão com comanda em andamento. */
+    List<MesaSessao> findByMesaIdAndFechamentoEmIsNull(Long mesaId);
+
+    /** Apaga TODAS as sessões (fechadas incluídas) de uma mesa — chamado
+     *  no DELETE /api/mesas/{id} depois de garantir que não há aberta. */
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.data.jpa.repository.Query("DELETE FROM MesaSessao s WHERE s.mesa.id = :mesaId")
+    void deleteByMesaId(@org.springframework.data.repository.query.Param("mesaId") Long mesaId);
 }

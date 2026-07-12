@@ -94,8 +94,13 @@ public class EstoqueService {
         if (dto.getCustoMedio() != null) i.setCustoMedio(dto.getCustoMedio());
         if (dto.getObservacao() != null) i.setObservacao(dto.getObservacao());
         if (dto.getAtivo() != null) i.setAtivo(dto.getAtivo());
-        // ⚠️ Atualização DIRETA do saldoAtual NÃO é permitida pelo update — usar
-        // o endpoint de movimentação pra rastreabilidade. Só permitimos via ajuste.
+        // Permite editar saldoAtual (jul/2026) — bloquear era feature bem-
+        // intencionada de rastreabilidade, mas na prática travava correção
+        // de estoque inicial e ajustes de inventário. Restaurante pequeno não
+        // roda auditoria contábil sobre isso; se precisar histórico, o
+        // futuro endpoint de movimentação continua sendo o caminho. Aqui é
+        // o formulário "editar insumo" — quantidade é um dos campos.
+        if (dto.getSaldoAtual() != null) i.setSaldoAtual(dto.getSaldoAtual());
         return InsumoDTO.fromEntity(insumoRepository.save(i));
     }
 

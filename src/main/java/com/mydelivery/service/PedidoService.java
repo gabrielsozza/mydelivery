@@ -862,12 +862,29 @@ public class PedidoService {
         pedidoRepository.save(pedido);
     }
 
+    /** Overload sem split — mantém compat. */
+    @Transactional
+    public int fecharComandaMesa(Long restauranteId, Long mesaId) {
+        return fecharComandaMesa(restauranteId, mesaId, null);
+    }
+
     /**
      * Fecha a comanda inteira da mesa (todos os pedidos ativos viram ENTREGUE+pago).
      * Usado pelo dono ao receber o pagamento final no balcão.
+     *
+     * <p><b>Split de pagamento (jul/2026):</b> {@code pagamentos} opcional —
+     * lista de {@code {forma, valor}} somando o total da comanda. Se veio:
+     * <ul>
+     *   <li>Valida soma == total dos pedidos ativos (tolerância 1cent)</li>
+     *   <li>Para cada pedido, grava o mesmo JSON de {@code pagamentos_json}
+     *       proporcional (redistribui os valores mantendo as formas)</li>
+     *   <li>{@code formaPagamento} do pedido vira a 1ª forma do split (compat
+     *       com relatórios que só olham esse campo)</li>
+     * </ul>
      */
     @Transactional
-    public int fecharComandaMesa(Long restauranteId, Long mesaId) {
+    public int fecharComandaMesa(Long restauranteId, Long mesaId,
+                                    java.util.List<java.util.Map<String, Object>> pagamentos) {
         var mesa = mesaRepository.findById(mesaId)
                 .orElseThrow(() -> new RuntimeException("Mesa não encontrada"));
         if (!mesa.getRestaurante().getId().equals(restauranteId)) {
@@ -875,6 +892,48 @@ public class PedidoService {
         }
         var ativos = pedidoRepository.findComandaAtivaPorMesa(mesaId);
         var agora = java.time.LocalDateTime.now();
+
+        // Split — valida antes de mexer no status pra não deixar mesa em
+        // estado inconsistente se soma não bater.
+        if (pagamentos != null && !pagamentos.isEmpty()) {
+            java.math.BigDecimal totalComanda = ativos.stream()
+                    .map(p -> p.getTotal() == null ? java.math.BigDecimal.ZERO : p.getTotal())
+                    .reduce(java.math.BigDecimal.ZERO, java.math.BigDecimal::add);
+            java.math.BigDecimal somaPag = java.math.BigDecimal.ZERO;
+            java.util.List<Object[]> parts = new java.util.ArrayList<>();
+            for (var m : pagamentos) {
+                String forma = String.valueOf(m.get("forma")).toUpperCase();
+                java.math.BigDecimal valor = decOfObj(m.get("valor"));
+                if (valor == null || valor.signum() <= 0) throw new RuntimeException("Valor inválido no split");
+                somaPag = somaPag.add(valor);
+                parts.add(new Object[]{ forma, valor });
+            }
+            if (somaPag.subtract(totalComanda).abs().compareTo(new java.math.BigDecimal("0.01")) > 0) {
+                throw new RuntimeException("Soma do split (R$ " + somaPag + ") não bate com o total da comanda (R$ " + totalComanda + ")");
+            }
+            // Copia o JSON idêntico em cada pedido — pros relatórios agregarem
+            // por (pedido × forma) somando VENDA_X. Como a soma de split ==
+            // total da comanda == soma dos totais dos pedidos, a distribuição
+            // exata por pedido não muda o agregado final.
+            StringBuilder json = new StringBuilder("[");
+            for (int i = 0; i < parts.size(); i++) {
+                if (i > 0) json.append(',');
+                json.append("{\"forma\":\"").append(parts.get(i)[0]).append("\",")
+                    .append("\"valor\":").append(((java.math.BigDecimal) parts.get(i)[1]).setScale(2, java.math.RoundingMode.HALF_UP))
+                    .append('}');
+            }
+            json.append(']');
+            String jsonStr = json.toString();
+            String primeiraForma = (String) parts.get(0)[0];
+            Pedido.FormaPagamento fpParsed;
+            try { fpParsed = Pedido.FormaPagamento.valueOf(primeiraForma); }
+            catch (Exception e) { fpParsed = Pedido.FormaPagamento.CARTAO_MAQUININHA; }
+            for (var p : ativos) {
+                p.setPagamentosJson(jsonStr);
+                p.setFormaPagamento(fpParsed);
+            }
+        }
+
         ativos.forEach(p -> {
             p.setStatus(Pedido.Status.ENTREGUE);
             p.setPago(true);
@@ -882,6 +941,13 @@ public class PedidoService {
         });
         pedidoRepository.saveAll(ativos);
         return ativos.size();
+    }
+
+    private static java.math.BigDecimal decOfObj(Object o) {
+        if (o == null) return null;
+        if (o instanceof java.math.BigDecimal bd) return bd;
+        if (o instanceof Number n) return java.math.BigDecimal.valueOf(n.doubleValue());
+        try { return new java.math.BigDecimal(o.toString()); } catch (Exception e) { return null; }
     }
 
     /**

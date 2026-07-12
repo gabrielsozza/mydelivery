@@ -63,18 +63,24 @@ public class EstoqueService {
     public InsumoDTO criar(Long restauranteId, InsumoDTO dto) {
         var r = restauranteRepository.findById(restauranteId)
                 .orElseThrow(() -> new RuntimeException("Restaurante não encontrado"));
+        // saldoAtual começa em ZERO — se dto trouxe valor inicial, o
+        // registrarMov abaixo soma 1× (única fonte da verdade). Bug fix
+        // jul/2026: antes o builder já setava saldo com o valor DO DTO,
+        // e o registrarMov somava de novo — quem digitava "1 unidade"
+        // via 2 no estoque final.
         Insumo i = Insumo.builder()
                 .restaurante(r)
                 .nome(dto.getNome())
                 .unidade(parseUnidade(dto.getUnidade()))
-                .saldoAtual(nz(dto.getSaldoAtual()))
+                .saldoAtual(BigDecimal.ZERO)
                 .saldoMinimo(nz(dto.getSaldoMinimo()))
                 .custoMedio(dto.getCustoMedio())
                 .observacao(dto.getObservacao())
                 .ativo(dto.getAtivo() == null || dto.getAtivo())
                 .build();
         i = insumoRepository.save(i);
-        // Se já cadastra com saldo > 0, registra a entrada inicial pra audit trail
+        // Se cadastra com saldo > 0, registra a ENTRADA_INICIAL — que faz
+        // saldo 0 + valor = valor. Audit trail preservado.
         if (nz(dto.getSaldoAtual()).signum() > 0) {
             registrarMov(i, MovimentacaoEstoque.Tipo.ENTRADA_INICIAL,
                     nz(dto.getSaldoAtual()), null, "Saldo inicial");

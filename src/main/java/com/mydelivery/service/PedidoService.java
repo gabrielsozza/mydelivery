@@ -341,16 +341,29 @@ public class PedidoService {
                     precoUnit = extras.compareTo(limiteMax) <= 0 ? extras : limiteMax;
                 }
             } else if (itemReq.getPreco() != null
-                    && itemReq.getPreco().compareTo(precoUnit) > 0
+                    && itemReq.getPreco().compareTo(BigDecimal.ZERO) > 0
                     && itemReq.getPreco().compareTo(limiteMax) <= 0) {
-                precoUnit = itemReq.getPreco();
-            } else {
+                // Front mandou preço explícito — RESPEITA. Nunca reextrai
+                // complementos da obs por cima porque isso dobrava o valor
+                // quando front mandou pf == precoBase (produto sem
+                // complementos pagos, ou modo mesa cobrando só base).
+                // Bug corrigido jul/2026: cliente que pediu batata R$ 29,99
+                // + complemento "Carne Desfiada" R$ 29,99 recebia comanda
+                // com 59,98 pra batata (base já somava no front + backend
+                // resomava dos complementos da obs).
+                // Se pf < precoBase, mantém precoBase como piso (anti-fraude).
+                precoUnit = itemReq.getPreco().max(precoUnit);
+            } else if (itemReq.getPreco() == null) {
+                // Fallback só quando o front NÃO mandou preço (HTML antigo
+                // cacheado). Extrai valores dos complementos pagos da obs.
                 BigDecimal extras = extrairValorComplementosDaObs(itemReq.getObs());
                 if (extras.compareTo(BigDecimal.ZERO) > 0) {
                     BigDecimal somado = precoUnit.add(extras);
                     if (somado.compareTo(limiteMax) <= 0) precoUnit = somado;
                 }
             }
+            // else: preço enviado fora do range válido (0 ou > limiteMax) —
+            // usa precoBase (anti-fraude).
             BigDecimal itemSub = precoUnit.multiply(BigDecimal.valueOf(itemReq.getQty()));
             PedidoItem item = new PedidoItem();
             item.setPedido(pedido);

@@ -41,6 +41,22 @@ public class ComplementoGrupo {
 
     public enum ModoPreco { SOMA, MAIOR }
 
+    /**
+     * Se true, aparece uma opção "Sem [nome do grupo]" (ex: "Sem carne")
+     * no cardápio como primeira escolha. Útil pra marmita/PF onde cliente
+     * pode não querer uma categoria específica. Default false — grupos
+     * antigos continuam iguais.
+     *
+     * <p>Não mexe em min/max: se o grupo é obrigatório com min=1, escolher
+     * "Sem X" satisfaz o mínimo. Se não-obrigatório, o botão "Sem X" só
+     * economiza o clique de "não escolher nada".
+     */
+    // nullable porque Hibernate ddl-auto=update NÃO consegue adicionar coluna
+    // NOT NULL em tabela com dados sem default. Tratamos null como false no code.
+    @Column(name = "permitir_nenhuma")
+    @Builder.Default
+    private Boolean permitirNenhuma = false;
+
     // EAGER porque open-in-view=false: serialização do response fora da transação
     // disparava LazyInitException ao iterar getItens() → endpoint retornava 500
     // e o painel/cardápio ficavam sem complementos mesmo com dados no banco.

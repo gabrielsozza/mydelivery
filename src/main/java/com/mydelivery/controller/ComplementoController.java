@@ -84,6 +84,7 @@ public class ComplementoController {
                 .minEscolhas(intOr(body, "minEscolhas", 0))
                 .maxEscolhas(intOr(body, "maxEscolhas", 1))
                 .modoPreco(parseModoPreco(body.get("modoPreco")))
+                .permitirNenhuma(boolOr(body, "permitirNenhuma", false))
                 .itens(new java.util.ArrayList<>())  // garante coleção mutável
                 .build();
         // Adiciona itens ANTES de salvar — cascade.ALL persiste tudo numa só
@@ -108,6 +109,7 @@ public class ComplementoController {
         if (body.containsKey("minEscolhas"))  g.setMinEscolhas(intOr(body, "minEscolhas", 0));
         if (body.containsKey("maxEscolhas"))  g.setMaxEscolhas(intOr(body, "maxEscolhas", 1));
         if (body.containsKey("modoPreco"))    g.setModoPreco(parseModoPreco(body.get("modoPreco")));
+        if (body.containsKey("permitirNenhuma")) g.setPermitirNenhuma(boolOr(body, "permitirNenhuma", false));
 
         // ── Substituição completa dos itens (jeito canônico com orphanRemoval=true) ──
         // Antes: itemRepo.delete() em cada antigo + itemRepo.save() em cada novo. Isso
@@ -338,13 +340,18 @@ public class ComplementoController {
             alvo.put(normalizarNomeItem(nome), ativo);
         }
         int afetados = 0;
+        // Propaga por NOME (bug reportado): se dono marcou Costela como variável
+        // em Marmitex P mas cadastrou tambem em Marmitex G sem variavel,
+        // desativar aqui deve sumir de TODOS os produtos. Antes o filtro
+        // `if (!variavel) continue` deixava as Costelas nao-variaveis intocadas
+        // e o cliente continuava vendo no cardapio. Mesma logica do toggleAtivoItem
+        // com propagar=true.
         var produtos = produtoRepo.findByRestauranteId(restauranteId);
         for (var prod : produtos) {
             var grupos = grupoRepo.findByProdutoIdOrderByIdAsc(prod.getId());
             for (var grp : grupos) {
                 if (grp.getItens() == null) continue;
                 for (var it : grp.getItens()) {
-                    if (!Boolean.TRUE.equals(it.getVariavel())) continue;
                     Boolean desejado = alvo.get(normalizarNomeItem(it.getNome()));
                     if (desejado == null) continue;
                     if (Boolean.TRUE.equals(it.getAtivo()) != desejado) {
@@ -418,6 +425,7 @@ public class ComplementoController {
         out.put("maxEscolhas", g.getMaxEscolhas() != null ? g.getMaxEscolhas() : 1);
         out.put("modoPreco", g.getModoPreco() != null
                 ? g.getModoPreco().name() : ComplementoGrupo.ModoPreco.SOMA.name());
+        out.put("permitirNenhuma", Boolean.TRUE.equals(g.getPermitirNenhuma()));
         List<Map<String, Object>> itens = g.getItens() == null ? List.of()
                 : g.getItens().stream()
                     .filter(i -> incluirInativos || Boolean.TRUE.equals(i.getAtivo()))

@@ -56,6 +56,7 @@ public class ComplementoItem {
      * visibilidade continua sendo {@code ativo}. A tela "Cardápio do dia"
      * apenas dá uma UI otimizada pra alternar {@code ativo} em lote.
      */
-    @Column(nullable = false)
+    // nullable pra Hibernate ddl-auto=update conseguir adicionar em prod
+    // (NOT NULL em tabela populada quebra). Tratamos null como false no code.
     private Boolean variavel = false;
 }

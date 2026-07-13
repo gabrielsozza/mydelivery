@@ -73,6 +73,15 @@ public class WhatsappBotService {
      *  - meio termo → interpola linearmente
      * Sempre com jitter ±150ms pra quebrar padrão constante.
      */
+    /** Delay pras notificações proativas de pedido (criação + SAIU_ENTREGA).
+     *  Base 2000ms a pedido do operador — combina com o "digitando..." pro
+     *  cliente ver o efeito antes da msg cair. Jitter ±200ms pra quebrar
+     *  padrão constante. */
+    private static int notificacaoDelayMs() {
+        int jitter = java.util.concurrent.ThreadLocalRandom.current().nextInt(-200, 201);
+        return 2000 + jitter;
+    }
+
     private static int typingDelayFor(String texto) {
         if (texto == null || texto.isEmpty()) return TYPING_MIN_MS;
         int len = texto.length();
@@ -698,13 +707,15 @@ public class WhatsappBotService {
 
             // Sem sleep artificial — cliente acabou de fechar pedido e espera
             // confirmação IMEDIATA (jul/2026, refino de UX). O único delay é
-            // o "digitando..." dentro do enviarMensagem (1-2s), que já basta
+            // o "digitando..." dentro do enviarMensagem, que já basta
             // pra parecer natural. Antes tinha sleep aleatório de 15-90s que
             // simulava "humano vendo pedido" — feedback: clientes achavam
             // que o pedido não foi registrado e ligavam pra loja.
+            // "Digitando..." de ~2s (jitter ±200ms pra quebrar padrão constante
+            // que o WhatsApp usa como fingerprint anti-bot).
             String link = "https://mydeliveryfood.com.br/acompanhar.html?id=" + pedidoId;
             String msg = BotVariations.montarMensagemAcompanhamento(pedidoId, link);
-            whatsappService.enviarMensagem(inst, numero, msg, typingDelayFor(msg));
+            whatsappService.enviarMensagem(inst, numero, msg, notificacaoDelayMs());
             ultimaNotificacaoPorNumero.put(numero, java.time.LocalDateTime.now());
 
             log.info("[Bot:Notif] link de acompanhamento enviado — pedido#{}, rest={}, tel={}***",
@@ -775,7 +786,8 @@ public class WhatsappBotService {
                 return;
             }
 
-            whatsappService.enviarMensagem(inst, numero, msg, typingDelayFor(msg));
+            // "Digitando..." de ~2s antes de enviar (jitter ±200ms).
+            whatsappService.enviarMensagem(inst, numero, msg, notificacaoDelayMs());
             ultimaNotificacaoStatus.put(chaveDedup, agora);
 
             log.info("[Bot:Status] status={} enviado pra pedido#{}, rest={}, tel={}***",

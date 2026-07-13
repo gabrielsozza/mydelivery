@@ -225,7 +225,22 @@ public class GarcomController {
             if (!prod.getRestaurante().getId().equals(ctx.restauranteId)) {
                 throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Produto fora do restaurante");
             }
-            BigDecimal precoUnit = prod.getPreco() == null ? BigDecimal.ZERO : prod.getPreco();
+            // precoUnitario do body é permitido pra suportar itens por peso
+            // (sorvete/açaí: kg × preco/kg → preco unitário calculado no client).
+            // Anti-fraude: precoBase é piso quando front manda menos que ele.
+            // Limite máximo: 10x precoBase (evita erro humano ou input malicioso).
+            BigDecimal precoBase = prod.getPreco() == null ? BigDecimal.ZERO : prod.getPreco();
+            BigDecimal precoUnit = precoBase;
+            Object precoBodyRaw = it.get("precoUnitario");
+            if (precoBodyRaw != null) {
+                try {
+                    BigDecimal pf = new BigDecimal(precoBodyRaw.toString());
+                    BigDecimal limite = precoBase.multiply(BigDecimal.valueOf(10));
+                    if (pf.signum() > 0 && (limite.signum() == 0 || pf.compareTo(limite) <= 0)) {
+                        precoUnit = pf;
+                    }
+                } catch (NumberFormatException ignored) { /* usa base */ }
+            }
             BigDecimal totalItem = precoUnit.multiply(BigDecimal.valueOf(qtd));
             subtotal = subtotal.add(totalItem);
 
@@ -260,6 +275,98 @@ public class GarcomController {
                 "pedidoId", salvo.getId(),
                 "total", salvo.getTotal()
         ));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // EDITAR / CANCELAR pedido da mesa (garçom)
+    //
+    // Reusa PedidoService — mesmo contrato do painel. A blindagem aqui é:
+    //   - Pedido tem que pertencer à mesa cujo slug o garçom acessou
+    //   - Restaurante do pedido tem que bater com o do JWT
+    //   - Status ainda ativo (não ENTREGUE/CANCELADO)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    @org.springframework.web.bind.annotation.PutMapping("/api/garcom/mesa/{slug}/pedido/{pedidoId}")
+    @PreAuthorize("hasRole('GARCOM')")
+    @org.springframework.transaction.annotation.Transactional
+    public ResponseEntity<Map<String, Object>> editarPedidoDaMesa(
+            @AuthenticationPrincipal String subject,
+            @PathVariable String slug,
+            @PathVariable Long pedidoId,
+            @RequestBody com.mydelivery.dto.pedido.EditarPedidoRequest req) {
+        Ctx ctx = parseSubject(subject);
+        Pedido p = validarPedidoDaMesa(ctx, slug, pedidoId);
+        if (p.getStatus() == Pedido.Status.ENTREGUE || p.getStatus() == Pedido.Status.CANCELADO) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Pedido " + p.getStatus() + " não pode ser editado");
+        }
+        // Atualiza total da sessão: subtrai o total antigo e soma o novo
+        // depois de salvar. Pega snapshot pra recalcular delta corretamente.
+        java.math.BigDecimal totalAntes = p.getTotal() == null ? java.math.BigDecimal.ZERO : p.getTotal();
+        pedidoService.editarPedido(ctx.restauranteId, pedidoId, req);
+        Pedido depois = pedidoRepo.findById(pedidoId).orElseThrow();
+        java.math.BigDecimal delta = (depois.getTotal() == null ? java.math.BigDecimal.ZERO : depois.getTotal())
+                .subtract(totalAntes);
+        atualizarTotalSessao(p.getSessaoId(), delta);
+        log.info("[Garçom] Pedido #{} editado mesa={} garcom={} delta=R${}",
+                pedidoId, slug, ctx.garcomId, delta);
+        return ResponseEntity.ok(Map.of("ok", true, "pedidoId", pedidoId, "total", depois.getTotal()));
+    }
+
+    @PostMapping("/api/garcom/mesa/{slug}/pedido/{pedidoId}/cancelar")
+    @PreAuthorize("hasRole('GARCOM')")
+    @org.springframework.transaction.annotation.Transactional
+    public ResponseEntity<Map<String, Object>> cancelarPedidoDaMesa(
+            @AuthenticationPrincipal String subject,
+            @PathVariable String slug,
+            @PathVariable Long pedidoId,
+            @RequestBody(required = false) Map<String, Object> body) {
+        Ctx ctx = parseSubject(subject);
+        Pedido p = validarPedidoDaMesa(ctx, slug, pedidoId);
+        if (p.getStatus() == Pedido.Status.CANCELADO) {
+            return ResponseEntity.ok(Map.of("ok", true, "pedidoId", pedidoId, "status", "CANCELADO"));
+        }
+        if (p.getStatus() == Pedido.Status.ENTREGUE) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Pedido já entregue — não dá pra cancelar");
+        }
+        String motivo = body == null ? null : strOf(body.get("motivo"));
+        java.math.BigDecimal totalAntes = p.getTotal() == null ? java.math.BigDecimal.ZERO : p.getTotal();
+        var req = new com.mydelivery.dto.pedido.AtualizarStatusRequest();
+        req.setStatus(Pedido.Status.CANCELADO);
+        if (motivo != null && !motivo.isBlank()) req.setMotivoCancelamentoTexto(motivo);
+        pedidoService.atualizarStatus(ctx.restauranteId, pedidoId, req);
+        // Desconta do total da sessão o que era o total do pedido cancelado.
+        atualizarTotalSessao(p.getSessaoId(), totalAntes.negate());
+        log.info("[Garçom] Pedido #{} cancelado mesa={} garcom={} motivo={}",
+                pedidoId, slug, ctx.garcomId, motivo);
+        return ResponseEntity.ok(Map.of("ok", true, "pedidoId", pedidoId, "status", "CANCELADO"));
+    }
+
+    /**
+     * Valida que pedido existe, é do mesmo restaurante do JWT e da mesa
+     * do slug fornecido. Retorna o pedido carregado ou 404/403.
+     */
+    private Pedido validarPedidoDaMesa(Ctx ctx, String slug, Long pedidoId) {
+        Pedido p = pedidoRepo.findById(pedidoId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Pedido não encontrado"));
+        if (!p.getRestaurante().getId().equals(ctx.restauranteId)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Pedido fora do restaurante");
+        }
+        if (p.getMesa() == null || !slug.equals(p.getMesa().getSlug())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Pedido não é dessa mesa");
+        }
+        return p;
+    }
+
+    /** Ajusta totalAcumulado da sessão pelo delta (positivo ou negativo). Best-effort. */
+    private void atualizarTotalSessao(Long sessaoId, java.math.BigDecimal delta) {
+        if (sessaoId == null || delta == null || delta.signum() == 0) return;
+        try {
+            garcomService.ajustarTotalSessao(sessaoId, delta);
+        } catch (Exception e) {
+            log.warn("[Garçom] falha ao ajustar total da sessão {}: {}", sessaoId, e.getMessage());
+        }
     }
 
     /**

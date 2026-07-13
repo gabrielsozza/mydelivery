@@ -213,6 +213,24 @@ public class GarcomService {
         });
     }
 
+    /**
+     * Ajusta o totalAcumulado da sessão pelo delta. Usado quando pedido é
+     * editado (delta = novo total - antigo) ou cancelado (delta = -total).
+     * Best-effort — se sessão foi fechada nesse meio tempo, ignora.
+     */
+    @Transactional
+    public void ajustarTotalSessao(Long sessaoId, java.math.BigDecimal delta) {
+        if (sessaoId == null || delta == null || delta.signum() == 0) return;
+        sessaoRepo.findById(sessaoId).ifPresent(s -> {
+            java.math.BigDecimal base = s.getTotalAcumulado() == null ? java.math.BigDecimal.ZERO : s.getTotalAcumulado();
+            java.math.BigDecimal novo = base.add(delta);
+            if (novo.signum() < 0) novo = java.math.BigDecimal.ZERO; // proteção — nunca negativo
+            s.setTotalAcumulado(novo);
+            s.setUltimaInteracaoEm(LocalDateTime.now());
+            sessaoRepo.save(s);
+        });
+    }
+
     @Transactional
     public MesaSessao fecharSessao(Long sessaoId, Long garcomId) {
         return fecharSessao(sessaoId, garcomId, null);

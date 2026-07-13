@@ -45,4 +45,17 @@ public class ComplementoItem {
     private Integer maxSelecoes;
 
     private Boolean ativo = true;
+
+    /**
+     * Se true, item aparece na tela "Cardápio do dia" pro dono controlar
+     * rápido — pensado pra marmitex/PF onde carne/guarnição/salada mudam
+     * frequente ("hoje tem moqueca, amanhã não"). Restaurantes que não
+     * marcam nenhum item como variável nem veem essa tela.
+     *
+     * <p>Não afeta o cardápio público diretamente — quem controla
+     * visibilidade continua sendo {@code ativo}. A tela "Cardápio do dia"
+     * apenas dá uma UI otimizada pra alternar {@code ativo} em lote.
+     */
+    @Column(nullable = false)
+    private Boolean variavel = false;
 }

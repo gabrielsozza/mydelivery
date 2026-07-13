@@ -141,6 +141,7 @@ public class ComplementoController {
                     .precoAdicional(decOr(imap, "precoAdicional", BigDecimal.ZERO))
                     .maxSelecoes(intOrNull(imap, "maxSelecoes"))
                     .ativo(boolOr(imap, "ativo", true))
+                    .variavel(boolOr(imap, "variavel", false))
                     .build();
             g.getItens().add(it);
         }
@@ -237,6 +238,148 @@ public class ComplementoController {
                 .toLowerCase();
     }
 
+    // ═══════════════════════════════════════════════════════════════════
+    // "CARDÁPIO DO DIA" — toggle rápido de itens variáveis
+    //
+    // Feature pra marmitex/PF: itens marcados como {@code variavel=true}
+    // aparecem numa tela dedicada onde o dono liga/desliga em massa todo
+    // dia. Backend só precisa: (a) listar variáveis agrupados por grupo,
+    // (b) receber batch update.
+    //
+    // Vantagem: reusa flag {@code ativo} — quem controla visibilidade do
+    // cardápio público continua sendo ele. {@code variavel} é só uma
+    // etiqueta pra tela do dono.
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Lista todos os itens variáveis do restaurante, agrupados pelo NOME
+     * do grupo (Carne / Guarnições / Saladas). Dedupe por nome do item —
+     * se "Moqueca" aparece em 5 produtos diferentes, mostra 1× e o toggle
+     * propaga pra todos (mesma lógica do toggleAtivoItem com propagar=true).
+     *
+     * <p>Retorno: {@code { "temVariaveis": true|false, "grupos": [ { "nome":"Carne", "itens":[...] } ] } }
+     * O flag {@code temVariaveis} decide se o card "O que tem hoje?" aparece.
+     */
+    @GetMapping("/api/restaurante/cardapio-do-dia")
+    @PreAuthorize("hasAnyRole('RESTAURANTE', 'ADMIN', 'GARCOM')")
+    @Transactional(readOnly = true)
+    public ResponseEntity<Map<String, Object>> cardapioDoDia(
+            @AuthenticationPrincipal String subject) {
+        Long restauranteId = resolverRestauranteId(subject);
+        var produtos = produtoRepo.findByRestauranteId(restauranteId);
+
+        // (grupoNome, itemNomeNormalizado) → { nome exibido, ativo, ids afetados }
+        Map<String, Map<String, ItemVariavelAgg>> porGrupo = new java.util.LinkedHashMap<>();
+        for (var prod : produtos) {
+            var grupos = grupoRepo.findByProdutoIdOrderByIdAsc(prod.getId());
+            for (var grp : grupos) {
+                if (grp.getItens() == null) continue;
+                for (var it : grp.getItens()) {
+                    if (!Boolean.TRUE.equals(it.getVariavel())) continue;
+                    String grupoNome = grp.getNome() == null ? "Outros" : grp.getNome();
+                    String itemKey = normalizarNomeItem(it.getNome());
+                    var itensDoGrupo = porGrupo.computeIfAbsent(grupoNome, k -> new java.util.LinkedHashMap<>());
+                    var agg = itensDoGrupo.computeIfAbsent(itemKey, k -> new ItemVariavelAgg(it.getNome()));
+                    agg.ids.add(it.getId());
+                    // Se algum estiver ativo, marca ativo (dono liga/desliga em bloco)
+                    if (Boolean.TRUE.equals(it.getAtivo())) agg.algumAtivo = true;
+                }
+            }
+        }
+
+        List<Map<String, Object>> gruposOut = new java.util.ArrayList<>();
+        for (var e : porGrupo.entrySet()) {
+            List<Map<String, Object>> itensOut = new java.util.ArrayList<>();
+            for (var itEntry : e.getValue().entrySet()) {
+                var agg = itEntry.getValue();
+                Map<String, Object> mi = new HashMap<>();
+                mi.put("nome", agg.nomeExibido);
+                mi.put("ativo", agg.algumAtivo);
+                mi.put("ids", agg.ids);
+                itensOut.add(mi);
+            }
+            Map<String, Object> mg = new HashMap<>();
+            mg.put("nome", e.getKey());
+            mg.put("itens", itensOut);
+            gruposOut.add(mg);
+        }
+
+        Map<String, Object> resp = new HashMap<>();
+        resp.put("temVariaveis", !gruposOut.isEmpty());
+        resp.put("grupos", gruposOut);
+        return ResponseEntity.ok()
+                .header("Cache-Control", "no-cache, no-store, must-revalidate")
+                .body(resp);
+    }
+
+    /**
+     * Batch toggle: recebe {@code { atualizacoes: [{ nome, ativo }] }}
+     * e aplica em TODOS os itens de mesmo nome no restaurante (propagar).
+     * Idempotente — pode chamar N vezes com o mesmo body.
+     */
+    @PutMapping("/api/restaurante/cardapio-do-dia")
+    @PreAuthorize("hasAnyRole('RESTAURANTE', 'ADMIN', 'GARCOM')")
+    @Transactional
+    public ResponseEntity<Map<String, Object>> atualizarCardapioDoDia(
+            @AuthenticationPrincipal String subject,
+            @RequestBody Map<String, Object> body) {
+        Long restauranteId = resolverRestauranteId(subject);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> atualizacoes = (List<Map<String, Object>>) body.get("atualizacoes");
+        if (atualizacoes == null || atualizacoes.isEmpty()) {
+            return ResponseEntity.ok(Map.of("ok", true, "afetados", 0));
+        }
+        // Constrói mapa nomeNorm → ativoDesejado pra 1 varredura só
+        Map<String, Boolean> alvo = new HashMap<>();
+        for (var upd : atualizacoes) {
+            String nome = strOr(upd, "nome", null);
+            if (nome == null) continue;
+            boolean ativo = boolOr(upd, "ativo", true);
+            alvo.put(normalizarNomeItem(nome), ativo);
+        }
+        int afetados = 0;
+        var produtos = produtoRepo.findByRestauranteId(restauranteId);
+        for (var prod : produtos) {
+            var grupos = grupoRepo.findByProdutoIdOrderByIdAsc(prod.getId());
+            for (var grp : grupos) {
+                if (grp.getItens() == null) continue;
+                for (var it : grp.getItens()) {
+                    if (!Boolean.TRUE.equals(it.getVariavel())) continue;
+                    Boolean desejado = alvo.get(normalizarNomeItem(it.getNome()));
+                    if (desejado == null) continue;
+                    if (Boolean.TRUE.equals(it.getAtivo()) != desejado) {
+                        it.setAtivo(desejado);
+                        itemRepo.save(it);
+                        afetados++;
+                    }
+                }
+            }
+        }
+        return ResponseEntity.ok(Map.of("ok", true, "afetados", afetados));
+    }
+
+    /** Extrai restauranteId do subject do JWT — trata dono (email) e garçom (garcom:id:restId). */
+    private Long resolverRestauranteId(String subject) {
+        if (subject != null && subject.startsWith("garcom:")) {
+            String[] parts = subject.split(":");
+            if (parts.length >= 3) {
+                try { return Long.parseLong(parts[2]); } catch (NumberFormatException ignore) {}
+            }
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
+        }
+        return restauranteRepo.findByUsuarioEmail(subject)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Restaurante não encontrado"))
+                .getId();
+    }
+
+    /** Agregador interno pra cardapioDoDia — junta N itens de mesmo nome. */
+    private static class ItemVariavelAgg {
+        String nomeExibido;
+        boolean algumAtivo = false;
+        List<Long> ids = new java.util.ArrayList<>();
+        ItemVariavelAgg(String nome) { this.nomeExibido = nome; }
+    }
+
     // ── PÚBLICO (cardápio) ──
 
     @GetMapping("/public/produtos/{produtoId}/complementos")
@@ -286,6 +429,7 @@ public class ComplementoController {
                         mi.put("precoAdicional", i.getPrecoAdicional() != null ? i.getPrecoAdicional() : BigDecimal.ZERO);
                         mi.put("maxSelecoes", i.getMaxSelecoes()); // null = sem limite individual
                         mi.put("ativo", Boolean.TRUE.equals(i.getAtivo()));
+                        mi.put("variavel", Boolean.TRUE.equals(i.getVariavel()));
                         return mi;
                     }).toList();
         out.put("itens", itens);

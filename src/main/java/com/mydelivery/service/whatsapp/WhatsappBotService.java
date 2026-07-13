@@ -788,9 +788,14 @@ public class WhatsappBotService {
 
     /**
      * Mensagem por status. Retorna {@code null} pros status que não devem
-     * disparar notificação (PENDENTE, AGUARDANDO_PAGAMENTO, PRONTO — este
-     * último pra evitar spam antes do SAIU_ENTREGA, e CANCELADO fica com
-     * o painel avisando manual).
+     * disparar notificação.
+     *
+     * <p>Política anti-banimento (WhatsApp banimento por volume): o bot
+     * só dispara em 2 momentos ao longo do ciclo do pedido — na criação
+     * (link de acompanhamento, via {@link #notificarLinkAcompanhamentoAsync})
+     * e no SAIU_ENTREGA (ou "pronto pra retirada" quando é retirada).
+     * CONFIRMADO/EM_PREPARO/ENTREGUE ficam mudos: reduz disparos por
+     * pedido de 4-5 pra 2 e diminui risco de shadowban.
      *
      * <p>Só notifica DELIVERY/RETIRADA — mesa é atendimento presencial.
      */
@@ -798,18 +803,10 @@ public class WhatsappBotService {
         if (tipo != null && "MESA".equalsIgnoreCase(tipo)) return null;
         boolean retirada = tipo != null && "RETIRADA".equalsIgnoreCase(tipo);
         switch (statusNome.toUpperCase()) {
-            case "CONFIRMADO":
-                return "✅ Seu pedido foi *confirmado*! Já vamos começar a preparar. 🍽️";
-            case "EM_PREPARO":
-                return "👨‍🍳 Seu pedido tá *em preparo* agora. Tô caprichando aqui! 🔥";
             case "SAIU_ENTREGA":
                 return retirada
                         ? "🛍️ Seu pedido tá *pronto pra retirada*! Pode vir buscar. 🙌"
                         : "🛵 Seu pedido *saiu pra entrega*! Já tá a caminho. 🎉";
-            case "ENTREGUE":
-                return retirada
-                        ? "🙏 Obrigado por retirar seu pedido! Volta sempre. 💛"
-                        : "🎉 Pedido *entregue*! Aproveita e volta sempre. 💛";
             default:
                 return null;
         }

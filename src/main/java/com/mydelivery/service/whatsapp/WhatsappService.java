@@ -416,6 +416,36 @@ public class WhatsappService {
                     inst.getInstanceName());
             return;
         }
+
+        // ── BLINDAGEM UAZAPI: rate limit POR NÚMERO DESTINO ──────────────────
+        // Cap 8/hora e 20/dia por (instância, número). O rate-limit por
+        // instância acima protege contra volume total; este protege contra
+        // "concentração" — se um cliente específico dispara 20 msgs em
+        // 10 minutos (bug de reclick, loop de status flapping), essa é a
+        // heurística mais forte de "spam pra 1 pessoa" que o WhatsApp usa.
+        // Cap generoso: bot normal manda ~4 msgs por pedido, mais 1-2 de
+        // conversa. 8/hora é 2x o volume orgânico.
+        if (!rateLimitPorNumeroOk(inst.getInstanceName(), numeroDestino)) {
+            log.warn("[WhatsApp:RATE_NUM] cap por número atingido — inst={}, num={}*** — msg descartada",
+                    inst.getInstanceName(),
+                    numeroDestino != null && numeroDestino.length() > 5 ? numeroDestino.substring(0, 5) : "?");
+            return;
+        }
+
+        // ── BLINDAGEM UAZAPI: dedup de mensagem idêntica ─────────────────────
+        // Se a MESMA msg foi enviada pro MESMO número nos últimos 60s, dropa.
+        // Protege contra:
+        //  - reclick de painel (dono clica "SAIU_ENTREGA" 2x rápido)
+        //  - status flapping (voltou de CONFIRMADO pra EM_PREPARO e voltou)
+        //  - loops acidentais em @Async retry
+        // Já temos dedup no notificarStatusPedidoAsync por (pedidoId, status),
+        // mas esse blindagem cobre tudo — inclusive respostas do bot idênticas.
+        if (mensagemDuplicadaRecente(inst.getInstanceName(), numeroDestino, texto)) {
+            log.info("[WhatsApp:DEDUP] msg idêntica pro mesmo número <60s — descartada. inst={}, num={}***",
+                    inst.getInstanceName(),
+                    numeroDestino != null && numeroDestino.length() > 5 ? numeroDestino.substring(0, 5) : "?");
+            return;
+        }
         try {
             // Convenção interna: se a resposta do bot começa com "IMG::<url>::<caption>",
             // envia imagem com legenda em vez de texto puro. Resolve o "quadrado preto"
@@ -657,6 +687,71 @@ public class WhatsappService {
      * Aplica: rate limits (min/hora/dia), warmup gradual, post-reconnect throttle.
      * Se qualquer camada bloquear, DROPA e loga o motivo específico.
      */
+    // ═══════════════════════════════════════════════════════════════════════
+    // BLINDAGEM UAZAPI — RATE LIMIT POR NÚMERO DESTINO + DEDUP DE MSG IDÊNTICA
+    // ═══════════════════════════════════════════════════════════════════════
+    //
+    // Complementa o rate-limit por instância (acima). Aqui a granularidade é
+    // (instância, número) — pra parar concentração de msgs pro mesmo cliente,
+    // que WhatsApp/Meta trata como heurística forte de spam desde 2026.
+    //
+    // Trade-off: cap generoso o suficiente pra não atrapalhar operação normal
+    // (bot manda 2 msgs por pedido + eventuais respostas de conversa). 8/hora
+    // e 20/dia é ~4x o volume orgânico esperado. Se estourar, quase certeza
+    // que é loop ou reclick — dropar preserva a conta sem prejudicar UX.
+    // ═══════════════════════════════════════════════════════════════════════
+    private static final java.util.concurrent.ConcurrentHashMap<String, java.util.ArrayDeque<Long>> RATE_HIST_POR_NUM =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    @org.springframework.beans.factory.annotation.Value("${mydelivery.wa.rate-limit-num-hora:8}")
+    private int rateLimitNumHora;
+
+    @org.springframework.beans.factory.annotation.Value("${mydelivery.wa.rate-limit-num-dia:20}")
+    private int rateLimitNumDia;
+
+    private boolean rateLimitPorNumeroOk(String instanceName, String numeroDestino) {
+        if (rateLimitNumHora <= 0 || numeroDestino == null || numeroDestino.isBlank()) return true;
+        String key = instanceName + ":" + limparNumeroTrk(numeroDestino);
+        java.util.ArrayDeque<Long> hist = RATE_HIST_POR_NUM.computeIfAbsent(key, k -> new java.util.ArrayDeque<>());
+        long agora = System.currentTimeMillis();
+        long corteDia  = agora - 86_400_000L;
+        long corteHora = agora - 3_600_000L;
+        synchronized (hist) {
+            while (!hist.isEmpty() && hist.peekFirst() < corteDia) hist.pollFirst();
+            int dia = hist.size();
+            int hora = 0;
+            for (java.util.Iterator<Long> it = hist.descendingIterator(); it.hasNext(); ) {
+                long t = it.next();
+                if (t >= corteHora) hora++; else break;
+            }
+            if (hora >= rateLimitNumHora) return false;
+            if (dia  >= rateLimitNumDia)  return false;
+            hist.addLast(agora);
+            return true;
+        }
+    }
+
+    /** Cache de (instância + número + hash-msg) → timestamp do último envio.
+     *  TTL 60s. Se bater a mesma tupla nesse tempo, é dedup. Bounded via
+     *  cleanup a cada 500 inserts pra não crescer indefinido. */
+    private static final java.util.concurrent.ConcurrentHashMap<String, Long> DEDUP_MSG =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private static final java.util.concurrent.atomic.AtomicInteger DEDUP_INSERTS =
+            new java.util.concurrent.atomic.AtomicInteger(0);
+
+    private boolean mensagemDuplicadaRecente(String instanceName, String numeroDestino, String texto) {
+        if (texto == null) return false;
+        String key = instanceName + ":" + limparNumeroTrk(numeroDestino) + ":" + texto.hashCode();
+        long agora = System.currentTimeMillis();
+        Long anterior = DEDUP_MSG.put(key, agora);
+        // Limpeza best-effort: a cada 500 inserts, remove entries >60s
+        if (DEDUP_INSERTS.incrementAndGet() % 500 == 0) {
+            long corte = agora - 60_000L;
+            DEDUP_MSG.entrySet().removeIf(e -> e.getValue() < corte);
+        }
+        return anterior != null && (agora - anterior) < 60_000L;
+    }
+
     private boolean rateLimitOk(WhatsappInstance inst) {
         if (rateLimitHora <= 0) return true; // desabilitado totalmente
 

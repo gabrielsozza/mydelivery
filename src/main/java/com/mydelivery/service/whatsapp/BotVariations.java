@@ -263,6 +263,70 @@ public final class BotVariations {
         return ThreadLocalRandom.current().nextInt(15_000, 90_001);
     }
 
+    // ═══════════════════════════════════════════════════════════════
+    //  NOTIFICAÇÃO SAIU_ENTREGA — variações pra evitar padrão fixo
+    //
+    //  Anti-shadowban: mensagem fixa "Seu pedido saiu pra entrega!" era
+    //  o padrão detectável mais óbvio do bot (Meta usa fingerprint de
+    //  texto broadcast em contas comerciais desde 2026). Rotaciona entre
+    //  pools de abertura + corpo + fechamento — combinatória alta o
+    //  suficiente pra não bater texto idêntico em 2 pedidos consecutivos.
+    // ═══════════════════════════════════════════════════════════════
+
+    private static final List<String> SAIU_DEL_ABERTURA = List.of(
+            "🛵", "🏍️", "🚴", "🛵💨", "🏍️💨"
+    );
+    private static final List<String> SAIU_DEL_CORPO = List.of(
+            "Seu pedido *saiu pra entrega*! Já tá a caminho.",
+            "Pedido *despachado*, motoboy a caminho.",
+            "*Saiu pra entrega* agora! Chegando rapidinho aí.",
+            "Motoboy saiu com seu pedido — tá a caminho.",
+            "Seu pedido tá *a caminho*! Motoboy acabou de sair.",
+            "Bora! Pedido *saiu pra entrega* agora.",
+            "Já *saiu pra entrega*, chega logo aí.",
+            "*Pedido despachado*! O motoboy tá indo até você."
+    );
+    private static final List<String> SAIU_DEL_FECHAMENTO = List.of(
+            "🎉", "🙌", "✨", "🏁", "🔥", "🍽️", "", "", ""
+    );
+
+    private static final List<String> SAIU_RET_ABERTURA = List.of(
+            "🛍️", "📦", "✅", "🛒"
+    );
+    private static final List<String> SAIU_RET_CORPO = List.of(
+            "Seu pedido tá *pronto pra retirada*! Pode vir buscar.",
+            "*Pronto pra retirar*! Pode passar aqui na loja.",
+            "Pedido *pronto*! Tá esperando você pra retirada.",
+            "Bora buscar? Seu pedido tá *pronto pra retirada*.",
+            "*Pode retirar*! Pedido finalizado por aqui.",
+            "Prontinho pra retirar 🙌 é só passar aqui."
+    );
+    private static final List<String> SAIU_RET_FECHAMENTO = List.of(
+            "🙌", "😊", "✨", "", "", ""
+    );
+
+    /** Monta mensagem SAIU_ENTREGA (delivery) com variação de abertura, corpo e fechamento. */
+    public static String montarMensagemSaiuEntregaDelivery() {
+        String ab = pick(SAIU_DEL_ABERTURA);
+        String corpo = pick(SAIU_DEL_CORPO);
+        String fim = pick(SAIU_DEL_FECHAMENTO);
+        StringBuilder sb = new StringBuilder();
+        sb.append(ab).append(" ").append(corpo);
+        if (fim != null && !fim.isEmpty()) sb.append(" ").append(fim);
+        return sb.toString().trim();
+    }
+
+    /** Monta mensagem SAIU_ENTREGA (retirada) com variação. */
+    public static String montarMensagemSaiuEntregaRetirada() {
+        String ab = pick(SAIU_RET_ABERTURA);
+        String corpo = pick(SAIU_RET_CORPO);
+        String fim = pick(SAIU_RET_FECHAMENTO);
+        StringBuilder sb = new StringBuilder();
+        sb.append(ab).append(" ").append(corpo);
+        if (fim != null && !fim.isEmpty()) sb.append(" ").append(fim);
+        return sb.toString().trim();
+    }
+
     /** Verifica se é horário comercial pra notificações proativas.
      *  Não manda madrugada (0h-7h) nem muito tarde (>23h59).
      *  Reduz risco de incomodar cliente + flagar como bot. */

@@ -816,9 +816,11 @@ public class WhatsappBotService {
         boolean retirada = tipo != null && "RETIRADA".equalsIgnoreCase(tipo);
         switch (statusNome.toUpperCase()) {
             case "SAIU_ENTREGA":
+                // Anti-shadowban: rotaciona entre pool de variações (Meta detecta
+                // texto broadcast idêntico em contas comerciais desde 2026).
                 return retirada
-                        ? "🛍️ Seu pedido tá *pronto pra retirada*! Pode vir buscar. 🙌"
-                        : "🛵 Seu pedido *saiu pra entrega*! Já tá a caminho. 🎉";
+                        ? BotVariations.montarMensagemSaiuEntregaRetirada()
+                        : BotVariations.montarMensagemSaiuEntregaDelivery();
             default:
                 return null;
         }

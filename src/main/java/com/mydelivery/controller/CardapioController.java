@@ -29,7 +29,9 @@ import com.mydelivery.service.CardapioService;
 
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 
+@Slf4j
 @RestController
 @RequiredArgsConstructor
 public class CardapioController {
@@ -300,12 +302,27 @@ public class CardapioController {
      *  duplicar categoria mas em escala unitária. */
     @PostMapping("/api/restaurante/{slug}/produtos/{id}/duplicar")
     @PreAuthorize("hasRole('RESTAURANTE')")
-    public ResponseEntity<ProdutoResponse> duplicarProduto(
+    public ResponseEntity<?> duplicarProduto(
             @PathVariable String slug,
             @AuthenticationPrincipal String email,
-            @PathVariable Long id) {
+            @PathVariable Long id,
+            @org.springframework.web.bind.annotation.RequestParam(value = "quantidade", required = false, defaultValue = "1") Integer quantidade) {
         Long restauranteId = getRestauranteId(email);
-        return ResponseEntity.ok(cardapioService.duplicarProduto(restauranteId, id));
+        try {
+            int qtd = quantidade == null ? 1 : Math.max(1, Math.min(20, quantidade));
+            var lista = cardapioService.duplicarProdutoNVezes(restauranteId, id, qtd);
+            // Retrocompat: quando qtd=1, devolve o produto direto (formato antigo).
+            // Quando qtd>1, devolve array.
+            if (qtd == 1) return ResponseEntity.ok(lista.get(0));
+            return ResponseEntity.ok(lista);
+        } catch (Exception e) {
+            // Retorna a msg do erro pra front conseguir mostrar algo util
+            // (antes ficava so 409 "Conflict" sem contexto).
+            log.error("[Cardapio] duplicar produto {} falhou: {}", id, e.getMessage(), e);
+            String msg = e.getMessage() == null ? "Falha ao duplicar" : e.getMessage();
+            return ResponseEntity.status(org.springframework.http.HttpStatus.BAD_REQUEST)
+                    .body(java.util.Map.of("erro", msg));
+        }
     }
 
     @GetMapping("/api/restaurante/{slug}/categorias/{categoriaId}/produtos")

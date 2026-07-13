@@ -218,11 +218,30 @@ public class CardapioService {
      */
     @Transactional
     public ProdutoResponse duplicarProduto(Long restauranteId, Long produtoId) {
+        return duplicarProdutoNVezes(restauranteId, produtoId, 1).get(0);
+    }
+
+    /**
+     * Duplicação em lote (N cópias). Dono pediu poder gerar múltiplas cópias
+     * de uma só vez (útil pra marmita: "MARMITEX P segunda", "MARMITEX P terça"...
+     * evita duplicar 5x manualmente). Sufixo #1, #2... aplicado a partir da 2ª cópia
+     * pra distinguir. Máximo 20 pra evitar abuso acidental.
+     */
+    @Transactional
+    public java.util.List<ProdutoResponse> duplicarProdutoNVezes(Long restauranteId, Long produtoId, int quantidade) {
+        if (quantidade < 1) quantidade = 1;
+        if (quantidade > 20) quantidade = 20;
         Produto orig = produtoRepository.findById(produtoId)
                 .orElseThrow(() -> new RuntimeException("Produto não encontrado"));
         validarPropriedade(orig.getRestaurante().getId(), restauranteId);
-        Produto clone = clonarProdutoInternal(orig, orig.getCategoria(), "Cópia de " + orig.getNome());
-        return toProdutoResponse(clone);
+        java.util.List<ProdutoResponse> resultado = new java.util.ArrayList<>();
+        for (int i = 1; i <= quantidade; i++) {
+            String nome = "Cópia de " + orig.getNome();
+            if (quantidade > 1) nome = nome + " #" + i;
+            Produto clone = clonarProdutoInternal(orig, orig.getCategoria(), nome);
+            resultado.add(toProdutoResponse(clone));
+        }
+        return resultado;
     }
 
     /**
@@ -243,6 +262,15 @@ public class CardapioService {
         p.setDestaque(Boolean.FALSE);    // não herda destaque
         p.setDisponivel(Boolean.FALSE);  // INATIVO até dono revisar
         p.setOrdem(orig.getOrdem());
+        // Blindagem clone completo: campos que faltavam (bug reportado, 409
+        // quando clonando produto de marmitex com dias-da-semana configurados).
+        // Preserva contrato "cópia = cópia" — dono espera achar tudo igual
+        // no clone, só o nome que muda + inativo por padrão.
+        p.setMaisDe18(Boolean.TRUE.equals(orig.getMaisDe18()));
+        p.setPrecoVitrine(Boolean.TRUE.equals(orig.getPrecoVitrine()));
+        p.setUnidadePreco(orig.getUnidadePreco());
+        p.setPrecoAPartirDe(Boolean.TRUE.equals(orig.getPrecoAPartirDe()));
+        p.setDiasSemanaAtivos(orig.getDiasSemanaAtivos());
         // tipo preservado (NORMAL/COMBO). COMBO sem combo_itens fica vazio
         // até dono recadastrar — evita FK cruzada com produto antigo.
         try { p.setTipo(orig.getTipo()); } catch (Exception ignore) {}
@@ -258,6 +286,7 @@ public class CardapioService {
                     .minEscolhas(gOrig.getMinEscolhas())
                     .maxEscolhas(gOrig.getMaxEscolhas())
                     .modoPreco(gOrig.getModoPreco() != null ? gOrig.getModoPreco() : ComplementoGrupo.ModoPreco.SOMA)
+                    .permitirNenhuma(Boolean.TRUE.equals(gOrig.getPermitirNenhuma()))
                     .itens(new java.util.ArrayList<>())
                     .build();
             if (gOrig.getItens() != null) {
@@ -269,6 +298,10 @@ public class CardapioService {
                             .precoAdicional(itOrig.getPrecoAdicional())
                             .maxSelecoes(itOrig.getMaxSelecoes())
                             .ativo(itOrig.getAtivo())
+                            // Preserva flag "muda com frequencia" — dono espera
+                            // que o clone ja venha com os mesmos itens marcados
+                            // como variaveis (pedido reportado).
+                            .variavel(Boolean.TRUE.equals(itOrig.getVariavel()))
                             .build();
                     gNovo.getItens().add(itNovo);
                 }

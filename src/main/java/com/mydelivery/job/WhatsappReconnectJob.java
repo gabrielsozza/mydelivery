@@ -123,12 +123,15 @@ public class WhatsappReconnectJob {
                         return ult != null
                                 && Duration.between(ult, LocalDateTime.now()).toHours() >= HORAS_SEM_MSG_PRA_RESTART;
                     })
-                    // NOVO: pula qualquer instância nas 48h iniciais (warmup).
-                    // Conta nova é sensível a restart.
+                    // Pula instâncias em warmup (< 48h desde 1a conexão).
+                    // FIX Jul/2026: usa sessaoIniciadaEm em vez de conectadoEm
+                    // (esse era resetado a cada reconexão, warmup nunca expirava).
                     .filter(i -> {
-                        LocalDateTime conectadoEm = i.getConectadoEm();
-                        return conectadoEm == null
-                                || Duration.between(conectadoEm, LocalDateTime.now()).toHours() >= 48;
+                        LocalDateTime ref = i.getSessaoIniciadaEm() != null
+                                ? i.getSessaoIniciadaEm()
+                                : i.getConectadoEm();
+                        return ref == null
+                                || Duration.between(ref, LocalDateTime.now()).toHours() >= 48;
                     })
                     .toList();
         } catch (Exception e) {

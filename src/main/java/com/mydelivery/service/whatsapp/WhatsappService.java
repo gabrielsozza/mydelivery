@@ -10,8 +10,10 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.mydelivery.config.EvolutionProperties;
 import com.mydelivery.model.Restaurante;
+import com.mydelivery.model.WhatsappDesconexaoLog;
 import com.mydelivery.model.WhatsappInstance;
 import com.mydelivery.repository.WhatsappAcaoAutomaticaRepository;
+import com.mydelivery.repository.WhatsappDesconexaoLogRepository;
 import com.mydelivery.repository.WhatsappHealthLogRepository;
 import com.mydelivery.repository.WhatsappIncidenteRepository;
 import com.mydelivery.repository.WhatsappInstanceRepository;
@@ -32,6 +34,7 @@ public class WhatsappService {
 
     private final WhatsappInstanceRepository repo;
     private final WhatsappHealthLogRepository healthLogRepo;
+    private final WhatsappDesconexaoLogRepository desconexaoLogRepo;
     private final UazapiClient evolutionClient;
     private final EvolutionProperties props;
     /** Pra commitar saves intermediários ANTES de chamar Evolution.
@@ -599,8 +602,14 @@ public class WhatsappService {
      */
     private double fatorWarmup(WhatsappInstance inst) {
         if (warmupDias <= 0) return 1.0;
-        if (inst.getConectadoEm() == null) return WARMUP_RAMP[0];
-        long dias = java.time.Duration.between(inst.getConectadoEm(), java.time.LocalDateTime.now()).toDays();
+        // FIX Jul/2026: usa sessaoIniciadaEm (nunca resetado). Antes usava
+        // conectadoEm — instância que reconectava depois de dias sofria
+        // rate limit reduzido eternamente.
+        java.time.LocalDateTime ref = inst.getSessaoIniciadaEm() != null
+                ? inst.getSessaoIniciadaEm()
+                : inst.getConectadoEm();
+        if (ref == null) return WARMUP_RAMP[0];
+        long dias = java.time.Duration.between(ref, java.time.LocalDateTime.now()).toDays();
         if (dias >= WARMUP_RAMP.length) return 1.0;
         return WARMUP_RAMP[(int) dias];
     }
@@ -874,6 +883,12 @@ public class WhatsappService {
     public void marcarMensagemRecebida(WhatsappInstance inst) {
         try {
             inst.setUltimaMensagemRecebidaEm(java.time.LocalDateTime.now());
+            // Contador do ciclo — copiado pra desconexao_log.msgs_processadas
+            // quando a instância cai. Ajuda diagnóstico: "essa instância que
+            // caiu tinha processado 0 msgs em 8h — não era só ausência de
+            // tráfego, ela tá muda".
+            Integer msgsAtual = inst.getMsgsCicloAtual();
+            inst.setMsgsCicloAtual((msgsAtual == null ? 0 : msgsAtual) + 1);
             // BUG HISTÓRICO: antes resetávamos tentativasReconexaoSeguidas aqui.
             // Mas esse método é chamado em QUALQUER evento Evolution (incluindo
             // keep-alive periódico que ela manda sozinha). Resultado: contador
@@ -943,11 +958,31 @@ public class WhatsappService {
         }
     }
 
-    /** Atualizado pelo handler do webhook quando recebe CONNECTION_UPDATE. */
+    /** Atualizado pelo handler do webhook quando recebe CONNECTION_UPDATE.
+     *
+     *  BUG FIX Jul/2026: antes esse método resetava conectadoEm toda vez,
+     *  e HealthJob usava conectadoEm pra calcular warmup — instância que
+     *  caía e voltava depois de dias virava "conta nova" e ficava presa
+     *  em warmup permanente, sem auto-reconexão nunca mais.
+     *
+     *  Agora: sessaoIniciadaEm é setado UMA VEZ (só se null) e nunca é
+     *  resetado; conectadoEm continua rastreando a última conexão. Warmup
+     *  passa a olhar sessaoIniciadaEm. Se caiu depois de 10 dias e reconecta
+     *  agora, sessaoIniciadaEm = 10 dias atrás → warmup expirado → sistema
+     *  pode auto-reconectar da próxima. Também dispara log estruturado
+     *  RECONEXAO_OK/QUEDA_RESOLVIDA se estava caída antes.
+     */
     @Transactional
     public void marcarConectada(WhatsappInstance inst, String phone) {
+        boolean primeiraVez = inst.getSessaoIniciadaEm() == null;
+        boolean voltandoDeQueda = inst.getStatus() != WhatsappInstance.Status.CONECTADA
+                && inst.getStatus() != WhatsappInstance.Status.NOVA;
+
+        LocalDateTime agora = LocalDateTime.now();
         inst.setStatus(WhatsappInstance.Status.CONECTADA);
-        inst.setConectadoEm(LocalDateTime.now());
+        inst.setConectadoEm(agora);
+        // sessaoIniciadaEm: seta APENAS na primeira conexão (evita warmup permanente).
+        if (primeiraVez) inst.setSessaoIniciadaEm(agora);
         inst.setQrCode(null);
         inst.setQrExpiraEm(null);
         // Reset de flags de queda — qualquer histórico de queda anterior é
@@ -955,10 +990,60 @@ public class WhatsappService {
         inst.setDesconectadoManualmente(false);
         inst.setTentativasReconexaoSeguidas(0);
         inst.setMotivoUltimaQueda(null);
+        // Heartbeat reset: contador de falhas volta a 0 (nova sessão saudável).
+        inst.setHeartbeatsFalhadosSeguidos(0);
+        inst.setUltimoHeartbeatEm(agora);
+        inst.setUltimoHeartbeatOk(true);
+        // Ciclo novo: msgs processadas zeradas. As do ciclo anterior já foram
+        // registradas na QUEDA em desconexao_log.
+        inst.setMsgsCicloAtual(0);
         // ultimaQuedaEm fica preservado pro histórico ("última queda" na UI)
         if (phone != null && !phone.isBlank()) inst.setPhone(phone);
         repo.save(inst);
-        log.info("[WhatsApp] Instância {} CONECTADA (phone={})", inst.getInstanceName(), phone);
+        log.info("[WhatsApp] Instância {} CONECTADA (phone={}, primeiraVez={}, sessaoIniciadaEm={})",
+                inst.getInstanceName(), phone, primeiraVez, inst.getSessaoIniciadaEm());
+
+        // Trilha auditoria: se estava caída, registra que reconectou.
+        if (voltandoDeQueda) {
+            try {
+                registrarEventoAuditoria(inst, WhatsappDesconexaoLog.Tipo.RECONEXAO_OK,
+                        "webhook connection.open", null, "DESCONECTADA", "CONECTADA",
+                        null, null);
+            } catch (Exception e) {
+                log.debug("[WhatsApp] falha ao registrar RECONEXAO_OK: {}", e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * Helper de auditoria — usado por WhatsappService, WhatsappHealthJob e
+     * WhatsappHeartbeatJob pra registrar eventos no {@code whatsapp_desconexao_log}.
+     * Nunca lança — auditoria não pode quebrar fluxo operacional.
+     */
+    public void registrarEventoAuditoria(WhatsappInstance inst,
+                                          WhatsappDesconexaoLog.Tipo tipo,
+                                          String motivo,
+                                          String codigoApi,
+                                          String statusAntes,
+                                          String statusDepois,
+                                          Integer tentativaNum,
+                                          String correlationId) {
+        try {
+            var ev = WhatsappDesconexaoLog.builder()
+                    .instanceId(inst.getId())
+                    .instanceName(inst.getInstanceName())
+                    .tipo(tipo)
+                    .motivo(motivo)
+                    .codigoApi(codigoApi)
+                    .statusAntes(statusAntes)
+                    .statusDepois(statusDepois)
+                    .tentativaNum(tentativaNum)
+                    .correlationId(correlationId)
+                    .build();
+            desconexaoLogRepo.save(ev);
+        } catch (Exception e) {
+            log.debug("[WhatsApp] registrarEventoAuditoria falhou: {}", e.getMessage());
+        }
     }
 
     @Transactional
@@ -986,12 +1071,39 @@ public class WhatsappService {
         boolean recorrente = quedaAnterior != null
                 && java.time.Duration.between(quedaAnterior, LocalDateTime.now()).toHours() < 24;
 
+        LocalDateTime conectadoDesde = inst.getConectadoEm();
+        Integer msgsCiclo = inst.getMsgsCicloAtual();
         inst.setDesconectadoManualmente(false);
         inst.setUltimaQuedaEm(LocalDateTime.now());
         inst.setMotivoUltimaQueda("Webhook close (Evolution avisou state=close)");
         inst.setQrCode(null);
         inst.setQrExpiraEm(null);
         repo.save(inst);
+
+        // Trilha auditoria: registra a QUEDA com métricas do ciclo que
+        // terminou. Correlation ID amarra futuras tentativas de reconexão.
+        try {
+            Integer duracaoMin = null;
+            if (conectadoDesde != null) {
+                duracaoMin = (int) java.time.Duration.between(conectadoDesde, LocalDateTime.now()).toMinutes();
+            }
+            var ev = WhatsappDesconexaoLog.builder()
+                    .instanceId(inst.getId())
+                    .instanceName(inst.getInstanceName())
+                    .tipo(WhatsappDesconexaoLog.Tipo.QUEDA)
+                    .motivo("webhook connection.close")
+                    .codigoApi("state=close")
+                    .statusAntes("CONECTADA")
+                    .statusDepois("DESCONECTADA")
+                    .conectadoDesde(conectadoDesde)
+                    .duracaoMin(duracaoMin)
+                    .msgsProcessadasNoCiclo(msgsCiclo)
+                    .correlationId("wa-" + inst.getInstanceName() + "-" + System.currentTimeMillis())
+                    .build();
+            desconexaoLogRepo.save(ev);
+        } catch (Exception e) {
+            log.debug("[WhatsApp] falha ao registrar QUEDA em desconexao_log: {}", e.getMessage());
+        }
         log.warn("[WhatsApp] Instância {} DESCONECTADA via webhook (QUEDA INESPERADA){}",
                 inst.getInstanceName(),
                 recorrente ? " — QUEDA RECORRENTE em <24h" : "");

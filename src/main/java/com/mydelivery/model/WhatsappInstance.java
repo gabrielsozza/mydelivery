@@ -78,6 +78,55 @@ public class WhatsappInstance {
     @Column(name = "conectado_em")
     private LocalDateTime conectadoEm;
 
+    /**
+     * BUG FIX Jul/2026: `conectadoEm` era resetado a cada CONNECTION_UPDATE
+     * de sucesso — instância que caía e reconectava depois de dias entrava
+     * em WARMUP eterno (< 48h desde conectadoEm), auto-reconexão bloqueada.
+     *
+     * `sessaoIniciadaEm` é setado UMA vez no primeiro CONNECTION_UPDATE
+     * bem-sucedido após criação da instância e NUNCA é resetado em
+     * reconexões subsequentes. Warmup passa a olhar este campo, não
+     * conectadoEm. Conta veterana que cai e volta não é tratada como nova.
+     *
+     * Retrocompat: colunas existentes ficam com NULL. O código trata NULL
+     * fallback pra conectadoEm (comportamento antigo, seguro).
+     */
+    @Column(name = "sessao_iniciada_em")
+    private LocalDateTime sessaoIniciadaEm;
+
+    /**
+     * Kill-switch admin: se preenchido, warmup fica desativado até esta
+     * data (ex: dono já usou o robô semanas em outro sistema — sabe que
+     * não é conta nova). Interpretado no HealthJob e ReconnectJob.
+     * NULL = usa cálculo normal por sessaoIniciadaEm.
+     */
+    @Column(name = "warmup_forcado_ate")
+    private LocalDateTime warmupForcadoAte;
+
+    /** Última vez que HeartbeatJob checou /instance/status. Diferente de
+     *  ultimaMensagemRecebidaEm — este mede ping ATIVO do backend, aquele
+     *  mede tráfego recebido do WhatsApp. */
+    @Column(name = "ultimo_heartbeat_em")
+    private LocalDateTime ultimoHeartbeatEm;
+
+    /** Resultado da última checagem ativa. NULL = ainda não checado. */
+    @Column(name = "ultimo_heartbeat_ok")
+    private Boolean ultimoHeartbeatOk;
+
+    /** Contador de heartbeats falhados consecutivos. Reseta a 0 em cada
+     *  checagem OK. >= 3 → marca instância como INSTAVEL mesmo com Uazapi
+     *  dizendo "connected" (shadow ban invisível). */
+    @Column(name = "heartbeats_falhados_seguidos", nullable = false)
+    @Builder.Default
+    private Integer heartbeatsFalhadosSeguidos = 0;
+
+    /** Msgs processadas no ciclo de conexão atual. Zerado ao reconectar,
+     *  copiado pra whatsapp_desconexao_log.msgs_processadas_no_ciclo
+     *  quando a instância cai. */
+    @Column(name = "msgs_ciclo_atual", nullable = false)
+    @Builder.Default
+    private Integer msgsCicloAtual = 0;
+
     /** Heartbeat fraco: atualizado em CADA webhook que chega da Evolution
      *  (incluindo CONNECTION_UPDATE periódico que ela manda sozinha).
      *  Prova só que "Evolution → backend" está vivo, NÃO que o bot funciona.

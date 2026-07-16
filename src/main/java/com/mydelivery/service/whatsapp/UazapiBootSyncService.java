@@ -175,6 +175,10 @@ public class UazapiBootSyncService {
                             inst.setStatus(statusUazapi);
                             if (statusUazapi == WhatsappInstance.Status.CONECTADA) {
                                 if (inst.getConectadoEm() == null) inst.setConectadoEm(LocalDateTime.now());
+                                // FIX Jul/2026: garantir sessaoIniciadaEm no boot sync
+                                // se essa instância estava conectada mas nunca foi setada
+                                // (migração de bases antigas).
+                                if (inst.getSessaoIniciadaEm() == null) inst.setSessaoIniciadaEm(inst.getConectadoEm());
                                 inst.setQrCode(null);
                                 inst.setQrExpiraEm(null);
                                 inst.setDesconectadoManualmente(false);

@@ -20,6 +20,7 @@ import com.mydelivery.model.Restaurante;
 import com.mydelivery.model.WhatsappHealthLog;
 import com.mydelivery.model.WhatsappInstance;
 import com.mydelivery.repository.RestauranteRepository;
+import com.mydelivery.repository.WhatsappDesconexaoLogRepository;
 import com.mydelivery.repository.WhatsappInstanceRepository;
 import com.mydelivery.service.whatsapp.WhatsappHealthService;
 import com.mydelivery.service.whatsapp.WhatsappService;
@@ -44,6 +45,7 @@ public class WhatsappHealthController {
 
     private final RestauranteRepository restauranteRepo;
     private final WhatsappInstanceRepository instanceRepo;
+    private final WhatsappDesconexaoLogRepository desconexaoLogRepo;
     private final WhatsappHealthService healthService;
     private final WhatsappService whatsappService;
 
@@ -61,6 +63,36 @@ public class WhatsappHealthController {
                     "mensagem", "Instância WhatsApp não criada"));
         }
         return ResponseEntity.ok(healthService.resumoAtual(inst));
+    }
+
+    /**
+     * Card do painel: última queda + recuperação automática.
+     * Usado pelo restaurante ver rapidamente o que aconteceu se o robô
+     * ficou fora do ar em algum momento. Retorna as últimas 5 quedas +
+     * o resultado das tentativas de reconexão feitas pelo sistema.
+     */
+    @GetMapping("/api/restaurante/whatsapp/ultima-queda")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Map<String, Object>> ultimaQuedaRestaurante(@AuthenticationPrincipal String email) {
+        WhatsappInstance inst = instanciaDoUsuario(email);
+        if (inst == null) return ResponseEntity.ok(Map.of("temEventos", false));
+        var eventos = desconexaoLogRepo.findByInstanceIdOrderByCriadoEmDesc(
+                inst.getId(), org.springframework.data.domain.PageRequest.of(0, 10));
+        if (eventos.isEmpty()) return ResponseEntity.ok(Map.of("temEventos", false));
+        var lista = eventos.stream().map(e -> {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("em", e.getCriadoEm() == null ? null : e.getCriadoEm().toString());
+            m.put("tipo", e.getTipo().name());
+            m.put("motivo", e.getMotivo());
+            m.put("duracaoMin", e.getDuracaoMin());
+            m.put("correlationId", e.getCorrelationId());
+            return m;
+        }).toList();
+        return ResponseEntity.ok(Map.of(
+                "temEventos", true,
+                "eventos", lista,
+                "estadoAtual", inst.getStatus().name()
+        ));
     }
 
     @PostMapping("/api/restaurante/whatsapp/saude/reconectar")
@@ -192,6 +224,100 @@ public class WhatsappHealthController {
      * Após reset, o restaurante precisa escanear NOVO QR pelo painel dele.
      * Use só quando reconectar() já tentou várias vezes e bot continua mudo.
      */
+    /**
+     * Histórico completo de eventos de conexão dessa instância
+     * (QUEDA, RECONEXAO_TENTADA, RECONEXAO_OK, HEARTBEAT_FALHOU, etc).
+     *
+     * Devolve as últimas 50 linhas do whatsapp_desconexao_log.
+     * Usado no painel admin pra ver "essa instância caiu 4x essa semana"
+     * e no card do dono ("última queda foi X há Y horas").
+     */
+    @GetMapping("/api/admin-internal/whatsapp/{instanceName}/desconexoes")
+    public ResponseEntity<Map<String, Object>> desconexoesAdmin(
+            @PathVariable String instanceName,
+            @RequestHeader(value = "X-Admin-Secret", required = false) String secret) {
+        validarSecret(secret);
+        WhatsappInstance inst = instanceRepo.findByInstanceName(instanceName)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+        var eventos = desconexaoLogRepo.findByInstanceIdOrderByCriadoEmDesc(
+                inst.getId(), org.springframework.data.domain.PageRequest.of(0, 50));
+        var lista = eventos.stream().map(e -> {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("em", e.getCriadoEm() == null ? null : e.getCriadoEm().toString());
+            m.put("tipo", e.getTipo().name());
+            m.put("motivo", e.getMotivo());
+            m.put("codigoApi", e.getCodigoApi());
+            m.put("statusAntes", e.getStatusAntes());
+            m.put("statusDepois", e.getStatusDepois());
+            m.put("duracaoMin", e.getDuracaoMin());
+            m.put("msgsCiclo", e.getMsgsProcessadasNoCiclo());
+            m.put("tentativaNum", e.getTentativaNum());
+            m.put("correlationId", e.getCorrelationId());
+            return m;
+        }).toList();
+        // Sumário: contagem por tipo nas últimas 24h
+        var contagem = desconexaoLogRepo.contarPorTipoDesde(
+                java.time.LocalDateTime.now().minusHours(24));
+        Map<String, Long> summary24h = new LinkedHashMap<>();
+        for (Object[] row : contagem) {
+            summary24h.put(row[0].toString(), ((Number) row[1]).longValue());
+        }
+        return ResponseEntity.ok(Map.of(
+                "instanceName", instanceName,
+                "eventos", lista,
+                "summary24h", summary24h,
+                "estadoAtual", Map.of(
+                        "status", inst.getStatus().name(),
+                        "sessaoIniciadaEm", inst.getSessaoIniciadaEm() == null ? null
+                                : inst.getSessaoIniciadaEm().toString(),
+                        "conectadoEm", inst.getConectadoEm() == null ? null
+                                : inst.getConectadoEm().toString(),
+                        "ultimoHeartbeatEm", inst.getUltimoHeartbeatEm() == null ? null
+                                : inst.getUltimoHeartbeatEm().toString(),
+                        "ultimoHeartbeatOk", inst.getUltimoHeartbeatOk(),
+                        "heartbeatsFalhadosSeguidos", inst.getHeartbeatsFalhadosSeguidos(),
+                        "warmupForcadoAte", inst.getWarmupForcadoAte() == null ? null
+                                : inst.getWarmupForcadoAte().toString(),
+                        "msgsCicloAtual", inst.getMsgsCicloAtual()
+                )
+        ));
+    }
+
+    /**
+     * Marca a instância como "veterana" — kill-switch pro guard WARMUP.
+     * Uso: dono migrou número usado há meses em outro sistema. Não faz
+     * sentido tratar como conta nova de 48h.
+     *
+     * Efeito: seta warmup_forcado_ate = agora (data no passado → força off).
+     */
+    @PostMapping("/api/admin-internal/whatsapp/{instanceName}/marcar-veterana")
+    public ResponseEntity<Map<String, Object>> marcarVeterana(
+            @PathVariable String instanceName,
+            @RequestHeader(value = "X-Admin-Secret", required = false) String secret) {
+        validarSecret(secret);
+        WhatsappInstance inst = instanceRepo.findByInstanceName(instanceName)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+        inst.setWarmupForcadoAte(java.time.LocalDateTime.now().minusMinutes(1));
+        // Também retroativa sessaoIniciadaEm pra 3 dias atrás pra outros guards
+        // que olham warmup independentemente do warmupForcadoAte.
+        if (inst.getSessaoIniciadaEm() == null
+                || inst.getSessaoIniciadaEm().isAfter(java.time.LocalDateTime.now().minusDays(3))) {
+            inst.setSessaoIniciadaEm(java.time.LocalDateTime.now().minusDays(3));
+        }
+        instanceRepo.save(inst);
+        whatsappService.registrarEventoAuditoria(inst,
+                com.mydelivery.model.WhatsappDesconexaoLog.Tipo.ACAO_ADMIN,
+                "marcada como veterana (warmup desligado)", null,
+                inst.getStatus().name(), inst.getStatus().name(), null,
+                "wa-admin-veterana-" + System.currentTimeMillis());
+        return ResponseEntity.ok(Map.of(
+                "ok", true,
+                "instanceName", instanceName,
+                "sessaoIniciadaEm", inst.getSessaoIniciadaEm().toString(),
+                "warmupForcadoAte", inst.getWarmupForcadoAte().toString()
+        ));
+    }
+
     @PostMapping("/api/admin-internal/whatsapp/{instanceName}/reset-full")
     public ResponseEntity<Map<String, Object>> resetFullAdmin(
             @PathVariable String instanceName,

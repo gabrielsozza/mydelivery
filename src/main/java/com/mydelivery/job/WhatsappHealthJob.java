@@ -14,8 +14,10 @@ import com.mydelivery.repository.WhatsappAcaoAutomaticaRepository;
 import com.mydelivery.repository.WhatsappHealthLogRepository;
 import com.mydelivery.repository.WhatsappIncidenteRepository;
 import com.mydelivery.repository.WhatsappInstanceRepository;
+import com.mydelivery.model.WhatsappDesconexaoLog;
 import com.mydelivery.service.whatsapp.WhatsappHealthService;
 import com.mydelivery.service.whatsapp.WhatsappIncidenteService;
+import com.mydelivery.service.whatsapp.WhatsappService;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -43,6 +45,7 @@ public class WhatsappHealthJob {
     private final WhatsappIncidenteService incidenteService;
     private final WhatsappIncidenteRepository incidenteRepo;
     private final WhatsappAcaoAutomaticaRepository acaoRepo;
+    private final WhatsappService whatsappService;
 
     /**
      * Cooldown entre auto-reconexões da MESMA instância (anti-loop).
@@ -185,15 +188,30 @@ public class WhatsappHealthJob {
             throttleGlobalBloqueado = true;
         }
 
-        // GUARD 3 — WARMUP DE CONTA NOVA (Jul/2026): nas primeiras 48h após
-        // conectar, ZERO auto-reconexão. Conta nova é ultra-sensível — WA usa
-        // reconexões nesse período como principal sinal de bot. Se cair, o
-        // dono reconecta manualmente. Sem exceção — nem em falha real, restart
-        // automático em conta nova é o motivo #1 de shadow ban logo no início.
+        // GUARD 3 — WARMUP DE CONTA NOVA: nas primeiras 48h após a PRIMEIRA
+        // conexão (não a última). Conta nova é ultra-sensível a reconexão.
+        //
+        // BUG FIX Jul/2026: antes usava conectadoEm que era resetado toda
+        // reconexão — instância que caía depois de 5 dias e voltava virava
+        // "conta nova permanente", warmup nunca expirava.
+        //
+        // Agora: usa sessaoIniciadaEm (setado UMA VEZ). Se null (instância
+        // antiga, pre-migration V16 backfill), fallback pra conectadoEm
+        // preserva comportamento anterior.
+        //
+        // Kill-switch admin: warmupForcadoAte vence o cálculo automático.
         boolean emWarmup = false;
-        if (inst.getConectadoEm() != null
-                && Duration.between(inst.getConectadoEm(), LocalDateTime.now()).toHours() < WARMUP_HORAS_CONTA_NOVA) {
+        java.time.LocalDateTime refWarmup = inst.getSessaoIniciadaEm() != null
+                ? inst.getSessaoIniciadaEm()
+                : inst.getConectadoEm();
+        if (refWarmup != null
+                && Duration.between(refWarmup, LocalDateTime.now()).toHours() < WARMUP_HORAS_CONTA_NOVA) {
             emWarmup = true;
+        }
+        if (inst.getWarmupForcadoAte() != null
+                && inst.getWarmupForcadoAte().isBefore(LocalDateTime.now())) {
+            // Admin marcou "veterana" ou definiu data limite passada — força off.
+            emWarmup = false;
         }
 
         // GUARD 4 — HORÁRIO DE PICO (Jul/2026): NÃO faz auto-reconexão em pico
@@ -225,7 +243,27 @@ public class WhatsappHealthJob {
             // Marca o throttle ANTES do restart pra evitar race nas threads
             // do tick (loop sequencial, mas defensivo).
             ULTIMA_RECONEXAO_GLOBAL.set(LocalDateTime.now());
+            String correlationId = "wa-reconn-" + inst.getInstanceName() + "-" + System.currentTimeMillis();
+            int numTentativa = (inst.getTentativasReconexaoSeguidas() == null ? 0
+                    : inst.getTentativasReconexaoSeguidas()) + 1;
+            // Auditoria: registra a tentativa ANTES de tentar (mesmo se der
+            // exception, fica no log).
+            whatsappService.registrarEventoAuditoria(inst,
+                    WhatsappDesconexaoLog.Tipo.RECONEXAO_TENTADA,
+                    "health job auto-reconexão",
+                    estado.name(), estado.name(), estado.name(),
+                    numTentativa, correlationId);
             reconectou = healthService.tentarReconectar(inst);
+            // Resultado — sucesso vira RECONEXAO_OK automaticamente no
+            // marcarConectada() quando webhook chegar. Aqui só registramos
+            // falhas explícitas.
+            if (!reconectou) {
+                whatsappService.registrarEventoAuditoria(inst,
+                        WhatsappDesconexaoLog.Tipo.RECONEXAO_FALHA,
+                        "healthService.tentarReconectar retornou false",
+                        null, estado.name(), estado.name(),
+                        numTentativa, correlationId);
+            }
 
             // Registra a tentativa pra histórico auditável. Vincula ao incidente
             // mais relevante (BAILEYS_TRAVADO ou EVOLUTION_FORA) se houver.

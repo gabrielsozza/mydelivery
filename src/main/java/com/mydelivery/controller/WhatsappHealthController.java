@@ -65,36 +65,6 @@ public class WhatsappHealthController {
         return ResponseEntity.ok(healthService.resumoAtual(inst));
     }
 
-    /**
-     * Card do painel: última queda + recuperação automática.
-     * Usado pelo restaurante ver rapidamente o que aconteceu se o robô
-     * ficou fora do ar em algum momento. Retorna as últimas 5 quedas +
-     * o resultado das tentativas de reconexão feitas pelo sistema.
-     */
-    @GetMapping("/api/restaurante/whatsapp/ultima-queda")
-    @PreAuthorize("hasRole('RESTAURANTE')")
-    public ResponseEntity<Map<String, Object>> ultimaQuedaRestaurante(@AuthenticationPrincipal String email) {
-        WhatsappInstance inst = instanciaDoUsuario(email);
-        if (inst == null) return ResponseEntity.ok(Map.of("temEventos", false));
-        var eventos = desconexaoLogRepo.findByInstanceIdOrderByCriadoEmDesc(
-                inst.getId(), org.springframework.data.domain.PageRequest.of(0, 10));
-        if (eventos.isEmpty()) return ResponseEntity.ok(Map.of("temEventos", false));
-        var lista = eventos.stream().map(e -> {
-            Map<String, Object> m = new LinkedHashMap<>();
-            m.put("em", e.getCriadoEm() == null ? null : e.getCriadoEm().toString());
-            m.put("tipo", e.getTipo().name());
-            m.put("motivo", e.getMotivo());
-            m.put("duracaoMin", e.getDuracaoMin());
-            m.put("correlationId", e.getCorrelationId());
-            return m;
-        }).toList();
-        return ResponseEntity.ok(Map.of(
-                "temEventos", true,
-                "eventos", lista,
-                "estadoAtual", inst.getStatus().name()
-        ));
-    }
-
     @PostMapping("/api/restaurante/whatsapp/saude/reconectar")
     @PreAuthorize("hasRole('RESTAURANTE')")
     public ResponseEntity<Map<String, Object>> reconectarRestaurante(@AuthenticationPrincipal String email) {

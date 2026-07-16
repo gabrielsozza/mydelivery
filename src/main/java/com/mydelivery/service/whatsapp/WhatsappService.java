@@ -20,6 +20,9 @@ import com.mydelivery.repository.WhatsappInstanceRepository;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
  * Orquestra o ciclo de vida da instância WhatsApp por restaurante (multi-tenant).
@@ -35,6 +38,7 @@ public class WhatsappService {
     private final WhatsappInstanceRepository repo;
     private final WhatsappHealthLogRepository healthLogRepo;
     private final WhatsappDesconexaoLogRepository desconexaoLogRepo;
+    private final JdbcTemplate jdbcTemplate;
     private final UazapiClient evolutionClient;
     private final EvolutionProperties props;
     /** Pra commitar saves intermediários ANTES de chamar Evolution.
@@ -1043,6 +1047,47 @@ public class WhatsappService {
             desconexaoLogRepo.save(ev);
         } catch (Exception e) {
             log.debug("[WhatsApp] registrarEventoAuditoria falhou: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Backfill de sessao_iniciada_em nas instâncias existentes.
+     *
+     * <p>Antes: bug crítico do warmup permanente. conectadoEm era resetado
+     * toda vez que webhook de sucesso chegava. HealthJob usava esse campo
+     * pra decidir "está em warmup <48h?" — instâncias que caíam e voltavam
+     * viravam "conta nova permanente".
+     *
+     * <p>Novo campo sessao_iniciada_em nunca é resetado em reconexões.
+     * Instâncias EXISTENTES precisam de backfill único pra desbloquear.
+     *
+     * <p>Motivo pra usar @EventListener em vez de Flyway migration: Flyway
+     * roda ANTES do Hibernate ddl-auto criar as colunas. Uma migration
+     * V17 que fizesse UPDATE quebrava porque a coluna não existia ainda.
+     * Aqui rodamos DEPOIS que Spring está pronto — coluna já existe.
+     *
+     * <p>Idempotente: WHERE ... IS NULL garante que não bagunça se rodar
+     * várias vezes (pods múltiplos, restart, etc).
+     */
+    @EventListener(ApplicationReadyEvent.class)
+    public void backfillSessaoIniciadaEmNoBoot() {
+        try {
+            int atualizados = jdbcTemplate.update(
+                "UPDATE whatsapp_instances "
+              + "   SET sessao_iniciada_em = COALESCE(conectado_em, criado_em, CURRENT_TIMESTAMP) "
+              + " WHERE sessao_iniciada_em IS NULL"
+            );
+            if (atualizados > 0) {
+                log.info("[Boot] Backfill de sessao_iniciada_em em {} instâncias — bug do warmup permanente corrigido",
+                        atualizados);
+            } else {
+                log.debug("[Boot] Backfill sessao_iniciada_em: nenhuma instância pendente");
+            }
+        } catch (Exception e) {
+            // Fail-safe: se coluna ainda não existir (raro — Hibernate cria
+            // antes) ou banco fora, não impede o boot. HealthJob cai no
+            // fallback pra conectado_em preservando comportamento antigo.
+            log.warn("[Boot] Backfill sessao_iniciada_em falhou (não crítico): {}", e.getMessage());
         }
     }
 

@@ -19,6 +19,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 import com.mydelivery.model.Restaurante;
 import com.mydelivery.repository.RestauranteRepository;
+import com.mydelivery.service.ifood.IfoodApiException;
 import com.mydelivery.service.ifood.IfoodMerchantClient;
 
 import lombok.RequiredArgsConstructor;
@@ -197,5 +198,22 @@ public class IfoodMerchantController {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                     "Integração iFood não está ativa");
         }
+    }
+
+    /**
+     * Erro específico do iFood — devolve 502 Bad Gateway com o corpo original
+     * do iFood pra o painel poder mostrar a mensagem exata. Antes vinha 400
+     * genérico sem contexto, agora dá pra ver "Merchant not found",
+     * "Invalid opening hours", etc.
+     */
+    @org.springframework.web.bind.annotation.ExceptionHandler(IfoodApiException.class)
+    public ResponseEntity<Map<String, Object>> handleIfoodApi(IfoodApiException e) {
+        log.warn("[iFood-Merchant] repassando erro {} pro painel: {}",
+                e.getStatusIfood(), e.getBodyIfood());
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("erro", "iFood retornou erro");
+        body.put("statusIfood", e.getStatusIfood());
+        body.put("mensagemIfood", e.getBodyIfood());
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(body);
     }
 }

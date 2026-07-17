@@ -72,7 +72,8 @@ public class IfoodMerchantClient {
         } catch (RestClientResponseException e) {
             log.error("[iFood-Merchant] Falha ao listar merchants [{}]: {}",
                     e.getStatusCode(), e.getResponseBodyAsString());
-            throw new RuntimeException("iFood: " + e.getStatusCode() + " " + e.getResponseBodyAsString());
+            throw new IfoodApiException(e.getStatusCode().value(),
+                    e.getResponseBodyAsString(), "GET /merchant/v1.0/merchants");
         }
     }
 
@@ -91,7 +92,8 @@ public class IfoodMerchantClient {
         } catch (RestClientResponseException e) {
             log.error("[iFood-Merchant] Detalhe falhou [{}]: {}",
                     e.getStatusCode(), e.getResponseBodyAsString());
-            throw new RuntimeException("iFood: " + e.getStatusCode());
+            throw new IfoodApiException(e.getStatusCode().value(),
+                    e.getResponseBodyAsString(), "GET /merchants/" + merchantId);
         }
     }
 
@@ -112,7 +114,8 @@ public class IfoodMerchantClient {
         } catch (RestClientResponseException e) {
             log.error("[iFood-Merchant] Status falhou [{}]: {}",
                     e.getStatusCode(), e.getResponseBodyAsString());
-            throw new RuntimeException("iFood: " + e.getStatusCode());
+            throw new IfoodApiException(e.getStatusCode().value(),
+                    e.getResponseBodyAsString(), "GET /merchants/" + merchantId + "/status");
         }
     }
 
@@ -132,7 +135,8 @@ public class IfoodMerchantClient {
         } catch (RestClientResponseException e) {
             log.error("[iFood-Merchant] Listar pausas falhou [{}]: {}",
                     e.getStatusCode(), e.getResponseBodyAsString());
-            throw new RuntimeException("iFood: " + e.getStatusCode());
+            throw new IfoodApiException(e.getStatusCode().value(),
+                    e.getResponseBodyAsString(), "GET /merchants/" + merchantId + "/interruptions");
         }
     }
 
@@ -164,7 +168,8 @@ public class IfoodMerchantClient {
         } catch (RestClientResponseException e) {
             log.error("[iFood-Merchant] Criar pausa falhou [{}]: {}",
                     e.getStatusCode(), e.getResponseBodyAsString());
-            throw new RuntimeException("iFood: " + e.getStatusCode() + " — " + e.getResponseBodyAsString());
+            throw new IfoodApiException(e.getStatusCode().value(),
+                    e.getResponseBodyAsString(), "POST interruptions");
         }
     }
 
@@ -180,7 +185,8 @@ public class IfoodMerchantClient {
         } catch (RestClientResponseException e) {
             log.error("[iFood-Merchant] Remover pausa falhou [{}]: {}",
                     e.getStatusCode(), e.getResponseBodyAsString());
-            throw new RuntimeException("iFood: " + e.getStatusCode());
+            throw new IfoodApiException(e.getStatusCode().value(),
+                    e.getResponseBodyAsString(), "DELETE interruption " + interruptionId);
         }
     }
 
@@ -201,7 +207,8 @@ public class IfoodMerchantClient {
         } catch (RestClientResponseException e) {
             log.error("[iFood-Merchant] Horários falhou [{}]: {}",
                     e.getStatusCode(), e.getResponseBodyAsString());
-            throw new RuntimeException("iFood: " + e.getStatusCode());
+            throw new IfoodApiException(e.getStatusCode().value(),
+                    e.getResponseBodyAsString(), "GET opening-hours");
         }
     }
 
@@ -224,7 +231,8 @@ public class IfoodMerchantClient {
         } catch (RestClientResponseException e) {
             log.error("[iFood-Merchant] Atualizar horários falhou [{}]: {}",
                     e.getStatusCode(), e.getResponseBodyAsString());
-            throw new RuntimeException("iFood: " + e.getStatusCode() + " — " + e.getResponseBodyAsString());
+            throw new IfoodApiException(e.getStatusCode().value(),
+                    e.getResponseBodyAsString(), "PUT opening-hours");
         }
     }
 }

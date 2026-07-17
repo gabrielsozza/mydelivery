@@ -60,6 +60,29 @@ public class UazapiBootSyncService {
     private final WhatsappInstanceRepository repo;
 
     /**
+     * Anti-flap: exige {@code MIN_FETCHES_DISCONNECTED} fetches consecutivos vendo
+     * a instância como desconectada antes de mudar status no BD. Uazapi tem
+     * blips transientes (isConnected=false por 10-30s durante keepalive do WA)
+     * que faziam o sync anterior marcar DESCONECTADA e disparar cascata de
+     * restarts. Chave = instanceName; valor = contador de fetches consecutivos
+     * "ruins". Reseta em qualquer fetch OK. Só marca DESCONECTADA no 2º ruim seguido.
+     */
+    private static final java.util.concurrent.ConcurrentHashMap<String, Integer> FLAP_DESCONECTADA =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** Contador análogo para "sumiu do /instance/all" (Uazapi pode devolver lista
+     *  parcial em fetches transitórios). */
+    private static final java.util.concurrent.ConcurrentHashMap<String, Integer> FLAP_SUMIU =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    private static final int MIN_FETCHES_DISCONNECTED = 2;
+
+    /** Se mais de {@code SAFETY_SUMIU_MASSA_PCT}% das instâncias CONECTADAs do BD
+     *  não aparecerem no /instance/all, é sinal de fetch parcial/quebrado do Uazapi.
+     *  Skip a etapa de marcar como sumida — mantém status atual. */
+    private static final int SAFETY_SUMIU_MASSA_PCT = 30;
+
+    /**
      * Roda no boot. {@code @Order(LOWEST_PRECEDENCE)} garante que rode DEPOIS
      * do bootstrap de tokens do {@link UazapiClient} (evita 401 se sync
      * precisar chamar rota da instância).
@@ -157,9 +180,33 @@ public class UazapiBootSyncService {
                                 origem, phoneUazapi, name);
                     }
 
-                    // ── Status: Uazapi = fonte da verdade
+                    // ── Status: Uazapi = fonte da verdade, mas com anti-flap
                     WhatsappInstance.Status statusUazapi = interpretarStatus(u);
                     WhatsappInstance.Status statusBd = inst.getStatus();
+
+                    // ANTI-FLAP (Jul/2026): Uazapi tem blips transientes (isConnected=false
+                    // por 10-30s durante ping-pong WA). Antes: sync marcava DESCONECTADA
+                    // imediatamente → HealthJob disparava restart cascata → destruía sessão.
+                    // Agora: exige 2 fetches seguidos vendo DESCONECTADA antes de marcar.
+                    if (statusUazapi == WhatsappInstance.Status.CONECTADA) {
+                        // Fetch OK — reseta contador de flap
+                        FLAP_DESCONECTADA.remove(name);
+                    } else if (statusUazapi == WhatsappInstance.Status.DESCONECTADA
+                            && statusBd == WhatsappInstance.Status.CONECTADA) {
+                        int flap = FLAP_DESCONECTADA.merge(name, 1, Integer::sum);
+                        if (flap < MIN_FETCHES_DISCONNECTED) {
+                            log.info("[UazapiSync][{}] {} vira DESCONECTADA no fetch #{} — aguardando confirmação (min={})",
+                                    origem, name, flap, MIN_FETCHES_DISCONNECTED);
+                            // Pula a mudança neste ciclo — mantém CONECTADA. Se próximo fetch
+                            // confirmar, entra abaixo.
+                            statusUazapi = null;
+                        } else {
+                            log.warn("[UazapiSync][{}] {} confirmada DESCONECTADA após {} fetches seguidos — aplicando",
+                                    origem, name, flap);
+                            FLAP_DESCONECTADA.remove(name);
+                        }
+                    }
+
                     if (statusUazapi != null && statusUazapi != statusBd) {
                         // RESPEITA intenção do usuário: se ele desconectou manual,
                         // NÃO promove de volta pra CONECTADA sem clique novo.
@@ -203,20 +250,48 @@ public class UazapiBootSyncService {
             }
 
             // ── Instâncias no BD que o Uazapi NÃO conhece mais.
-            // Só marcamos como DESCONECTADA se estava CONECTADA — evita massacrar
-            // instâncias NOVA/AGUARDANDO_QR que legitimamente ainda não existem lá.
+            // SAFETY (Jul/2026): Uazapi pode devolver lista PARCIAL em fetches
+            // transientes (VPS lento, timeout do Baileys). Se >30% das CONECTADAs
+            // do BD sumirem no mesmo fetch, é fetch quebrado — NÃO mexe em ninguém.
+            // ANTI-FLAP: exige 2 fetches seguidos confirmando o sumiço.
             int marcadasSumidas = 0;
-            for (WhatsappInstance inst : repo.findAll()) {
-                if (inst.getInstanceName() == null) continue;
-                if (nomesVistosUazapi.contains(inst.getInstanceName())) continue;
-                if (inst.getStatus() == WhatsappInstance.Status.CONECTADA) {
-                    log.warn("[UazapiSync][{}] instância {} estava CONECTADA no BD mas NÃO aparece no Uazapi — marcando DESCONECTADA (sessão sumiu)",
-                            origem, inst.getInstanceName());
-                    inst.setStatus(WhatsappInstance.Status.DESCONECTADA);
-                    inst.setUltimaQuedaEm(LocalDateTime.now());
-                    inst.setMotivoUltimaQueda("Instância sumiu do Uazapi (fetchInstances)");
-                    repo.save(inst);
-                    marcadasSumidas++;
+            var todasBd = repo.findAll();
+            long conectadasNoBd = todasBd.stream()
+                    .filter(i -> i.getStatus() == WhatsappInstance.Status.CONECTADA)
+                    .count();
+            long sumiramCandidatas = todasBd.stream()
+                    .filter(i -> i.getStatus() == WhatsappInstance.Status.CONECTADA)
+                    .filter(i -> i.getInstanceName() != null)
+                    .filter(i -> !nomesVistosUazapi.contains(i.getInstanceName()))
+                    .count();
+            int pctSumiram = conectadasNoBd == 0 ? 0 : (int) ((sumiramCandidatas * 100) / conectadasNoBd);
+            if (pctSumiram >= SAFETY_SUMIU_MASSA_PCT && conectadasNoBd >= 3) {
+                log.error("[UazapiSync][{}] SAFETY: {}% ({}/{}) das CONECTADAs sumiram do /instance/all no mesmo fetch — provavelmente lista parcial do Uazapi. NÃO marcando ninguém como sumida.",
+                        origem, pctSumiram, sumiramCandidatas, conectadasNoBd);
+            } else {
+                for (WhatsappInstance inst : todasBd) {
+                    if (inst.getInstanceName() == null) continue;
+                    if (nomesVistosUazapi.contains(inst.getInstanceName())) {
+                        // Voltou a aparecer — zera contador de flap.
+                        FLAP_SUMIU.remove(inst.getInstanceName());
+                        continue;
+                    }
+                    if (inst.getStatus() == WhatsappInstance.Status.CONECTADA) {
+                        int flap = FLAP_SUMIU.merge(inst.getInstanceName(), 1, Integer::sum);
+                        if (flap < MIN_FETCHES_DISCONNECTED) {
+                            log.info("[UazapiSync][{}] {} sumiu do Uazapi no fetch #{} — aguardando confirmação (min={})",
+                                    origem, inst.getInstanceName(), flap, MIN_FETCHES_DISCONNECTED);
+                            continue;
+                        }
+                        log.warn("[UazapiSync][{}] instância {} confirmada SUMIDA após {} fetches — marcando DESCONECTADA",
+                                origem, inst.getInstanceName(), flap);
+                        inst.setStatus(WhatsappInstance.Status.DESCONECTADA);
+                        inst.setUltimaQuedaEm(LocalDateTime.now());
+                        inst.setMotivoUltimaQueda("Instância sumiu do Uazapi (2+ fetchInstances seguidos)");
+                        repo.save(inst);
+                        marcadasSumidas++;
+                        FLAP_SUMIU.remove(inst.getInstanceName());
+                    }
                 }
             }
 

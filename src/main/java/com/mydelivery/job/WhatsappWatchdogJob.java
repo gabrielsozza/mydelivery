@@ -253,7 +253,15 @@ public class WhatsappWatchdogJob {
     private static final java.util.concurrent.ConcurrentHashMap<String, LocalDateTime> CONNECTING_DESDE
             = new java.util.concurrent.ConcurrentHashMap<>();
 
-    private static final int MAX_CONNECTING_MINUTOS = 10;
+    /**
+     * Jul/2026 v4: 10 → 30min. Uazapi rotineiramente passa por "connecting" em
+     * ciclos de reconexão do WhatsApp (auth handshake, refresh de sessão). 10min
+     * cortava sessões saudáveis no meio do handshake. 30min só age em travamento
+     * real (Uazapi normalmente resolve em ≤15min). Restart agora é SOFT (só
+     * /connect, sem disconnect), então até se disparar aqui não invalida
+     * pareamento — mas menos intervenção = menos suspeição do WA.
+     */
+    private static final int MAX_CONNECTING_MINUTOS = 30;
 
     /**
      * Se instância está travada em connecting há muito, força restart forte.

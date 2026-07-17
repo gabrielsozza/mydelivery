@@ -291,10 +291,29 @@ public class UazapiClient {
     }
 
     /**
-     * Reinicia a sessão. Uazapi não tem endpoint restart direto — emulamos com
-     * disconnect + connect. Preserva pareamento (não precisa novo QR).
+     * Reinicia a sessão (SOFT). Chama <b>somente</b> {@code POST /instance/connect}
+     * — em instância já pareada Uazapi retoma o WebSocket sem gerar QR novo.
+     *
+     * <p>Histórico do bug (Jul/2026): implementação anterior fazia {@code
+     * disconnect + connect}, o que na prática invalidava o pareamento — donos
+     * precisavam escanear QR do zero após cada auto-restart do HealthJob/Watchdog.
+     * Padrão observado em 4+ lojas caindo por dia sem intervenção deles.
+     *
+     * <p>Se realmente precisa forçar re-pareamento (reset manual do admin), use
+     * {@link #restartHard(String)}. Callers normais devem sempre usar este.
      */
     public Map<String, Object> restart(String instanceName) {
+        log.info("[Uazapi] restart SOFT (só reconnect, mantém pareamento) — instance={}", instanceName);
+        return conectar(instanceName);
+    }
+
+    /**
+     * Reset agressivo: disconnect + connect. USE COM CUIDADO — em muitas versões
+     * do Uazapi isso invalida o pareamento e o dono precisa escanear QR de novo.
+     * Reservado pro fluxo de "resetar instância" manual (dono pediu explicitamente).
+     */
+    public Map<String, Object> restartHard(String instanceName) {
+        log.warn("[Uazapi] restart HARD (disconnect+connect — pode invalidar QR!) — instance={}", instanceName);
         try { logout(instanceName); } catch (RuntimeException ignore) {}
         return conectar(instanceName);
     }

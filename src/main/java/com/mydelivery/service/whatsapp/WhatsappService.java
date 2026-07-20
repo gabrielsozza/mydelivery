@@ -606,6 +606,15 @@ public class WhatsappService {
      */
     private double fatorWarmup(WhatsappInstance inst) {
         if (warmupDias <= 0) return 1.0;
+        // FIX Jul/2026: respeitar warmupForcadoAte — se admin marcou a instância
+        // como "veterana" (data no passado), pula warmup totalmente. Necessário
+        // pra números antigos que trocam de instância (reset + reconectar do
+        // zero) mas na verdade JÁ TÊM histórico WhatsApp — o warmup faria
+        // sentido pra número novo, não pra veterano.
+        if (inst.getWarmupForcadoAte() != null
+                && inst.getWarmupForcadoAte().isBefore(java.time.LocalDateTime.now())) {
+            return 1.0;
+        }
         // FIX Jul/2026: usa sessaoIniciadaEm (nunca resetado). Antes usava
         // conectadoEm — instância que reconectava depois de dias sofria
         // rate limit reduzido eternamente.

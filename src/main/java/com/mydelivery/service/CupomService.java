@@ -34,12 +34,50 @@ public class CupomService {
     private final CupomRepository cupomRepository;
     private final CupomUsoRepository cupomUsoRepository;
     private final RestauranteRepository restauranteRepository;
+    private final com.mydelivery.repository.PedidoRepository pedidoRepository;
 
     // ── ADMIN: CRUD ──────────────────────────────────────────────────────────
 
     public List<CupomDTO> listarPorRestaurante(Long restauranteId) {
-        return cupomRepository.findByRestauranteIdOrderByCriadoEmDesc(restauranteId)
+        List<CupomDTO> dtos = cupomRepository.findByRestauranteIdOrderByCriadoEmDesc(restauranteId)
                 .stream().map(CupomDTO::fromEntity).collect(Collectors.toList());
+        enriquecerNomeCliente(restauranteId, dtos);
+        return dtos;
+    }
+
+    /**
+     * Preenche {@code clienteNome} dos cupons FIDELIDADE consultando o pedido
+     * mais recente daquele telefone no restaurante. Antes o painel do dono só
+     * mostrava "Cliente" — agora mostra o nome real (ou telefone como fallback).
+     * Também "arruma" retroativamente os cupons antigos sem migração de dados —
+     * a resolução é on-the-fly a cada listagem.
+     */
+    private void enriquecerNomeCliente(Long restauranteId, List<CupomDTO> dtos) {
+        java.util.Set<String> telefones = dtos.stream()
+                .filter(d -> "FIDELIDADE".equals(d.getOrigem()))
+                .map(CupomDTO::getClienteTelefone)
+                .filter(t -> t != null && !t.isBlank())
+                .collect(java.util.stream.Collectors.toSet());
+        if (telefones.isEmpty()) return;
+        java.util.Map<String, String> nomePorTelefone = new java.util.HashMap<>();
+        try {
+            for (Object[] row : pedidoRepository.findNomesPorTelefones(restauranteId, telefones)) {
+                String tel = (String) row[0];
+                String nome = (String) row[1];
+                // Query ordena DESC por criadoEm — primeiro nome encontrado ganha
+                // (é o mais recente do telefone). putIfAbsent evita sobrescrever.
+                if (tel != null && nome != null) nomePorTelefone.putIfAbsent(tel, nome);
+            }
+        } catch (Exception e) {
+            log.warn("[Cupom] Falha ao enriquecer nomes por telefone (não crítico): {}", e.getMessage());
+            return;
+        }
+        for (CupomDTO d : dtos) {
+            if ("FIDELIDADE".equals(d.getOrigem()) && d.getClienteTelefone() != null) {
+                String nome = nomePorTelefone.get(d.getClienteTelefone());
+                if (nome != null) d.setClienteNome(nome);
+            }
+        }
     }
 
     @Transactional

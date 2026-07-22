@@ -29,6 +29,11 @@ public class CupomDTO {
     private Boolean ativo;
     private String origem;              // MANUAL | FIDELIDADE
     private LocalDateTime criadoEm;
+    // Só faz sentido em cupom FIDELIDADE — telefone do ganhador + nome
+    // resolvido em runtime via lookup no último pedido dele (frontend usa
+    // clienteNome primeiro; se null cai pra clienteTelefone; se null "Cliente").
+    private String clienteNome;
+    private String clienteTelefone;
 
     public static CupomDTO fromEntity(Cupom c) {
         CupomDTO dto = new CupomDTO();
@@ -46,6 +51,8 @@ public class CupomDTO {
         dto.ativo = c.getAtivo();
         dto.origem = c.getOrigem() != null ? c.getOrigem().name() : null;
         dto.criadoEm = c.getCriadoEm();
+        dto.clienteTelefone = c.getTelefoneCliente();
+        // clienteNome preenchido depois em CupomService (precisa consultar pedidos).
         return dto;
     }
 }

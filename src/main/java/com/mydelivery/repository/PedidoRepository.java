@@ -71,6 +71,22 @@ public interface PedidoRepository extends JpaRepository<Pedido, Long> {
     List<Pedido> findUltimosDoTelefone(Long restauranteId, String telefone,
                                        LocalDateTime desde);
 
+    /**
+     * Batch lookup nome cliente por telefone: retorna [telefoneNormalizado, nomeCliente]
+     * do PEDIDO MAIS RECENTE de cada telefone da lista, dentro do restaurante.
+     * Usado pra enriquecer cupons FIDELIDADE com o nome do ganhador (antes
+     * aparecia só "Cliente" no painel do dono). Nome vem de p.nomeCliente ou
+     * p.cliente.nome — preferimos nomeCliente porque bate com o que dono viu
+     * no card do pedido.
+     */
+    @Query("SELECT p.cliente.telefone, COALESCE(p.nomeCliente, p.cliente.nome) " +
+           "FROM Pedido p " +
+           "WHERE p.restaurante.id = :restauranteId " +
+           "  AND p.cliente.telefone IN :telefones " +
+           "  AND COALESCE(p.nomeCliente, p.cliente.nome) IS NOT NULL " +
+           "ORDER BY p.criadoEm DESC")
+    List<Object[]> findNomesPorTelefones(Long restauranteId, java.util.Collection<String> telefones);
+
     /** Zera a FK mesa em pedidos históricos — usado no DELETE de mesa
      *  pra permitir excluir sem violar constraint. Pedido continua com
      *  nome_cliente_mesa preenchido (histórico financeiro preservado). */

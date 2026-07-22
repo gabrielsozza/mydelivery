@@ -79,11 +79,11 @@ public interface PedidoRepository extends JpaRepository<Pedido, Long> {
      * p.cliente.nome — preferimos nomeCliente porque bate com o que dono viu
      * no card do pedido.
      */
-    @Query("SELECT p.cliente.telefone, COALESCE(p.nomeCliente, p.cliente.nome) " +
-           "FROM Pedido p " +
+    @Query("SELECT c.telefone, c.nome " +
+           "FROM Pedido p JOIN p.cliente c " +
            "WHERE p.restaurante.id = :restauranteId " +
-           "  AND p.cliente.telefone IN :telefones " +
-           "  AND COALESCE(p.nomeCliente, p.cliente.nome) IS NOT NULL " +
+           "  AND c.telefone IN :telefones " +
+           "  AND c.nome IS NOT NULL " +
            "ORDER BY p.criadoEm DESC")
     List<Object[]> findNomesPorTelefones(Long restauranteId, java.util.Collection<String> telefones);
 

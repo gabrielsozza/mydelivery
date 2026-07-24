@@ -615,6 +615,19 @@ public class WhatsappService {
                 && inst.getWarmupForcadoAte().isBefore(java.time.LocalDateTime.now())) {
             return 1.0;
         }
+        // FIX Jul/2026 v3: se o REGISTRO da instância no BD foi criado há
+        // mais dias que o warmup completo, essa loja NÃO é conta nova — é
+        // veterana que só desconectou/reconectou. Warmup pra veterana não faz
+        // sentido: WhatsApp já conhece o número, cap reduzido só bloqueia bot
+        // sem motivo. criadoEm sobrevive a logout/connect (só é resetado em
+        // resetFull, raro). Isso resolve o padrão recorrente de "loja reconecta
+        // → sessaoIniciadaEm reseta → cap=60/dia → bot para" que estava
+        // exigindo marcar-veterana manual em cada loja.
+        java.time.LocalDateTime criado = inst.getCriadoEm();
+        if (criado != null) {
+            long diasCriada = java.time.Duration.between(criado, java.time.LocalDateTime.now()).toDays();
+            if (diasCriada >= WARMUP_RAMP.length) return 1.0;
+        }
         // FIX Jul/2026: usa sessaoIniciadaEm (nunca resetado). Antes usava
         // conectadoEm — instância que reconectava depois de dias sofria
         // rate limit reduzido eternamente.

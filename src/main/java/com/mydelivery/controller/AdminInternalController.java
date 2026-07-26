@@ -10,6 +10,8 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
 import com.mydelivery.dto.admin.RestauranteAdminResponse;
+import com.mydelivery.repository.AssinaturaRepository;
+import com.mydelivery.repository.RestauranteRepository;
 import com.mydelivery.service.AdminService;
 
 import lombok.RequiredArgsConstructor;
@@ -24,6 +26,8 @@ import lombok.RequiredArgsConstructor;
 public class AdminInternalController {
 
     private final AdminService adminService;
+    private final RestauranteRepository restauranteRepo;
+    private final AssinaturaRepository assinaturaRepo;
 
     @Value("${mydelivery.admin.internal-secret:${ADMIN_INTERNAL_SECRET:}}")
     private String adminSecret;
@@ -34,7 +38,23 @@ public class AdminInternalController {
             @PathVariable Long id,
             @RequestHeader(value = "X-Admin-Secret", required = false) String secret) {
         validarSecret(secret);
-        return ResponseEntity.ok(adminService.desbloquearRestaurante(id));
+        var resp = adminService.desbloquearRestaurante(id);
+        // ATALHO EMERGENCIAL: adminService.desbloquear NÃO mexe em
+        // trialExpiraEm. A lógica de "fase" no /assinatura/status usa
+        // trialFim vs now — se estiver no passado, front bloqueia mesmo
+        // com assinatura=ATIVA. Aqui empurramos trialExpiraEm/trialFim pra
+        // +30 dias no futuro garantindo que a UI libere.
+        try {
+            restauranteRepo.findById(id).ifPresent(r -> {
+                r.setTrialExpiraEm(java.time.LocalDateTime.now().plusDays(30));
+                restauranteRepo.save(r);
+            });
+            assinaturaRepo.findByRestauranteId(id).ifPresent(a -> {
+                a.setTrialFim(java.time.LocalDateTime.now().plusDays(30));
+                assinaturaRepo.save(a);
+            });
+        } catch (Exception ignored) { /* fail-safe — desbloqueio principal já foi feito */ }
+        return ResponseEntity.ok(resp);
     }
 
     private void validarSecret(String received) {

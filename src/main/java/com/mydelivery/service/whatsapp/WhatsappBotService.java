@@ -815,11 +815,21 @@ public class WhatsappBotService {
         if (tipo != null && "MESA".equalsIgnoreCase(tipo)) return null;
         boolean retirada = tipo != null && "RETIRADA".equalsIgnoreCase(tipo);
         switch (statusNome.toUpperCase()) {
+            case "PRONTO":
+                // Jul/2026: RETIRADA marca PRONTO = avisa cliente pra vir buscar.
+                // DELIVERY marca PRONTO = aguarda entregador — cliente é notificado
+                // só no SAIU_ENTREGA (não faz sentido "prepara-se, cozinha
+                // terminou" pra delivery). Anti-duplicação: se dono depois marcar
+                // SAIU_ENTREGA em retirada, não avisa de novo (case abaixo).
+                return retirada
+                        ? BotVariations.montarMensagemSaiuEntregaRetirada()
+                        : null;
             case "SAIU_ENTREGA":
                 // Anti-shadowban: rotaciona entre pool de variações (Meta detecta
                 // texto broadcast idêntico em contas comerciais desde 2026).
+                // Em RETIRADA, o cliente já foi avisado no PRONTO — não repete.
                 return retirada
-                        ? BotVariations.montarMensagemSaiuEntregaRetirada()
+                        ? null
                         : BotVariations.montarMensagemSaiuEntregaDelivery();
             default:
                 return null;

@@ -155,10 +155,14 @@ public class UazapiWebhookController {
             Map<String, Object> msg = extrairMessage(src);
             if (msg == null) return null;
 
-            // key: { remoteJid, fromMe, id }
+            // key: { remoteJid, fromMe, id, wasSentByApi }
             Map<String, Object> key = new LinkedHashMap<>();
             key.put("remoteJid", strDe(msg, "chatid"));
             key.put("fromMe", Boolean.TRUE.equals(msg.get("fromMe")));
+            // Uazapi manda wasSentByApi=true quando a msg saiu VIA API (nossa
+            // enviarMensagem). Se ausente/false + fromMe=true → dono digitou no
+            // celular manualmente. Usamos pra detectar "takeover" e pausar o bot.
+            key.put("wasSentByApi", Boolean.TRUE.equals(msg.get("wasSentByApi")));
             String messageId = strDe(msg, "messageid");
             if (messageId == null) messageId = strDe(msg, "id");
             key.put("id", messageId);

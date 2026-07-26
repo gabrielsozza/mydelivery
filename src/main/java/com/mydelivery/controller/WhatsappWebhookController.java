@@ -84,6 +84,40 @@ public class WhatsappWebhookController {
                     .build();
 
     /**
+     * PAUSA DO BOT POR TAKEOVER MANUAL (Jul/2026).
+     *
+     * Quando o dono do restaurante responde MANUALMENTE uma conversa pelo
+     * WhatsApp (msg com fromMe=true saída DO celular dele, não da nossa API),
+     * o robô entende que o dono assumiu e para de responder aquele número.
+     * Volta a responder 5 min DEPOIS da última mensagem do dono (cada nova msg
+     * dele estende o mute — cliente continuar mandando NÃO reseta).
+     *
+     * Cache Caffeine: chave = "instanceName:jidLimpo", valor = long timestamp
+     * do momento em que o bot pode voltar (agora + 5min quando dono manda).
+     * Expira automaticamente após 30min (limpa entradas velhas mesmo se ninguém
+     * consultar).
+     *
+     * <p><b>Detecção de manual vs API</b>: pra distinguir msg que O DONO digitou
+     * no celular DAS msgs que NOSSA API enviou, usamos o campo {@code wasSentByApi}
+     * do Uazapi — quando true, foi nossa API (bot); quando false/ausente, foi
+     * o dono na mão. Sem esse campo (formato antigo), toda fromMe=true é
+     * considerada takeover pra ser conservador.
+     */
+    private static final com.github.benmanes.caffeine.cache.Cache<String, Long> PAUSA_BOT_ATE =
+            com.github.benmanes.caffeine.cache.Caffeine.newBuilder()
+                    .expireAfterWrite(java.time.Duration.ofMinutes(30))
+                    .maximumSize(20_000)
+                    .build();
+
+    private static final long PAUSA_BOT_DURACAO_MS = 5L * 60 * 1000;
+
+    private static String _pausaKey(String instanceName, String remoteJid) {
+        // Normaliza jid pra só números (remove @c.us / @s.whatsapp.net)
+        String jid = remoteJid == null ? "" : remoteJid.replaceAll("[^0-9]", "");
+        return instanceName + ":" + jid;
+    }
+
+    /**
      * Scheduler pra retry de webhook quando a instância ainda não está no DB
      * (race condition com a transação do /conectar). 2 tentativas: 2s e 6s.
      */
@@ -241,20 +275,44 @@ public class WhatsappWebhookController {
         Map<String, Object> dataMap = (Map<String, Object>) d;
 
         // Evolution envia "key": { "remoteJid": "...", "fromMe": bool, "id": "..." }
+        // + wasSentByApi (adicionado no UazapiWebhookController Jul/2026).
         Object key = dataMap.get("key");
         boolean fromMe = false;
+        boolean wasSentByApi = false;
         String remoteJid = null;
         String messageId = null;
         if (key instanceof Map<?, ?> k) {
             Map<String, Object> kMap = (Map<String, Object>) k;
             fromMe = Boolean.TRUE.equals(kMap.get("fromMe"));
+            wasSentByApi = Boolean.TRUE.equals(kMap.get("wasSentByApi"));
             Object rj = kMap.get("remoteJid");
             if (rj != null) remoteJid = rj.toString();
             Object idObj = kMap.get("id");
             if (idObj != null) messageId = idObj.toString();
         }
-        if (fromMe) return; // Não processa mensagens que NÓS enviamos
+        // TAKEOVER MANUAL: se dono respondeu pelo celular (fromMe=true +
+        // wasSentByApi=false), registra pausa do bot por 5min pra aquele número.
+        // Cliente continuar mandando NÃO reseta o timer — só nova msg do dono
+        // estende. Isso permite o dono conversar sem o bot interromper.
+        if (fromMe) {
+            if (!wasSentByApi && remoteJid != null) {
+                long ate = System.currentTimeMillis() + PAUSA_BOT_DURACAO_MS;
+                PAUSA_BOT_ATE.put(_pausaKey(inst.getInstanceName(), remoteJid), ate);
+                log.info("[WA-Takeover] dono respondeu manual em {} — bot pausado 5min pra {}",
+                        inst.getInstanceName(), remoteJid);
+            }
+            return; // Não processa msgs que saíram desta instância (nem API nem dono)
+        }
         if (remoteJid == null) return;
+
+        // Se cliente escreveu enquanto bot está pausado por takeover manual, ignora.
+        Long pausaAte = PAUSA_BOT_ATE.getIfPresent(_pausaKey(inst.getInstanceName(), remoteJid));
+        if (pausaAte != null && pausaAte > System.currentTimeMillis()) {
+            long faltaSeg = (pausaAte - System.currentTimeMillis()) / 1000;
+            log.info("[WA-Takeover] msg de {} ignorada — dono está no controle da conversa (volta em {}s)",
+                    remoteJid, faltaSeg);
+            return;
+        }
 
         // ── DEDUP POR messageId ──────────────────────────────────────────
         // Barreira PRIMÁRIA contra resposta duplicada. Antes o único guard

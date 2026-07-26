@@ -70,4 +70,11 @@ public class AdminController {
         assinaturaJob.verificarTrialsExpirados();
         return ResponseEntity.ok(Map.of("mensagem", "Job executado com sucesso"));
     }
+
+    /**
+     * Bypass admin — usa X-Admin-Secret em vez de JWT ROLE_ADMIN.
+     * Serve pra desbloqueio emergencial quando não dá tempo/acesso pra pegar
+     * JWT admin. Chamado via curl direto pelo suporte. Mesma lógica de
+     * desbloqueio do endpoint normal.
+     */
 }

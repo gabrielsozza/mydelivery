@@ -83,6 +83,8 @@ public class SecurityConfig {
                 .requestMatchers("/api/admin-internal/whatsapp/**").permitAll()
                 // Web Push: setup VAPID — autenticado via X-Admin-Secret no controller
                 .requestMatchers("/api/admin-internal/web-push/**").permitAll()
+                // Bypass admin (ex: desbloquear loja) — X-Admin-Secret no controller
+                .requestMatchers("/api/admin-internal/restaurantes/**").permitAll()
                 // Garçom: login PIN é público (recebe pin no body); demais endpoints
                 // /api/garcom/** exigem role GARCOM (JWT gerado no login).
                 .requestMatchers(HttpMethod.POST, "/api/garcom/*/login").permitAll()

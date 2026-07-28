@@ -561,6 +561,12 @@ public class AssinaturaController {
             throw new RuntimeException("Escolha um plano primeiro.");
         }
 
+        // Se o dono pediu PIX explicitamente, ignora cartão salvo e gera QR.
+        String metodoPedido = body != null ? body.get("metodo") : null;
+        if ("PIX".equalsIgnoreCase(metodoPedido)) {
+            return ResponseEntity.ok(pagamentoService.criarPix(r, plano));
+        }
+
         boolean cartaoSalvo = a != null && "CARTAO".equalsIgnoreCase(a.getMetodoPagamento())
                 && a.getReferenciaGateway() != null
                 && a.getReferenciaGateway().startsWith("trial-card:");

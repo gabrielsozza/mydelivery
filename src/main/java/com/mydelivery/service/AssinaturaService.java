@@ -80,6 +80,22 @@ public class AssinaturaService {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("planosDisponiveis", listarPlanos(r));
 
+        // PRIORIDADE MÁXIMA: bloqueio manual do admin. Sobrepõe qualquer outra
+        // fase — o dono vê modal com o MOTIVO exato que o admin registrou,
+        // não a mensagem genérica de trial vencido.
+        if (r.getStatus() == Restaurante.Status.BLOQUEADO) {
+            out.put("status", "BLOQUEADO");
+            out.put("fase", "BLOQUEADO_ADMIN");
+            out.put("podeAcessarTudo", false);
+            String motivo = r.getMotivoBloqueio();
+            out.put("motivoBloqueio", motivo);
+            out.put("mensagem", (motivo != null && !motivo.isBlank())
+                    ? motivo
+                    : "Sua loja foi bloqueada. Entre em contato com o suporte.");
+            out.put("bloqueadoEm", r.getBloqueadoEm() != null ? r.getBloqueadoEm().toString() : null);
+            return out;
+        }
+
         if (a == null) {
             // Restaurante sem assinatura (caso raro — pode ser bug de cadastro antigo)
             out.put("fase", "TRIAL");

@@ -87,17 +87,31 @@ public class AdminService {
 
     @Transactional
     public RestauranteAdminResponse desbloquearRestaurante(Long id) {
+        return desbloquearRestaurante(id, 30);
+    }
+
+    /**
+     * Desbloqueia + concede {@code dias} de acesso a partir de agora.
+     * Empurra trialExpiraEm (Restaurante), trialFim + proximaCobranca (Assinatura)
+     * pra now+dias. Se essas datas ficassem no passado a loja continuava bloqueada
+     * mesmo com status=ATIVO — foi o bug do incidente Monkeys #9.
+     */
+    @Transactional
+    public RestauranteAdminResponse desbloquearRestaurante(Long id, int dias) {
         Restaurante r = restauranteRepository.findById(id)
                 .orElseThrow(() -> new RuntimeException("Restaurante não encontrado"));
+
+        LocalDateTime alvo = LocalDateTime.now().plusDays(dias);
 
         r.setStatus(Restaurante.Status.ATIVO);
         r.setBloqueadoEm(null);
         r.setMotivoBloqueio(null);
+        try { r.setTrialExpiraEm(alvo); } catch (Exception ignored) {}
 
-        // Reativa assinatura
         assinaturaRepository.findByRestauranteId(id).ifPresent(a -> {
             a.setStatus(Assinatura.Status.ATIVA);
-            a.setProximaCobranca(LocalDateTime.now().plusMonths(1));
+            a.setProximaCobranca(alvo);
+            try { a.setTrialFim(alvo); } catch (Exception ignored) {}
             assinaturaRepository.save(a);
         });
 

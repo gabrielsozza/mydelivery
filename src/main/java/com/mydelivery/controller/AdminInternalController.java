@@ -5,8 +5,14 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.util.Map;
+
+import com.mydelivery.dto.admin.BloquearRestauranteRequest;
 import org.springframework.web.server.ResponseStatusException;
 
 import com.mydelivery.dto.admin.RestauranteAdminResponse;
@@ -32,29 +38,37 @@ public class AdminInternalController {
     @Value("${mydelivery.admin.internal-secret:${ADMIN_INTERNAL_SECRET:}}")
     private String adminSecret;
 
-    /** Bypass do /api/admin/restaurantes/{id}/desbloquear (que exige JWT admin). */
+    /**
+     * Bypass do /api/admin/restaurantes/{id}/desbloquear (que exige JWT admin).
+     * Aceita {@code ?dias=N} (default 30). O AdminService.desbloquearRestaurante(id, dias)
+     * já cuida de empurrar trialExpiraEm + trialFim + proximaCobranca pra now+dias.
+     */
     @PostMapping("/api/admin-internal/restaurantes/{id}/desbloquear")
     public ResponseEntity<RestauranteAdminResponse> desbloquear(
             @PathVariable Long id,
-            @RequestHeader(value = "X-Admin-Secret", required = false) String secret) {
+            @RequestHeader(value = "X-Admin-Secret", required = false) String secret,
+            @RequestParam(value = "dias", required = false, defaultValue = "30") Integer dias) {
         validarSecret(secret);
-        var resp = adminService.desbloquearRestaurante(id);
-        // ATALHO EMERGENCIAL: adminService.desbloquear NÃO mexe em
-        // trialExpiraEm. A lógica de "fase" no /assinatura/status usa
-        // trialFim vs now — se estiver no passado, front bloqueia mesmo
-        // com assinatura=ATIVA. Aqui empurramos trialExpiraEm/trialFim pra
-        // +30 dias no futuro garantindo que a UI libere.
-        try {
-            restauranteRepo.findById(id).ifPresent(r -> {
-                r.setTrialExpiraEm(java.time.LocalDateTime.now().plusDays(30));
-                restauranteRepo.save(r);
-            });
-            assinaturaRepo.findByRestauranteId(id).ifPresent(a -> {
-                a.setTrialFim(java.time.LocalDateTime.now().plusDays(30));
-                assinaturaRepo.save(a);
-            });
-        } catch (Exception ignored) { /* fail-safe — desbloqueio principal já foi feito */ }
-        return ResponseEntity.ok(resp);
+        int d = (dias == null || dias < 1) ? 30 : Math.min(dias, 365);
+        return ResponseEntity.ok(adminService.desbloquearRestaurante(id, d));
+    }
+
+    /**
+     * Bypass do /api/admin/restaurantes/{id}/bloquear (que exige JWT admin).
+     * Body: {@code {"motivo":"..."}}
+     */
+    @PostMapping("/api/admin-internal/restaurantes/{id}/bloquear")
+    public ResponseEntity<RestauranteAdminResponse> bloquear(
+            @PathVariable Long id,
+            @RequestHeader(value = "X-Admin-Secret", required = false) String secret,
+            @RequestBody(required = false) Map<String, Object> body) {
+        validarSecret(secret);
+        String motivo = body != null && body.get("motivo") != null
+                ? String.valueOf(body.get("motivo"))
+                : "Bloqueio manual pelo admin";
+        BloquearRestauranteRequest req = new BloquearRestauranteRequest();
+        req.setMotivo(motivo);
+        return ResponseEntity.ok(adminService.bloquearRestaurante(id, req));
     }
 
     private void validarSecret(String received) {

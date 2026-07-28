@@ -100,6 +100,49 @@ public class AssinaturaService {
         out.put("trialFim", a.getTrialFim() != null ? a.getTrialFim().toString() : null);
         out.put("validaAte", a.getValidaAte() != null ? a.getValidaAte().toString() : null);
         out.put("proximaCobranca", a.getProximaCobranca() != null ? a.getProximaCobranca().toString() : null);
+        // Método salvo — aba planos precisa saber pra mostrar "Cartão" ou "PIX"
+        out.put("metodoPagamento", a.getMetodoPagamento());
+        boolean cartaoSalvo = "CARTAO".equalsIgnoreCase(a.getMetodoPagamento())
+                && a.getReferenciaGateway() != null
+                && a.getReferenciaGateway().startsWith("trial-card:");
+        out.put("cartaoSalvo", cartaoSalvo);
+        // Resumo curto pra UI ("Cartão de crédito", "PIX", "Não configurado")
+        String metResumo;
+        if (cartaoSalvo) metResumo = "Cartão de crédito salvo";
+        else if ("PIX".equalsIgnoreCase(a.getMetodoPagamento())) metResumo = "PIX";
+        else if (a.getMetodoPagamento() != null) metResumo = a.getMetodoPagamento();
+        else metResumo = "Não configurado";
+        out.put("formaPagamentoResumo", metResumo);
+
+        // Histórico + fatura pendente — permite aba planos mostrar tabela e
+        // "Pagar agora" sem chamar outro endpoint (economiza round-trip).
+        try {
+            var hist = pagamentoMensalidadeRepository
+                    .findTop12ByRestauranteIdOrderByCriadoEmDesc(r.getId());
+            List<Map<String, Object>> histOut = new ArrayList<>();
+            Map<String, Object> pendente = null;
+            for (PagamentoMensalidade p : hist) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("id", p.getId());
+                row.put("valor", p.getValor());
+                row.put("status", p.getStatus() != null ? p.getStatus().name() : null);
+                row.put("metodo", p.getMetodoPagamento());
+                row.put("plano", p.getPlano() != null ? p.getPlano().name() : null);
+                row.put("pagoEm", p.getPagoEm() != null ? p.getPagoEm().toString() : null);
+                row.put("criadoEm", p.getCriadoEm() != null ? p.getCriadoEm().toString() : null);
+                row.put("mpStatusDetail", p.getMpStatusDetail());
+                histOut.add(row);
+                if (pendente == null && p.getStatus() == PagamentoMensalidade.Status.PENDENTE) {
+                    pendente = row;
+                }
+            }
+            out.put("historicoPagamentos", histOut);
+            out.put("faturaPendente", pendente);
+        } catch (Exception e) {
+            log.warn("[obterStatus] falha ao listar historico pagamentos #{}: {}", r.getId(), e.getMessage());
+            out.put("historicoPagamentos", List.of());
+            out.put("faturaPendente", null);
+        }
 
         // ── Calcula fase ──
         if (a.getStatus() == Assinatura.Status.CANCELADA) {

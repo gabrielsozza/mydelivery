@@ -533,4 +533,55 @@ public class AssinaturaController {
                 "mensagem", "Cartão atualizado com sucesso."
         ));
     }
+
+    /**
+     * "Pagar agora" — botão único que auto-decide:
+     *  - Se cartão salvo (trial-card:*): cobra imediatamente sem interação.
+     *  - Se PIX ou sem cartão: gera QR code na hora pra pagamento.
+     *
+     * Retorna {tipo:"CARTAO", aprovado:true/false, ...} OU {tipo:"PIX", qrCode, qrCodeBase64, ...}
+     * Body: { plano? }  — se omitir, usa o plano atual da assinatura.
+     */
+    @PostMapping("/pagar-agora")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Map<String, Object>> pagarAgora(
+            @AuthenticationPrincipal String email,
+            @RequestBody(required = false) Map<String, String> body) {
+        Restaurante r = restauranteRepository.findByUsuarioEmail(email).orElseThrow();
+        Assinatura a = assinaturaRepository.findByRestauranteId(r.getId()).orElse(null);
+
+        Plano plano;
+        String planoStr = body != null ? body.get("plano") : null;
+        if (planoStr != null && !planoStr.isBlank()) {
+            try { plano = Plano.valueOf(planoStr.toUpperCase()); }
+            catch (Exception e) { throw new RuntimeException("Plano inválido"); }
+        } else if (a != null && a.getPlano() != null) {
+            plano = a.getPlano();
+        } else {
+            throw new RuntimeException("Escolha um plano primeiro.");
+        }
+
+        boolean cartaoSalvo = a != null && "CARTAO".equalsIgnoreCase(a.getMetodoPagamento())
+                && a.getReferenciaGateway() != null
+                && a.getReferenciaGateway().startsWith("trial-card:");
+
+        if (cartaoSalvo) {
+            var resp = pagamentoService.cobrarCartaoSalvo(r, plano, a.getReferenciaGateway());
+            Map<String, Object> out = new java.util.LinkedHashMap<>(resp);
+            out.put("tipo", "CARTAO");
+            if (Boolean.TRUE.equals(resp.get("aprovado"))) {
+                Long payId = resp.get("paymentId") != null
+                        ? Long.valueOf(String.valueOf(resp.get("paymentId"))) : null;
+                assinaturaService.ativarPlano(r, plano, "CARTAO", payId == null ? null : String.valueOf(payId));
+                try {
+                    assinaturaService.registrarPagamentoOk(r, plano, "CARTAO", payId);
+                } catch (Exception ignored) {}
+                out.put("mensagem", "Pagamento aprovado. Acesso liberado.");
+            } else {
+                out.put("mensagem", "Cartão recusado. Tente atualizar o cartão ou use PIX.");
+            }
+            return ResponseEntity.ok(out);
+        }
+        return ResponseEntity.ok(pagamentoService.criarPix(r, plano));
+    }
 }

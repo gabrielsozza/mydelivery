@@ -10,6 +10,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.mydelivery.dto.admin.BloquearRestauranteRequest;
@@ -55,8 +56,12 @@ public class AdminController {
 
     @PostMapping("/restaurantes/{id}/desbloquear")
     public ResponseEntity<RestauranteAdminResponse> desbloquear(
-            @PathVariable Long id) {
-        return ResponseEntity.ok(adminService.desbloquearRestaurante(id));
+            @PathVariable Long id,
+            @RequestParam(value = "dias", required = false, defaultValue = "30") Integer dias) {
+        // dias = quantos dias de trial/proxima cobranca conceder a partir de agora.
+        // Default 30, mas admin pode informar 5, 10, 20 etc.
+        int d = (dias == null || dias < 1) ? 30 : Math.min(dias, 365);
+        return ResponseEntity.ok(adminService.desbloquearRestaurante(id, d));
     }
 
     @PostMapping("/restaurantes/{id}/cancelar")

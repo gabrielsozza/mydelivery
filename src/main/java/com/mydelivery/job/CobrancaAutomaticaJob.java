@@ -38,7 +38,10 @@ public class CobrancaAutomaticaJob {
     private final AssinaturaPagamentoService pagamentoService;
     private final AssinaturaService assinaturaService;
 
-    @Scheduled(cron = "0 0 2 * * *") // todo dia 02:00 da manhã
+    // De hora em hora — antes era 1x/dia às 2h, o que deixava lojas com
+    // cartão salvo bloqueadas até a próxima madrugada. Cliente pagou → tem que
+    // liberar em <=60min. Job é idempotente (só cobra se proximaCobranca<=agora).
+    @Scheduled(cron = "0 5 * * * *")
     @Transactional
     public void processarCobrancasPendentes() {
         LocalDateTime agora = LocalDateTime.now();
@@ -47,8 +50,11 @@ public class CobrancaAutomaticaJob {
             aCobrar = assinaturaRepo.findAll().stream()
                     .filter(a -> a.getProximaCobranca() != null
                               && !a.getProximaCobranca().isAfter(agora)
+                              // Inclui INADIMPLENTE: se cartão salvo, tenta cobrar antes de
+                              // desistir. "Dono pagou libera" — cartão salvo é intenção de pagar.
                               && (a.getStatus() == Assinatura.Status.PENDENTE
-                                  || a.getStatus() == Assinatura.Status.ATIVA)
+                                  || a.getStatus() == Assinatura.Status.ATIVA
+                                  || a.getStatus() == Assinatura.Status.INADIMPLENTE)
                               && "CARTAO".equalsIgnoreCase(a.getMetodoPagamento())
                               && a.getReferenciaGateway() != null
                               && a.getReferenciaGateway().startsWith("trial-card:"))

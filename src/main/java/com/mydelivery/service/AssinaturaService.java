@@ -206,21 +206,29 @@ public class AssinaturaService {
             return out;
         }
 
-        // Janela máxima permitida: ultimaCobranca + duracaoMeses do plano.
-        // Se ultimaCobranca não existe, usa agora como referência conservadora.
-        LocalDateTime base = a.getUltimaCobranca() != null ? a.getUltimaCobranca() : agora;
+        // Janela máxima permitida: max(ultimaCobranca, agora) + duracaoMeses.
+        // CRÍTICO: usar Math.max com AGORA — se ultimaCobranca ficou no passado
+        // (ex: data original de compra do restaurante), a correção NÃO pode
+        // encolher validaAte pra data passada. Isso mata concessões admin
+        // (conceder meses grátis, desbloqueio manual, etc). Regra do dono:
+        // se admin concedeu tempo grátis, esquece dívida até esse prazo vencer.
+        LocalDateTime baseCobranca = a.getUltimaCobranca() != null ? a.getUltimaCobranca() : agora;
+        LocalDateTime base = baseCobranca.isBefore(agora) ? agora : baseCobranca;
         LocalDateTime maxValidaAte = base.plusMonths(a.getPlano().getDuracaoMeses())
                 .plusDays(3); // tolerância de 3 dias pra evitar correção em borda
         if (fimVigencia.isAfter(maxValidaAte)) {
             LocalDateTime corrigido = base.plusMonths(a.getPlano().getDuracaoMeses());
-            log.warn("[Assinatura] validaAte inflado pra restaurante #{} ({} → {}). Corrigindo.",
-                    r.getId(), fimVigencia, corrigido);
-            a.setValidaAte(corrigido);
-            a.setProximaCobranca(corrigido);
-            assinaturaRepository.save(a);
-            fimVigencia = corrigido;
-            out.put("validaAte", corrigido.toString());
-            out.put("proximaCobranca", corrigido.toString());
+            // Só corrige se o resultado ainda for FUTURO — nunca empurra pra passado.
+            if (corrigido.isAfter(agora)) {
+                log.warn("[Assinatura] validaAte inflado pra restaurante #{} ({} → {}). Corrigindo.",
+                        r.getId(), fimVigencia, corrigido);
+                a.setValidaAte(corrigido);
+                a.setProximaCobranca(corrigido);
+                assinaturaRepository.save(a);
+                fimVigencia = corrigido;
+                out.put("validaAte", corrigido.toString());
+                out.put("proximaCobranca", corrigido.toString());
+            }
         }
 
         int diasParaVencer = diasEntre(agora, fimVigencia);
@@ -611,6 +619,9 @@ public class AssinaturaService {
                 ? a.getValidaAte() : agora;
         LocalDateTime novoFim = base.plusMonths(meses);
         a.setValidaAte(novoFim);
+        // CRÍTICO: sem atualizar ultimaCobranca, a auto-correção do obterStatus
+        // usa a data antiga e ENCOLHE o validaAte pra passado, matando a concessão.
+        a.setUltimaCobranca(agora);
 
         // proximaCobranca acompanha
         if (a.getProximaCobranca() != null) {

@@ -111,6 +111,11 @@ public class AdminService {
         assinaturaRepository.findByRestauranteId(id).ifPresent(a -> {
             a.setStatus(Assinatura.Status.ATIVA);
             a.setProximaCobranca(alvo);
+            // CRÍTICO: validaAte é a fonte da verdade no obterStatus/trial-banner.
+            // Se ficar no passado, overlay "Seu período gratuito acabou" aparece
+            // mesmo com status ATIVO. Fix Monkeys #9.
+            a.setValidaAte(alvo);
+            a.setUltimaCobranca(java.time.LocalDateTime.now());
             try { a.setTrialFim(alvo); } catch (Exception ignored) {}
             assinaturaRepository.save(a);
         });

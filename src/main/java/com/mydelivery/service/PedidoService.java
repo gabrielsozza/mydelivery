@@ -343,16 +343,35 @@ public class PedidoService {
             } else if (itemReq.getPreco() != null
                     && itemReq.getPreco().compareTo(BigDecimal.ZERO) > 0
                     && itemReq.getPreco().compareTo(limiteMax) <= 0) {
-                // Front mandou preço explícito — RESPEITA. Nunca reextrai
-                // complementos da obs por cima porque isso dobrava o valor
-                // quando front mandou pf == precoBase (produto sem
-                // complementos pagos, ou modo mesa cobrando só base).
-                // Bug corrigido jul/2026: cliente que pediu batata R$ 29,99
-                // + complemento "Carne Desfiada" R$ 29,99 recebia comanda
-                // com 59,98 pra batata (base já somava no front + backend
-                // resomava dos complementos da obs).
-                // Se pf < precoBase, mantém precoBase como piso (anti-fraude).
-                precoUnit = itemReq.getPreco().max(precoUnit);
+                // Front mandou preço explícito.
+                //
+                // DEFESA CONTRA DUPLICAÇÃO (frontends com cache antigo):
+                // Extrai extras da obs. Se algum extra da obs tem preço >= base
+                // (é uma VARIANTE — recheio/sabor), o preço "correto" é apenas
+                // o valor da variante (max entre base e maior extra), sem
+                // somar base. Se front mandou base+variante duplicado, aqui
+                // corrigimos. Ex: Batata R$29,99 + Recheio Strogonoff R$29,99
+                //   front antigo manda pf=59,98 → detectamos que Strogonoff
+                //   tem preço >= base → precoFinal = 29,99 (variante substitui).
+                BigDecimal pfFront = itemReq.getPreco();
+                BigDecimal extrasObs = extrairValorComplementosDaObs(itemReq.getObs());
+                BigDecimal maiorExtraObs = extrairMaiorComplementoDaObs(itemReq.getObs());
+                boolean temVariante = maiorExtraObs != null
+                        && maiorExtraObs.compareTo(precoUnit) >= 0;
+                if (temVariante) {
+                    // Preço correto = max extra da obs (a variante É o produto).
+                    // Se front mandou muito maior (base + variante), corrige.
+                    BigDecimal precoVariante = maiorExtraObs.max(precoUnit);
+                    // Só aplica correção se o front mandou substancialmente
+                    // mais do que a variante sozinha (indica duplicação).
+                    if (pfFront.compareTo(precoVariante.multiply(BigDecimal.valueOf(1.1))) > 0) {
+                        precoUnit = precoVariante;
+                    } else {
+                        precoUnit = pfFront.max(precoUnit);
+                    }
+                } else {
+                    precoUnit = pfFront.max(precoUnit);
+                }
             } else if (itemReq.getPreco() == null) {
                 // Fallback só quando o front NÃO mandou preço (HTML antigo
                 // cacheado). Extrai valores dos complementos pagos da obs.
@@ -1070,8 +1089,14 @@ public class PedidoService {
                     // cai no caminho "nao mexer" abaixo
                 }
 
-                if (precoBase != null && precoUnit.compareTo(precoBase) <= 0) {
-                    // precoUnit nao excede a base → cobrado sem complemento.
+                // DESABILITADA: heurística causava BUG de duplicação — quando a
+                // variante do produto (ex: "Frango R$28") tem MESMO preço da
+                // base (produto R$28), precoUnit == precoBase e a heurística
+                // somava o complemento de novo, virando R$56. O backend atual
+                // já grava precoUnitario correto na criação — não precisamos
+                // "corrigir" na exibição. Se aparecer pedido antigo cobrado
+                // errado, corrija manualmente no banco.
+                if (false && precoBase != null && precoUnit.compareTo(precoBase) < 0) {
                     BigDecimal extras = extrairValorComplementosDaObs(i.getObservacao());
                     if (extras.compareTo(BigDecimal.ZERO) > 0) {
                         precoFinal = precoBase.add(extras);
@@ -1269,5 +1294,25 @@ public class PedidoService {
             }
         }
         return soma;
+    }
+
+    /**
+     * Extrai o MAIOR valor entre complementos da obs. Serve pra detectar
+     * VARIANTES: se algum complemento tem preço >= base do produto, é
+     * uma variante (recheio/sabor É o produto), não adicional.
+     * Retorna null se não há complementos com preço.
+     */
+    private static BigDecimal extrairMaiorComplementoDaObs(String obs) {
+        if (obs == null || obs.isBlank()) return null;
+        java.util.regex.Matcher m = COMPLEMENTO_PRECO_RX.matcher(obs);
+        BigDecimal maior = null;
+        while (m.find()) {
+            try {
+                String num = m.group(1).replace(",", ".");
+                BigDecimal v = new BigDecimal(num);
+                if (maior == null || v.compareTo(maior) > 0) maior = v;
+            } catch (NumberFormatException ignore) {}
+        }
+        return maior;
     }
 }

@@ -366,6 +366,19 @@ public class AssinaturaPagamentoService {
      */
     public Map<String, Object> criarPix(Restaurante r, Plano plano) {
         exigirCredenciais();
+        // Cancela pendentes antigos do mesmo restaurante — evita histórico entulhado
+        // com "Pendente" toda vez que dono clica "Gerar QR" sem pagar.
+        try {
+            var antigos = pagamentoMensalidadeRepository
+                    .findByRestauranteIdAndStatus(r.getId(), com.mydelivery.model.PagamentoMensalidade.Status.PENDENTE);
+            if (!antigos.isEmpty()) {
+                antigos.forEach(p -> p.setStatus(com.mydelivery.model.PagamentoMensalidade.Status.CANCELADO));
+                pagamentoMensalidadeRepository.saveAll(antigos);
+                log.info("[AssPag][PIX] {} pendentes anteriores cancelados pra restaurante {}", antigos.size(), r.getId());
+            }
+        } catch (Exception e) {
+            log.warn("[AssPag][PIX] falha ao cancelar pendentes anteriores (não crítico): {}", e.getMessage());
+        }
         String externalRef = "assinatura-" + r.getId() + "-" + plano.name() + "-" + System.currentTimeMillis();
         String idempotencyKey = "mydelivery-assinatura-" + r.getId() + "-" + plano.name()
                 + "-pix-" + System.currentTimeMillis();

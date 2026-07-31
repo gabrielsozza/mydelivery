@@ -34,6 +34,7 @@ public class AdminInternalController {
     private final AdminService adminService;
     private final RestauranteRepository restauranteRepo;
     private final AssinaturaRepository assinaturaRepo;
+    private final com.mydelivery.repository.PagamentoMensalidadeRepository pagamentoMensalidadeRepo;
 
     @Value("${mydelivery.admin.internal-secret:${ADMIN_INTERNAL_SECRET:}}")
     private String adminSecret;
@@ -110,6 +111,29 @@ public class AdminInternalController {
                 "diasConcedidos", d,
                 "liberadoAte", alvo.toString(),
                 "mensagem", "Loja liberada por " + d + " dia(s). Pagamento pendente ignorado até esse prazo."
+        ));
+    }
+
+    /**
+     * Limpa (marca como CANCELADO) todos os pagamentos PENDENTES do restaurante.
+     * Serve pra tirar acúmulo de "Pendente" no histórico quando o dono clicou
+     * várias vezes em "Gerar QR" sem completar. Não afeta pagamentos PAGO.
+     */
+    @org.springframework.web.bind.annotation.DeleteMapping("/api/admin-internal/restaurantes/{id}/pagamentos-pendentes")
+    public ResponseEntity<Map<String, Object>> limparPendentes(
+            @PathVariable Long id,
+            @RequestHeader(value = "X-Admin-Secret", required = false) String secret) {
+        validarSecret(secret);
+        var pendentes = pagamentoMensalidadeRepo
+                .findByRestauranteIdAndStatus(id, com.mydelivery.model.PagamentoMensalidade.Status.PENDENTE);
+        int total = pendentes.size();
+        pendentes.forEach(p -> p.setStatus(com.mydelivery.model.PagamentoMensalidade.Status.CANCELADO));
+        pagamentoMensalidadeRepo.saveAll(pendentes);
+        return ResponseEntity.ok(Map.of(
+                "ok", true,
+                "restauranteId", id,
+                "pendentesCancelados", total,
+                "mensagem", total + " pagamento(s) PENDENTE(s) marcado(s) como CANCELADO"
         ));
     }
 

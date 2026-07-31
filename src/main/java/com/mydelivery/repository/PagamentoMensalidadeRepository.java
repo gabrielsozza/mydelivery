@@ -25,4 +25,7 @@ public interface PagamentoMensalidadeRepository extends JpaRepository<PagamentoM
      * criada em {@code criarPix}, ela é promovida em vez de inserir nova.
      */
     Optional<PagamentoMensalidade> findByMpPaymentId(Long mpPaymentId);
+
+    /** Todos os pagamentos com status específico de um restaurante — pra limpar pendentes órfãos. */
+    List<PagamentoMensalidade> findByRestauranteIdAndStatus(Long restauranteId, PagamentoMensalidade.Status status);
 }

@@ -111,7 +111,14 @@ public class AssinaturaService {
         out.put("status", a.getStatus().name());
         out.put("planoAtual", a.getPlano() != null ? a.getPlano().name() : null);
         out.put("planoNome", a.getPlano() != null ? a.getPlano().getNomeExibicao() : "Período gratuito");
-        out.put("valor", a.getValor());
+        // Valor respeita preço personalizado do restaurante (admin configura
+        // R$ 50 pra clientes antigos vs R$ 75 pra novos). a.getValor() só tem
+        // o valor do momento do assinar — se admin mudou depois, ficava errado.
+        BigDecimal valorAtualPlano = a.getValor();
+        try {
+            if (a.getPlano() != null) valorAtualPlano = planoCatalogoService.valorPara(r, a.getPlano());
+        } catch (Exception ignored) {}
+        out.put("valor", valorAtualPlano != null ? valorAtualPlano : a.getValor());
         out.put("trialInicio", a.getTrialInicio() != null ? a.getTrialInicio().toString() : null);
         out.put("trialFim", a.getTrialFim() != null ? a.getTrialFim().toString() : null);
         out.put("validaAte", a.getValidaAte() != null ? a.getValidaAte().toString() : null);
@@ -137,6 +144,11 @@ public class AssinaturaService {
                     .findTop12ByRestauranteIdOrderByCriadoEmDesc(r.getId());
             List<Map<String, Object>> histOut = new ArrayList<>();
             Map<String, Object> pendente = null;
+            // Se assinatura ATIVA + validaAte futuro, dono JÁ PAGOU — pendentes
+            // são só sobras do histórico de tentativas. Ignora todos.
+            boolean jaPago = a.getStatus() == Assinatura.Status.ATIVA
+                    && a.getValidaAte() != null
+                    && a.getValidaAte().isAfter(agora);
             for (PagamentoMensalidade p : hist) {
                 Map<String, Object> row = new LinkedHashMap<>();
                 row.put("id", p.getId());
@@ -148,7 +160,12 @@ public class AssinaturaService {
                 row.put("criadoEm", p.getCriadoEm() != null ? p.getCriadoEm().toString() : null);
                 row.put("mpStatusDetail", p.getMpStatusDetail());
                 histOut.add(row);
-                if (pendente == null && p.getStatus() == PagamentoMensalidade.Status.PENDENTE) {
+                // Só marca como pendente exibível se NÃO tá pago E o registro é
+                // recente (últimos 3 dias — pendentes velhos são lixo esquecido).
+                if (!jaPago && pendente == null
+                        && p.getStatus() == PagamentoMensalidade.Status.PENDENTE
+                        && p.getCriadoEm() != null
+                        && p.getCriadoEm().isAfter(agora.minusDays(3))) {
                     pendente = row;
                 }
             }

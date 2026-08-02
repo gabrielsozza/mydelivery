@@ -16,6 +16,7 @@ import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.transaction.annotation.Transactional;
 
 import com.mydelivery.dto.cardapio.CategoriaComProdutosResponse;
 import com.mydelivery.dto.cardapio.CategoriaRequest;
@@ -105,6 +106,7 @@ public class CardapioController {
      *    frontend recebe pronto pra renderizar.
      */
     @GetMapping("/api/cardapio/{slug}/cliente/{deviceUuid}/ultimo-pedido")
+    @Transactional(readOnly = true)
     public ResponseEntity<UltimoPedidoResponse> ultimoPedidoPorDispositivo(
             @PathVariable String slug,
             @PathVariable String deviceUuid) {

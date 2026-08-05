@@ -343,35 +343,13 @@ public class PedidoService {
             } else if (itemReq.getPreco() != null
                     && itemReq.getPreco().compareTo(BigDecimal.ZERO) > 0
                     && itemReq.getPreco().compareTo(limiteMax) <= 0) {
-                // Front mandou preço explícito.
-                //
-                // DEFESA CONTRA DUPLICAÇÃO (frontends com cache antigo):
-                // Extrai extras da obs. Se algum extra da obs tem preço >= base
-                // (é uma VARIANTE — recheio/sabor), o preço "correto" é apenas
-                // o valor da variante (max entre base e maior extra), sem
-                // somar base. Se front mandou base+variante duplicado, aqui
-                // corrigimos. Ex: Batata R$29,99 + Recheio Strogonoff R$29,99
-                //   front antigo manda pf=59,98 → detectamos que Strogonoff
-                //   tem preço >= base → precoFinal = 29,99 (variante substitui).
-                BigDecimal pfFront = itemReq.getPreco();
-                BigDecimal extrasObs = extrairValorComplementosDaObs(itemReq.getObs());
-                BigDecimal maiorExtraObs = extrairMaiorComplementoDaObs(itemReq.getObs());
-                boolean temVariante = maiorExtraObs != null
-                        && maiorExtraObs.compareTo(precoUnit) >= 0;
-                if (temVariante) {
-                    // Preço correto = max extra da obs (a variante É o produto).
-                    // Se front mandou muito maior (base + variante), corrige.
-                    BigDecimal precoVariante = maiorExtraObs.max(precoUnit);
-                    // Só aplica correção se o front mandou substancialmente
-                    // mais do que a variante sozinha (indica duplicação).
-                    if (pfFront.compareTo(precoVariante.multiply(BigDecimal.valueOf(1.1))) > 0) {
-                        precoUnit = precoVariante;
-                    } else {
-                        precoUnit = pfFront.max(precoUnit);
-                    }
-                } else {
-                    precoUnit = pfFront.max(precoUnit);
-                }
+                // Front mandou preço explícito (base + extras já somados).
+                // Confia — front é a fonte da verdade. Heurística "detecta
+                // variante e substitui" foi removida porque quebrava
+                // adicionais legítimos caros (ex: produto R$10 + adicional
+                // R$15 → sistema achava que era variante e cobrava só R$15
+                // em vez de R$25 → dono perdia dinheiro).
+                precoUnit = itemReq.getPreco().max(precoUnit);
             } else if (itemReq.getPreco() == null) {
                 // Fallback só quando o front NÃO mandou preço (HTML antigo
                 // cacheado). Extrai valores dos complementos pagos da obs.

@@ -13,7 +13,7 @@ import org.springframework.stereotype.Component;
 
 import com.mydelivery.model.WhatsappInstance;
 import com.mydelivery.repository.WhatsappInstanceRepository;
-import com.mydelivery.service.whatsapp.EvolutionClient;
+import com.mydelivery.service.whatsapp.EvolutionCircuitOpenException;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -230,7 +230,7 @@ public class WhatsappWatchdogJob {
             if (s == null || s.isBlank()) return null;
             log.debug("[Watchdog] {} ping retornou state={}", instanceName, s);
             return s.toLowerCase();
-        } catch (EvolutionClient.EvolutionCircuitOpenException cb) {
+        } catch (EvolutionCircuitOpenException cb) {
             return "cb_open";
         } catch (Exception e) {
             log.warn("[Watchdog] ping {} falhou: {}", instanceName, e.getMessage());

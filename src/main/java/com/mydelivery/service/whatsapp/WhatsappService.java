@@ -75,6 +75,17 @@ public class WhatsappService {
      */
     @Transactional
     public WhatsappInstance conectar(Restaurante restaurante) {
+        return conectar(restaurante, false);
+    }
+
+    /**
+     * @param forcarNovoQr quando {@code true}, IGNORA o cache local e busca um QR
+     *   genuinamente novo no Uazapi. Usado pelo auto-refresh do painel (a cada
+     *   ~45s) pra garantir que o QR mostrado nunca esteja expirado no nível do
+     *   protocolo WhatsApp (~60s). Quando {@code false} (clique manual / reload),
+     *   serve o cache se ainda válido — evita regenerar QR durante o scan.
+     */
+    public WhatsappInstance conectar(Restaurante restaurante, boolean forcarNovoQr) {
         WhatsappInstance inst = repo.findByRestauranteId(restaurante.getId()).orElse(null);
 
         // ── FAST PATH: QR ativo em cache local (Jul/2026) ──
@@ -84,7 +95,9 @@ public class WhatsappService {
         // toda vez que ele clicava, chamávamos consultarStatus + connect na
         // Evolution — 2 HTTPs, cada uma podendo estar lenta. Agora: se o QR
         // ainda tá válido no banco, devolve em <50ms.
-        if (inst != null
+        // forcarNovoQr=true pula o cache (auto-refresh quer QR sempre fresco).
+        if (!forcarNovoQr
+                && inst != null
                 && inst.getQrCode() != null && !inst.getQrCode().isBlank()
                 && inst.getQrExpiraEm() != null
                 && LocalDateTime.now().isBefore(inst.getQrExpiraEm())
@@ -139,27 +152,50 @@ public class WhatsappService {
         // Evolution v2.x. Múltiplas chamadas seguidas invalidavam QR que
         // o usuário estava escaneando (causa raiz do "fica conectando
         // eternamente").
-        boolean qrJaTem = inst.getQrCode() != null && !inst.getQrCode().isBlank();
+        // Se forçando QR novo, ignora o QR velho no banco e busca fresco.
+        boolean qrJaTem = !forcarNovoQr
+                && inst.getQrCode() != null && !inst.getQrCode().isBlank();
         if (!qrJaTem) {
-            try {
-                @SuppressWarnings("unchecked")
-                Map<String, Object> resp = evolutionClient.conectar(inst.getInstanceName());
-                String qr = extrairQrCode(resp);
-                if (qr != null) {
-                    inst.setQrCode(qr);
-                    // TTL aumentado 60s → 90s (Jul/2026). Antes o webhook
-                    // QRCODE_UPDATED (a cada ~25-30s) sobrescrevia o QR que
-                    // o dono estava escaneando. 90s dá janela mais generosa
-                    // pra scan sem invalidação.
-                    inst.setQrExpiraEm(LocalDateTime.now().plusSeconds(90));
+            // RETRY (Ago/2026): instância recém-criada precisa de ~1-2s pro
+            // Uazapi provisionar a sessão Baileys. A 1ª chamada /instance/connect
+            // logo após /instance/create costumava voltar SEM QR (ou erro),
+            // caindo em status ERRO → dono via "Não foi possível conectar" e
+            // precisava clicar "tentar novamente". Agora tentamos até 3x com
+            // 900ms entre elas — o QR vem já na 1ª interação do dono.
+            String qr = null;
+            int tentativas = 3;
+            for (int t = 1; t <= tentativas; t++) {
+                try {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> resp = evolutionClient.conectar(inst.getInstanceName());
+                    qr = extrairQrCode(resp);
+                    if (qr != null && !qr.isBlank()) break;
+                    // QR vazio — instância ainda provisionando. Espera e retenta.
+                    if (t < tentativas) {
+                        log.info("[WhatsApp] QR vazio pra {} (tentativa {}/{}) — aguardando provisionamento",
+                                inst.getInstanceName(), t, tentativas);
+                        try { Thread.sleep(900); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+                    }
+                } catch (RuntimeException e) {
+                    log.warn("[WhatsApp] connect falhou pra {} (tentativa {}/{}): {}",
+                            inst.getInstanceName(), t, tentativas, e.getMessage());
+                    if (t < tentativas) {
+                        try { Thread.sleep(900); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+                    }
                 }
-                // Se QR não veio no body, webhook QRCODE_UPDATED chegará em
-                // alguns segundos e popula via salvarQrCode().
-            } catch (RuntimeException e) {
-                log.error("[WhatsApp] Erro ao gerar QR pra {}: {}", inst.getInstanceName(), e.getMessage());
-                inst.setStatus(WhatsappInstance.Status.ERRO);
-                return repo.save(inst);
             }
+            if (qr != null && !qr.isBlank()) {
+                inst.setQrCode(qr);
+                // TTL 55s: WhatsApp expira o QR no nível do protocolo em ~60s.
+                // Antes era 90s — servia QR já MORTO por até 30s, causando o
+                // "Não foi possível conectar" quando o dono mirava tarde. Com
+                // 55s + auto-refresh do painel a cada 45s, o QR exibido está
+                // SEMPRE válido.
+                inst.setQrExpiraEm(LocalDateTime.now().plusSeconds(55));
+            }
+            // Se QR ainda não veio após retries, webhook QRCODE_UPDATED chega
+            // em alguns segundos e popula via salvarQrCode(). Não marca ERRO —
+            // deixa AGUARDANDO_QR pro painel seguir pollando (evita tela de erro).
         }
         inst.setStatus(WhatsappInstance.Status.AGUARDANDO_QR);
 
@@ -174,26 +210,26 @@ public class WhatsappService {
     public void salvarQrCode(WhatsappInstance inst, String qrBase64) {
         if (qrBase64 == null || qrBase64.isBlank()) return;
 
-        // ESTABILIDADE DO QR — não sobrescreve QR atual ENQUANTO ainda
-        // está válido. A Evolution v2.x emite QRCODE_UPDATED a cada ~25-30s
-        // automaticamente (comportamento Baileys padrão). Se sobrescrevermos
-        // o QR atual antes dele expirar, o celular do dono tenta escanear
-        // QR que já não vale mais → "QR inválido", reinicia o ciclo.
+        // ESTABILIDADE DO QR — o Uazapi emite QRCODE_UPDATED periodicamente
+        // (Baileys). Aceitamos o QR fresco do webhook desde que o atual já
+        // tenha ~40s de vida — assim o DB fica sempre com o QR MAIS NOVO
+        // possível (dentro da validade de ~60s do WhatsApp), sem trocar
+        // freneticamente durante os primeiros segundos de um scan em curso.
         //
-        // Regra: só aceita QR novo se o atual já expirou (passou de qrExpiraEm).
-        // Cobre scan ativo de até 60s (que é o TTL do QR salvo).
+        // Antes suprimíamos por 90s: isso guardava um QR já morto e ignorava
+        // os frescos que o Uazapi mandava — causa raiz do "Não foi possível
+        // conectar" ao mirar.
         if (inst.getQrCode() != null && !inst.getQrCode().isBlank()
                 && inst.getQrExpiraEm() != null
-                && LocalDateTime.now().isBefore(inst.getQrExpiraEm())) {
-            log.debug("[WhatsApp] QR webhook ignorado pra {} (QR atual ainda valido ate {})",
+                && LocalDateTime.now().isBefore(inst.getQrExpiraEm().minusSeconds(15))) {
+            log.debug("[WhatsApp] QR webhook ignorado pra {} (QR atual ainda fresco, expira {})",
                     inst.getInstanceName(), inst.getQrExpiraEm());
             return;
         }
 
         inst.setQrCode(qrBase64);
-        // TTL 60s → 90s (Jul/2026, consistente com fluxo do conectar).
-        // Dono precisa de tempo pra escanear sem ficar corrida.
-        inst.setQrExpiraEm(LocalDateTime.now().plusSeconds(90));
+        // TTL 55s — alinhado com a validade real do QR no protocolo WhatsApp.
+        inst.setQrExpiraEm(LocalDateTime.now().plusSeconds(55));
         inst.setStatus(WhatsappInstance.Status.AGUARDANDO_QR);
         repo.save(inst);
         log.info("[WhatsApp] QR atualizado via webhook pra {}", inst.getInstanceName());

@@ -44,9 +44,13 @@ public class WhatsappController {
      */
     @PostMapping("/conectar")
     @PreAuthorize("hasRole('RESTAURANTE')")
-    public ResponseEntity<Map<String, Object>> conectar(@AuthenticationPrincipal String email) {
+    public ResponseEntity<Map<String, Object>> conectar(
+            @AuthenticationPrincipal String email,
+            @org.springframework.web.bind.annotation.RequestParam(value = "forcar", defaultValue = "false") boolean forcar) {
         Restaurante r = restauranteRepository.findByUsuarioEmail(email).orElseThrow();
-        WhatsappInstance inst = whatsappService.conectar(r);
+        // forcar=true: auto-refresh do painel — ignora cache e traz QR fresco
+        // do Uazapi pra o QR exibido nunca estar expirado no protocolo.
+        WhatsappInstance inst = whatsappService.conectar(r, forcar);
         return ResponseEntity.ok(serializar(inst));
     }
 

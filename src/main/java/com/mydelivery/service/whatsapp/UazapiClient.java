@@ -710,7 +710,7 @@ public class UazapiClient {
         if (circuitBreakerAberto()) {
             long faltamMs = circuitAbertoAte.get() - System.currentTimeMillis();
             log.warn("[Uazapi:CB] rejeitando {} {} — circuit aberto por mais {}s", method, path, faltamMs / 1000);
-            throw new EvolutionClient.EvolutionCircuitOpenException("Uazapi temporariamente indisponível (circuit aberto)");
+            throw new EvolutionCircuitOpenException("Uazapi temporariamente indisponível (circuit aberto)");
         }
         if (token == null || token.isBlank()) {
             throw new RuntimeException("Uazapi: token vazio pra " + method + " " + path);

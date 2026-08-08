@@ -6,6 +6,7 @@ import java.util.List;
 
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import com.mydelivery.model.PushSubscription;
@@ -116,6 +117,14 @@ public class WebPushService {
      * @param url     URL a abrir ao clicar (ex: /pedidos.html?tipo=delivery)
      * @param tag     identificador (ex: "pedido-delivery") pra agrupar repetidas
      */
+    // @Async (Ago/2026): ANTES rodava síncrono DENTRO do @Transactional
+    // criarPedido — cada push é uma chamada HTTP bloqueante (FCM/APNs), feita
+    // uma a uma pra cada aparelho. Segurava a conexão do banco (pool max 25)
+    // por 2-10s por pedido. No pico de domingo, as 25 conexões esgotavam e a
+    // loja "caía" (novos pedidos e o painel ficavam sem conexão → timeout).
+    // Agora roda em thread separada: criarPedido retorna na hora e a conexão
+    // do banco é liberada imediatamente. A entrega do push acontece em paralelo.
+    @Async
     public void notificar(Long restauranteId, String titulo, String corpo, String url, String tag) {
         if (!habilitado) return;
         List<PushSubscription> subs = repo.findByRestauranteId(restauranteId);

@@ -327,7 +327,24 @@ public class PedidoService {
             //  100x do preço base. Ex: feijão R$ 59,99/kg, cliente pega 250g
             //  = R$ 15 (menor que base, ainda válido pra vitrine).
             boolean ehVitrine = Boolean.TRUE.equals(produto.getPrecoVitrine());
-            BigDecimal limiteMax = precoUnit.multiply(BigDecimal.valueOf(ehVitrine ? 100 : 10));
+            // TETO ANTI-FRAUDE — corrigido Ago/2026.
+            //
+            // Antes: teto = base × 10 (ou ×100 vitrine). Bug de DINHEIRO: quando
+            // os complementos eram caros em relação ao base (clássico de açaí —
+            // base R$3 + toppings R$40 = R$43), o preço enviado passava de base×10
+            // (R$30), o backend REJEITAVA e cobrava só o base (R$3). A loja perdia
+            // os R$40 dos complementos em TODO pedido assim.
+            //
+            // Agora: o teto é o MAIOR entre (base × N) e (base + complementos
+            // DECLARADOS na própria obs). A obs traz "+ Topping (R$ 5,00)" por item,
+            // então base+extras é o preço legítimo real. Mantemos o base×N como
+            // piso do teto pra não travar quando a obs vier sem valores (compat).
+            // +5% de folga cobre arredondamento de centavos.
+            BigDecimal extrasDeclaradosObs = extrairValorComplementosDaObs(itemReq.getObs());
+            BigDecimal tetoPorObs = precoUnit.add(extrasDeclaradosObs)
+                    .multiply(BigDecimal.valueOf(1.05));
+            BigDecimal limiteMax = precoUnit.multiply(BigDecimal.valueOf(ehVitrine ? 100 : 10))
+                    .max(tetoPorObs);
             if (ehVitrine) {
                 // Vitrine: preço cobrado vem 100% do frontend (porção escolhida).
                 // Não soma com base. Aceita qualquer valor > 0 e <= limiteMax.
@@ -1255,8 +1272,11 @@ public class PedidoService {
      *
      * Retorna ZERO se a obs for null/vazia ou se nao houver match.
      */
+    // Casa "(R$ 18,00)" (fluxo normal) E "(+R$ 5,00)" (fluxo combo) — o `+?`
+    // torna o sinal opcional. Sem ele, os complementos de combo não eram
+    // extraídos e o teto anti-fraude vinha baixo demais (loja perdia dinheiro).
     private static final java.util.regex.Pattern COMPLEMENTO_PRECO_RX =
-            java.util.regex.Pattern.compile("\\(\\s*R\\$\\s*([0-9]+(?:[.,][0-9]{1,2})?)\\s*\\)");
+            java.util.regex.Pattern.compile("\\(\\s*\\+?\\s*R\\$\\s*([0-9]+(?:[.,][0-9]{1,2})?)\\s*\\)");
 
     private static BigDecimal extrairValorComplementosDaObs(String obs) {
         if (obs == null || obs.isBlank()) return BigDecimal.ZERO;

@@ -1,0 +1,146 @@
+{
+  "versao": "1.0",
+  "descricao": "Base de conhecimento do ramo de comida (Brasil) para o myHelp inferir categoria/produto a partir da linguagem natural do dono. IMPORTANTE: é REFORÇO, não a fonte principal. O motor deve SEMPRE tentar casar primeiro com os produtos REAIS da loja (busca fuzzy nos nomes cadastrados). Esta base entra quando: (a) não houve match direto, pra sugerir a categoria mais provável; (b) desambiguar termos populares que não aparecem literalmente no nome do produto (ex: 'franguinho' = porção). Extensível: cresça a lista 'termos' conforme aparecerem pedidos que a base não cobriu.",
+
+  "regras_de_inferencia": [
+    "1. Normalizar a entrada: minúsculas, sem acento, sem pontuação, colapsar espaços. 'X-Tudo' e 'x tudo' e 'xtudo' viram a mesma chave.",
+    "2. Match direto no cardápio da loja tem PRIORIDADE sobre esta base. Só usar a base se o match direto falhar ou for ambíguo.",
+    "3. Um token de tamanho/volume (ml, l, litro, lata, 300, 500, 600, 1,5l, 2l) puxa forte pra BEBIDAS (ou ACAI se o termo for açaí). Usar como desempate.",
+    "4. Se cair na base e achar a categoria provável, NUNCA alterar preço direto: listar os produtos daquela categoria da loja e pedir pro dono escolher.",
+    "5. Ao achar 1 produto (direto ou por escolha), SEMPRE mostrar card (foto + nome + preço atual) e pedir confirmação antes de alterar. Mexer em preço = dinheiro, nunca sem 'confirma?'.",
+    "6. Se o termo casar com VÁRIAS categorias/produtos, mostrar todos e perguntar qual."
+  ],
+
+  "categorias": [
+    {
+      "tag": "LANCHES",
+      "apelidos_categoria": ["lanches", "lanche", "hamburgueres", "hamburgueria", "burgers", "burger", "sanduiches", "sanduiche", "lanchonete", "artesanais"],
+      "termos": ["x-tudo", "xtudo", "x tudo", "x-burguer", "x-burger", "xburguer", "x-salada", "x-egg", "x-bacon", "x-frango", "x-calabresa", "x-catupiry", "x-picanha", "x-egg-bacon", "xis", "xis completo", "misto", "misto quente", "bauru", "americano", "cheeseburguer", "cheeseburger", "hamburguer", "hamburger", "burguer", "burger", "smash", "smash burger", "artesanal", "sanduiche", "sanduba", "beirute"],
+      "hints_tamanho": []
+    },
+    {
+      "tag": "HOT_DOG",
+      "apelidos_categoria": ["hot dog", "cachorro quente", "dogao", "dogs", "dog"],
+      "termos": ["hot dog", "hotdog", "hot-dog", "cachorro quente", "cachorro-quente", "dog", "dogao", "dogão", "prensado", "hot prensado", "cachorrao"],
+      "hints_tamanho": []
+    },
+    {
+      "tag": "ACAI",
+      "apelidos_categoria": ["acai", "açai", "açaiteria", "acaiteria", "tigelas", "acai na tigela"],
+      "termos": ["acai", "açai", "açaí", "tigela", "tigela de acai", "cupuacu", "cupuaçu", "na tigela", "montado", "bowl de acai", "acai no copo", "copao de acai", "monte seu acai"],
+      "hints_tamanho": ["200ml", "300ml", "400ml", "500ml", "700ml", "1l", "200", "300", "400", "500", "700"]
+    },
+    {
+      "tag": "PORCOES",
+      "apelidos_categoria": ["porcoes", "porcao", "porções", "porção", "para petiscar", "petiscos", "aperitivos", "para dividir", "acompanhamentos"],
+      "termos": ["porcao", "porção", "fritas", "batata frita", "batata", "franguinho", "frango a passarinho", "frango passarinho", "isca de frango", "isca", "isca de peixe", "tilapia", "tilápia", "calabresa acebolada", "torresmo", "mandioca", "aipim", "polenta", "polenta frita", "camarao", "camarão", "camarao empanado", "onion rings", "anel de cebola", "nuggets", "bolinho de bacalhau", "dadinho de tapioca", "linguica", "linguiça"],
+      "hints_tamanho": ["inteira", "meia", "individual", "300g", "500g"]
+    },
+    {
+      "tag": "BEBIDAS",
+      "apelidos_categoria": ["bebidas", "bebida", "refrigerantes", "refrigerante", "sucos", "suco", "aguas", "agua", "para beber", "drinks nao alcoolicos"],
+      "termos": ["refri", "refrigerante", "coca", "coca-cola", "coca cola", "coquinha", "guarana", "guaraná", "guarana antarctica", "fanta", "fanta laranja", "fanta uva", "sprite", "pepsi", "tuchaua", "kuat", "dolly", "sukita", "schweppes", "agua", "água", "agua com gas", "agua sem gas", "agua mineral", "suco", "suco natural", "suco de laranja", "suco de maracuja", "del valle", "dell valle", "energetico", "energético", "red bull", "monster", "tnt", "cha", "chá", "cha gelado", "matte", "mate", "leao", "h2o", "gatorade", "isotonico"],
+      "hints_tamanho": ["ml", "l", "litro", "lata", "latinha", "600", "350", "250", "200", "290", "300", "500", "1l", "1,5l", "1.5l", "2l", "600ml", "350ml", "long neck", "ln", "garrafa", "pet", "ks", "caçula", "cacula"]
+    },
+    {
+      "tag": "BEBIDAS_ALCOOLICAS",
+      "apelidos_categoria": ["bebidas alcoolicas", "cervejas", "cerveja", "drinks", "alcoolicos", "chopp", "vinhos", "vinho", "destilados"],
+      "termos": ["cerveja", "breja", "chopp", "chop", "heineken", "heneiken", "budweiser", "bud", "brahma", "skol", "antarctica", "original", "amstel", "eisenbahn", "spaten", "stella", "stella artois", "corona", "petra", "itaipava", "crystal", "caipirinha", "caipiroska", "gin", "gin tonica", "vodka", "whisky", "uisque", "vinho", "vinho tinto", "vinho branco", "espumante", "sake", "sakerinha"],
+      "hints_tamanho": ["long neck", "ln", "lata", "600", "600ml", "473", "269", "garrafa", "litrao", "litrão", "growler", "taca", "taça", "dose"]
+    },
+    {
+      "tag": "PIZZAS",
+      "apelidos_categoria": ["pizzas", "pizza", "pizzaria", "esfihas doces"],
+      "termos": ["pizza", "piza", "calabresa", "mussarela", "muçarela", "muzzarela", "marguerita", "margherita", "portuguesa", "frango com catupiry", "frango c catupiry", "quatro queijos", "4 queijos", "4 formaggi", "pepperoni", "peperoni", "napolitana", "toscana", "baiana", "lombo canadense", "brocolis", "brócolis", "a moda", "à moda", "meio a meio", "chocolate", "brigadeiro", "romeu e julieta", "banana com canela"],
+      "hints_tamanho": ["broto", "pequena", "media", "média", "grande", "familia", "família", "gigante", "8 fatias", "4 pedacos", "6 pedacos", "8 pedacos", "individual"]
+    },
+    {
+      "tag": "PASTEIS",
+      "apelidos_categoria": ["pasteis", "pastel", "pastelaria", "pasteis fritos"],
+      "termos": ["pastel", "pasteis", "pastel de carne", "pastel de queijo", "pastel de frango", "pastel de frango com catupiry", "pastel de pizza", "pastel de camarao", "pastel de camarão", "pastel de carne com queijo", "pastel de palmito", "pastel de chocolate", "pastel de bauru", "pastelzinho", "pastel especial"],
+      "hints_tamanho": []
+    },
+    {
+      "tag": "SALGADOS",
+      "apelidos_categoria": ["salgados", "salgado", "salgadinhos", "para o cafe", "fritos", "assados", "quitutes"],
+      "termos": ["coxinha", "coxinha de frango", "coxinha de catupiry", "kibe", "quibe", "esfiha", "esfirra", "esfiha de carne", "esfiha de frango", "risole", "risoles", "risole de carne", "empada", "empadinha", "enroladinho", "enroladinho de salsicha", "bolinha de queijo", "bolinho de queijo", "pao de queijo", "pão de queijo", "croquete", "torta salgada", "quiche", "folhado", "empanado"],
+      "hints_tamanho": ["unidade", "cento", "meio cento", "duzia", "dúzia"]
+    },
+    {
+      "tag": "MARMITAS",
+      "apelidos_categoria": ["marmitas", "marmita", "marmitex", "pratos feitos", "prato feito", "pf", "executivo", "refeicoes", "refeições", "self service", "quentinhas", "quentinha"],
+      "termos": ["marmita", "marmitex", "prato feito", "pf", "executivo", "prato executivo", "refeicao", "refeição", "quentinha", "feijoada", "parmegiana", "parmegiana de frango", "file a parmegiana", "filé à parmegiana", "strogonoff", "estrogonofe", "estrogonofe de frango", "bife acebolado", "frango grelhado", "picanha na chapa", "arroz feijao bife", "prato do dia", "self service", "por quilo", "por kilo"],
+      "hints_tamanho": ["pequena", "media", "média", "grande", "individual", "familia", "família", "500g", "750g", "1kg"]
+    },
+    {
+      "tag": "MASSAS",
+      "apelidos_categoria": ["massas", "massa", "cantina", "italiana", "pastas"],
+      "termos": ["lasanha", "lasanha bolonhesa", "lasanha 4 queijos", "nhoque", "nhoque ao sugo", "espaguete", "espaguete a bolonhesa", "talharim", "penne", "capeletti", "capelletti", "ravioli", "rondelli", "macarronada", "macarrao", "macarrão", "canelone", "caneloni", "fettuccine", "fettuccine alfredo"],
+      "hints_tamanho": ["individual", "para 2", "familia", "família"]
+    },
+    {
+      "tag": "JAPONESA",
+      "apelidos_categoria": ["japonesa", "japones", "sushi", "temakeria", "comida japonesa", "oriental", "sushiman"],
+      "termos": ["sushi", "sushis", "temaki", "temaqui", "sashimi", "sasimi", "combinado", "combinado japones", "hot roll", "hot filadelfia", "uramaki", "niguiri", "nigiri", "hossomaki", "hosomaki", "yakisoba", "yakissoba", "guioza", "gyoza", "harumaki", "filadelfia", "philadelphia", "salmao", "salmão", "ceviche", "poke", "poke bowl"],
+      "hints_tamanho": ["10 pecas", "15 pecas", "20 pecas", "peças", "combo", "barca", "individual"]
+    },
+    {
+      "tag": "ESPETINHOS",
+      "apelidos_categoria": ["espetinhos", "espetinho", "espetos", "espeto", "churrasco", "churrascaria", "grelhados"],
+      "termos": ["espetinho", "espeto", "espetinho de frango", "espetinho de carne", "espeto de carne", "medalhao", "medalhão", "espetinho de queijo", "queijo coalho", "coalho", "picanha no espeto", "linguica no espeto", "coracao", "coração", "espetinho de coracao", "kafta", "cupim", "maminha", "alcatra", "frango a passarinho"],
+      "hints_tamanho": ["unidade", "kit", "combo", "dezena"]
+    },
+    {
+      "tag": "SOBREMESAS",
+      "apelidos_categoria": ["sobremesas", "sobremesa", "doces", "doce", "confeitaria", "docaria", "sorveteria", "milkshakes"],
+      "termos": ["sobremesa", "pudim", "pudim de leite", "brigadeiro", "brigadeirao", "brigadeirão", "mousse", "mousse de maracuja", "petit gateau", "petit gato", "sorvete", "casquinha", "milkshake", "milk shake", "milk-shake", "shake", "sundae", "banana split", "acai no copo", "torta", "torta de limao", "cheesecake", "cookie", "cookies", "bolo", "bolo de pote", "pave", "pavê", "brownie", "churros", "banoffee", "fondue"],
+      "hints_tamanho": ["300ml", "400ml", "500ml", "fatia", "pote", "individual"]
+    },
+    {
+      "tag": "SAUDAVEL",
+      "apelidos_categoria": ["saudavel", "saudável", "fit", "fitness", "saladas", "salada", "low carb", "natural", "veg", "vegano", "vegetariano"],
+      "termos": ["salada", "salada caesar", "salada ceasar", "salada tropical", "wrap", "rap10", "bowl", "poke", "grelhado fit", "frango grelhado fit", "omelete", "tapioca fit", "prato fit", "marmita fit", "low carb", "vegano", "vegetariano", "hamburguer vegano", "falafel"],
+      "hints_tamanho": ["pequena", "media", "média", "grande", "individual"]
+    },
+    {
+      "tag": "TAPIOCAS_CREPES",
+      "apelidos_categoria": ["tapiocas", "tapioca", "crepes", "crepe", "tapiocaria", "creperia"],
+      "termos": ["tapioca", "tapioca de frango", "tapioca de queijo", "tapioca de coco", "tapioca doce", "crepe", "crepe frances", "crepe francês", "crepe de chocolate", "beiju", "dadinho"],
+      "hints_tamanho": []
+    },
+    {
+      "tag": "CAFE_PADARIA",
+      "apelidos_categoria": ["cafe", "café", "cafeteria", "padaria", "panificadora", "cafe da manha", "café da manhã", "lanche da tarde"],
+      "termos": ["cafe", "café", "cafezinho", "expresso", "espresso", "cappuccino", "capuccino", "capuchino", "pingado", "media", "média", "com leite", "pao na chapa", "pão na chapa", "pao de queijo", "pão de queijo", "misto quente", "croissant", "croissant", "sonho", "bolo", "torrada", "chocolate quente"],
+      "hints_tamanho": ["pequeno", "grande", "200ml", "300ml"]
+    }
+  ],
+
+  "marcas_para_generico": {
+    "coca": "refrigerante",
+    "coca-cola": "refrigerante",
+    "guarana": "refrigerante",
+    "fanta": "refrigerante",
+    "sprite": "refrigerante",
+    "pepsi": "refrigerante",
+    "heineken": "cerveja",
+    "brahma": "cerveja",
+    "skol": "cerveja",
+    "del valle": "suco",
+    "red bull": "energetico",
+    "monster": "energetico"
+  },
+
+  "tokens_tamanho_normalizacao": {
+    "descricao": "Ajuda a casar variações de tamanho/volume escritas de formas diferentes.",
+    "mapa": {
+      "1,5l": ["1.5l", "1,5 l", "1500ml", "litro e meio", "1,5 litros"],
+      "2l": ["2 l", "2000ml", "2 litros", "dois litros"],
+      "1l": ["1 l", "1000ml", "1 litro", "um litro"],
+      "600ml": ["600", "600 ml", "seiscentos"],
+      "350ml": ["350", "350 ml", "lata", "latinha"],
+      "300ml": ["300", "300 ml"],
+      "500ml": ["500", "500 ml"]
+    }
+  }
+}

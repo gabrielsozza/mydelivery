@@ -110,8 +110,20 @@ public class EntregaController {
      * preencher o endereço. Retorna 404 se Nominatim não achou.
      */
     @GetMapping("/api/publico/geocodificar")
-    public ResponseEntity<Map<String, Object>> geocodificar(@RequestParam("q") String query) {
-        double[] c = entregaService.geocodificar(query);
+    public ResponseEntity<Map<String, Object>> geocodificar(@RequestParam("q") String query,
+                                                            @RequestParam(value = "slug", required = false) String slug) {
+        // Âncora: se veio o slug, usa a coordenada da loja pra o geocoder só
+        // buscar PERTO dela (evita cair em cidade homônima). Sem slug, cai no
+        // modo antigo (texto livre).
+        Double cLat = null, cLng = null;
+        if (slug != null && !slug.isBlank()) {
+            Restaurante r = restauranteRepo.findBySlug(slug).orElse(null);
+            if (r != null && r.getEnderecoLatitude() != null && r.getEnderecoLongitude() != null) {
+                cLat = r.getEnderecoLatitude().doubleValue();
+                cLng = r.getEnderecoLongitude().doubleValue();
+            }
+        }
+        double[] c = entregaService.geocodificar(query, cLat, cLng);
         if (c == null) return ResponseEntity.status(org.springframework.http.HttpStatus.NOT_FOUND).build();
         return ResponseEntity.ok(Map.of("lat", c[0], "lng", c[1]));
     }

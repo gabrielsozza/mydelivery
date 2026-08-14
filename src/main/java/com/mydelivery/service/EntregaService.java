@@ -161,43 +161,80 @@ public class EntregaService {
      * cliente no checkout. Zerado a cada restart.
      */
     public double[] geocodificar(String endereco) {
+        return geocodificar(endereco, null, null);
+    }
+
+    /**
+     * Geocodifica ANCORADO ao redor de {@code (centroLat, centroLng)} — na
+     * prática a loja. Sem essa âncora, o Nominatim pega bairro/rua de mesmo
+     * nome em <b>outra cidade</b> (ex.: "Parque Maria Helena" caía em Suzano/SP
+     * em vez de Serra/ES) e a distância sai completamente errada.
+     *
+     * <p>Estratégia em camadas:
+     * <ol>
+     *   <li><b>Estrito</b> (viewbox + {@code bounded=1}) — só devolve ponto
+     *       DENTRO da caixa em volta da loja. Nunca outra cidade.</li>
+     *   <li><b>Brando</b> (viewbox sem bounded) — prefere perto, mas aceita
+     *       fora se for o único match (evita "não achou" e perder venda).</li>
+     *   <li><b>Sem viés</b> — último recurso quando não há coordenada da loja.</li>
+     * </ol>
+     */
+    public double[] geocodificar(String endereco, Double centroLat, Double centroLng) {
         if (endereco == null || endereco.isBlank()) return null;
-        String chave = endereco.trim().toLowerCase().replaceAll("\\s+", " ");
+        boolean temCentro = centroLat != null && centroLng != null;
+        String chave = (temCentro ? (Math.round(centroLat * 50) + "," + Math.round(centroLng * 50) + "|") : "")
+                + endereco.trim().toLowerCase().replaceAll("\\s+", " ");
         double[] cache1 = cache.get(chave);
         if (cache1 != null) return cache1;
 
-        // Rate limit suave
+        double[] coord = null;
+        if (temCentro) {
+            coord = consultarNominatim(endereco, centroLat, centroLng, true);   // estrito
+            if (coord == null) coord = consultarNominatim(endereco, centroLat, centroLng, false); // brando
+        }
+        if (coord == null) coord = consultarNominatim(endereco, null, null, false); // sem viés
+        if (coord != null) cache.put(chave, coord);
+        return coord;
+    }
+
+    /** Rate limit suave pra respeitar o fair-use do Nominatim (~1 req/60ms). */
+    private void throttleNominatim() {
         long agora = System.currentTimeMillis();
         long deltaMs = agora - ultimaChamadaNominatim;
         if (deltaMs < 60) {
-            try { Thread.sleep(60 - deltaMs); } catch (InterruptedException e) { Thread.currentThread().interrupt(); return null; }
+            try { Thread.sleep(60 - deltaMs); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
         }
         ultimaChamadaNominatim = System.currentTimeMillis();
+    }
 
+    /** Uma consulta ao Nominatim. Se {@code cLat/cLng} vierem, aplica viewbox
+     *  (caixa ~38km em volta da loja); {@code bounded=true} força ficar dentro. */
+    private double[] consultarNominatim(String endereco, Double cLat, Double cLng, boolean bounded) {
+        throttleNominatim();
         try {
+            final double BOX = 0.35; // ~38km em graus (lat) — cobre qualquer entrega, exclui cidade vizinha longe
             @SuppressWarnings("unchecked")
             List<Map<String, Object>> resp = nominatim.get()
-                    .uri(uri -> uri.path("/search")
-                            .queryParam("q", endereco)
-                            .queryParam("format", "json")
-                            .queryParam("limit", 1)
-                            .queryParam("countrycodes", "br")
-                            .build())
+                    .uri(uri -> {
+                        uri.path("/search")
+                           .queryParam("q", endereco)
+                           .queryParam("format", "json")
+                           .queryParam("limit", 1)
+                           .queryParam("countrycodes", "br");
+                        if (cLat != null && cLng != null) {
+                            // viewbox = lonEsq,latTopo,lonDir,latBase
+                            uri.queryParam("viewbox", (cLng - BOX) + "," + (cLat + BOX) + "," + (cLng + BOX) + "," + (cLat - BOX));
+                            if (bounded) uri.queryParam("bounded", 1);
+                        }
+                        return uri.build();
+                    })
                     .retrieve()
                     .body(List.class);
-            if (resp == null || resp.isEmpty()) {
-                log.debug("[Geocoder] sem resultado pra '{}'", endereco);
-                return null;
-            }
+            if (resp == null || resp.isEmpty()) return null;
             Object lat = resp.get(0).get("lat");
             Object lon = resp.get(0).get("lon");
             if (lat == null || lon == null) return null;
-            double[] coord = new double[] {
-                    Double.parseDouble(lat.toString()),
-                    Double.parseDouble(lon.toString())
-            };
-            cache.put(chave, coord);
-            return coord;
+            return new double[] { Double.parseDouble(lat.toString()), Double.parseDouble(lon.toString()) };
         } catch (RestClientException | NumberFormatException e) {
             log.warn("[Geocoder] falha em '{}': {}", endereco, e.getMessage());
             return null;

@@ -157,23 +157,20 @@ public class BalcaoService {
             //    fraude: 100x do base.
             //  - NORMAL: aceita preço enviado SE for MAIOR que o base (somou
             //    complementos) e dentro do limite 10x.
+            // SEM teto anti-fraude (Ago/2026): o teto de 10x/100x DERRUBAVA
+            // complemento caro e cobrava só o base → perda de dinheiro. O front
+            // do balcão é a fonte da verdade do preço (base + complementos já
+            // somados). Piso = base (nunca cobra menos). No balcão o atendente
+            // é confiável, então não há motivo pra teto superior.
             BigDecimal precoEnviado = decOf(it.get("preco"));
             boolean ehVitrine = Boolean.TRUE.equals(prod.getPrecoVitrine());
             if (ehVitrine) {
-                BigDecimal limMax = precoBase.multiply(BigDecimal.valueOf(100));
-                if (precoEnviado != null && precoEnviado.compareTo(BigDecimal.ZERO) > 0
-                        && precoEnviado.compareTo(limMax) <= 0) {
-                    precoUnit = precoEnviado;
-                } else {
-                    // sem preço válido enviado: NÃO cobrar referencial (R$/kg) —
-                    // ficaria absurdo. Cobra 0 e fica claro no painel que algo errado.
-                    precoUnit = BigDecimal.ZERO;
-                }
+                // Vitrine: base é só referência. Cobra o que o front mandou (porção).
+                precoUnit = (precoEnviado != null && precoEnviado.compareTo(BigDecimal.ZERO) > 0)
+                        ? precoEnviado : BigDecimal.ZERO;
             } else if (precoEnviado != null && precoEnviado.compareTo(precoBase) > 0) {
-                BigDecimal limMax = precoBase.multiply(BigDecimal.valueOf(10));
-                if (precoEnviado.compareTo(limMax) <= 0) {
-                    precoUnit = precoEnviado;
-                }
+                // Front somou complementos → cobra o valor cheio, sem teto.
+                precoUnit = precoEnviado;
             }
 
             BigDecimal totalItem = precoUnit.multiply(BigDecimal.valueOf(qtd));

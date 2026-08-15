@@ -304,80 +304,38 @@ public class PedidoService {
             // Preço base do produto (do banco). É o piso — cliente nunca paga menos.
             BigDecimal precoUnit = produto.getPreco();
 
-            // ── BLINDAGEM DE COBRANÇA DE COMPLEMENTOS ──
-            // Duas camadas, independentes (cinto + suspensório):
+            // ── COBRANÇA DE COMPLEMENTOS — SEM VÁLVULA DE ESCAPE (Ago/2026) ──
+            // Regra de DINHEIRO, à prova de perda: o preço unitário cobrado é o
+            // MAIOR entre três fontes independentes:
+            //   (a) preço que o FRONTEND mandou  (base + complementos já somados);
+            //   (b) base + valor dos complementos DECLARADOS na obs "(R$ X,XX)";
+            //   (c) o preço BASE do produto (piso — a loja nunca cobra menos).
             //
-            //  1. PRIMÁRIA: se o frontend mandou `preco` MAIOR que o base, é
-            //     porque já somou o complemento no cliente (ex.: Açaí R$ 27 +
-            //     Frozen R$ 3 = R$ 30). Usa esse valor.
+            // Por que MAIOR entre as três e SEM teto superior:
+            //  • O teto anti-fraude antigo (base×10) DERRUBAVA complementos caros
+            //    (açaí R$3 + toppings R$40) e cobrava só o base → perda recorrente.
+            //    Removido. Um cliente "malicioso" só consegue mandar preço MENOR,
+            //    e o piso (base) já bloqueia isso; mandar MAIOR só o prejudica.
+            //  • Se o front esquecer de somar o complemento no preço (bug/cache),
+            //    o (b) recupera pela obs. Se o parse da obs falhar, o (a) do front
+            //    segura. Uma falha sozinha nunca zera o complemento.
             //
-            //  2. FALLBACK: se o frontend NÃO mandou preço (versão antiga do
-            //     HTML cacheada no browser do cliente, ou Netlify atrasado),
-            //     extrai os valores dos complementos pagos da própria obs.
-            //     A obs vem no formato "+ Leite em pó, Granola, Frozen (R$ 3,00)".
-            //     Regex captura todos os "(R$ X,XX)" e soma.
-            //
-            //  Sanity check anti-fraude: nunca aceita preço menor que o base,
-            //  nunca aceita complemento > 10× o base (cliente malicioso).
-            //
-            // CASO ESPECIAL — produto com preço VITRINE (kg, porção variável):
-            //  o preço base é referencial, não cobrado. O cliente paga só o
-            //  valor das porções escolhidas. Aqui usamos o `preco` vindo do
-            //  frontend (que já somou os complementos) com limite mais aberto:
-            //  100x do preço base. Ex: feijão R$ 59,99/kg, cliente pega 250g
-            //  = R$ 15 (menor que base, ainda válido pra vitrine).
+            // VITRINE (kg/porção variável): o base é só referência, não é piso.
+            //  Cobra o MAIOR entre (a) e o valor dos complementos da obs.
             boolean ehVitrine = Boolean.TRUE.equals(produto.getPrecoVitrine());
-            // TETO ANTI-FRAUDE — corrigido Ago/2026.
-            //
-            // Antes: teto = base × 10 (ou ×100 vitrine). Bug de DINHEIRO: quando
-            // os complementos eram caros em relação ao base (clássico de açaí —
-            // base R$3 + toppings R$40 = R$43), o preço enviado passava de base×10
-            // (R$30), o backend REJEITAVA e cobrava só o base (R$3). A loja perdia
-            // os R$40 dos complementos em TODO pedido assim.
-            //
-            // Agora: o teto é o MAIOR entre (base × N) e (base + complementos
-            // DECLARADOS na própria obs). A obs traz "+ Topping (R$ 5,00)" por item,
-            // então base+extras é o preço legítimo real. Mantemos o base×N como
-            // piso do teto pra não travar quando a obs vier sem valores (compat).
-            // +5% de folga cobre arredondamento de centavos.
-            BigDecimal extrasDeclaradosObs = extrairValorComplementosDaObs(itemReq.getObs());
-            BigDecimal tetoPorObs = precoUnit.add(extrasDeclaradosObs)
-                    .multiply(BigDecimal.valueOf(1.05));
-            BigDecimal limiteMax = precoUnit.multiply(BigDecimal.valueOf(ehVitrine ? 100 : 10))
-                    .max(tetoPorObs);
+            BigDecimal precoFront = itemReq.getPreco();
+            boolean frontTemPreco = precoFront != null && precoFront.compareTo(BigDecimal.ZERO) > 0;
+            BigDecimal extrasObs = extrairValorComplementosDaObs(itemReq.getObs());
+
             if (ehVitrine) {
-                // Vitrine: preço cobrado vem 100% do frontend (porção escolhida).
-                // Não soma com base. Aceita qualquer valor > 0 e <= limiteMax.
-                BigDecimal pf = itemReq.getPreco();
-                if (pf != null && pf.compareTo(BigDecimal.ZERO) > 0
-                        && pf.compareTo(limiteMax) <= 0) {
-                    precoUnit = pf;
-                } else {
-                    // Fallback: extrai dos complementos na obs.
-                    BigDecimal extras = extrairValorComplementosDaObs(itemReq.getObs());
-                    precoUnit = extras.compareTo(limiteMax) <= 0 ? extras : limiteMax;
-                }
-            } else if (itemReq.getPreco() != null
-                    && itemReq.getPreco().compareTo(BigDecimal.ZERO) > 0
-                    && itemReq.getPreco().compareTo(limiteMax) <= 0) {
-                // Front mandou preço explícito (base + extras já somados).
-                // Confia — front é a fonte da verdade. Heurística "detecta
-                // variante e substitui" foi removida porque quebrava
-                // adicionais legítimos caros (ex: produto R$10 + adicional
-                // R$15 → sistema achava que era variante e cobrava só R$15
-                // em vez de R$25 → dono perdia dinheiro).
-                precoUnit = itemReq.getPreco().max(precoUnit);
-            } else if (itemReq.getPreco() == null) {
-                // Fallback só quando o front NÃO mandou preço (HTML antigo
-                // cacheado). Extrai valores dos complementos pagos da obs.
-                BigDecimal extras = extrairValorComplementosDaObs(itemReq.getObs());
-                if (extras.compareTo(BigDecimal.ZERO) > 0) {
-                    BigDecimal somado = precoUnit.add(extras);
-                    if (somado.compareTo(limiteMax) <= 0) precoUnit = somado;
-                }
+                BigDecimal porObs = extrasObs; // vitrine: sem base como piso
+                precoUnit = (frontTemPreco ? precoFront : BigDecimal.ZERO).max(porObs);
+                if (precoUnit.compareTo(BigDecimal.ZERO) <= 0) precoUnit = produto.getPreco();
+            } else {
+                BigDecimal porObs = precoUnit.add(extrasObs);            // base + complementos da obs
+                BigDecimal porFront = frontTemPreco ? precoFront : BigDecimal.ZERO;
+                precoUnit = porFront.max(porObs).max(precoUnit);         // maior das três, piso = base
             }
-            // else: preço enviado fora do range válido (0 ou > limiteMax) —
-            // usa precoBase (anti-fraude).
             BigDecimal itemSub = precoUnit.multiply(BigDecimal.valueOf(itemReq.getQty()));
             PedidoItem item = new PedidoItem();
             item.setPedido(pedido);

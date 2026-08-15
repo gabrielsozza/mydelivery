@@ -466,7 +466,10 @@ public class MyHelpService {
 
     // ── Nova categoria ───────────────────────────────────────────────────
     private Map<String, Object> fluxoNovaCategoria(Restaurante r, String texto, String norm) {
-        String nome = fatiaEntre(texto, "categoria", null);
+        // Nome: prefere depois de "chamada/com o nome/denominada"; senão depois de "categoria".
+        String nome = fatiaEntre(texto, "(chamad\\w*|com o nome|denominad\\w*)", null);
+        if (nome == null || nome.isBlank()) nome = fatiaEntre(texto, "categoria", "(chamad\\w*|com o nome|denominad\\w*)");
+        if (nome == null || nome.isBlank()) nome = fatiaEntre(texto, "categoria", null);
         if (nome == null || nome.isBlank()) {
             pendencia.put(r.getId(), mp("acao", "novaCategoria"));
             return texto("Qual o nome da nova categoria? Ex.: *\"Sobremesas\"*.");
@@ -921,6 +924,8 @@ public class MyHelpService {
     private String limpaNome(String s) {
         if (s == null) return null;
         s = s.trim().replaceAll("^[\"'“”]+|[\"'“”]+$", "").replaceAll("^[,;:\\-\\s]+|[,;:\\s]+$", "").trim();
+        // cortesia no COMEÇO ("pra mim", "por favor", "pra você"...)
+        s = s.replaceAll("(?i)^(por favor|por gentileza|pra mim|para mim|pra voce|pra vc|pro senhor|pra senhora|faz favor|faca favor)\\s+", "").trim();
         s = s.replaceAll("(?i)^(o|a|os|as|um|uma|de|do|da|meu|minha|chamad[oa]|com o nome|com|:|-)\\s+", "").trim();
         for (int i = 0; i < 4; i++) {
             String antes = s;

@@ -24,6 +24,7 @@ import com.mydelivery.model.BairroEntrega;
 import com.mydelivery.model.Categoria;
 import com.mydelivery.model.ComplementoGrupo;
 import com.mydelivery.model.ComplementoItem;
+import com.mydelivery.model.MyHelpMemoria;
 import com.mydelivery.model.Produto;
 import com.mydelivery.model.Restaurante;
 import com.mydelivery.repository.CategoriaRepository;
@@ -54,6 +55,7 @@ public class MyHelpService {
     private final ComplementoGrupoRepository grupoRepo;
     private final ComplementoItemRepository itemRepo;
     private final MyHelpDominio dominio;
+    private final MyHelpMemoriaService memoria;
     private final CacheManager cacheManager;
 
     /** Memória curta de conversa: guarda a pendência (o que o myHelp perguntou e
@@ -63,6 +65,14 @@ public class MyHelpService {
             com.github.benmanes.caffeine.cache.Caffeine.newBuilder()
                     .expireAfterWrite(5, java.util.concurrent.TimeUnit.MINUTES)
                     .maximumSize(5000).build();
+
+    /** Último produto falado por loja — resolve "coloca ELE por 29,90". */
+    private final com.github.benmanes.caffeine.cache.Cache<Long, String> ultimoAlvo =
+            com.github.benmanes.caffeine.cache.Caffeine.newBuilder()
+                    .expireAfterWrite(10, java.util.concurrent.TimeUnit.MINUTES)
+                    .maximumSize(5000).build();
+    private static final Pattern PRONOME = Pattern.compile(
+            "^(ele|ela|esse|essa|isso|isto|o mesmo|a mesma|dele|dela|nele|nela|mesmo)$");
 
     /** Slugs liberados no beta (vírgula). "*" libera todas. Vazio = ninguém. */
     @Value("${myhelp.beta-slugs:}")
@@ -92,6 +102,18 @@ public class MyHelpService {
 
     @Transactional(readOnly = true)
     public Map<String, Object> responder(Restaurante r, String textoBruto) {
+        Map<String, Object> resp = responderInterno(r, textoBruto);
+        // Observabilidade: log enxuto do que a IA entendeu (pra debugar erros).
+        try {
+            log.info("[myHelp-log] loja={} input=\"{}\" tipo={} acao={}",
+                r == null ? null : r.getSlug(), textoBruto,
+                resp == null ? null : resp.get("tipo"),
+                resp == null ? null : resp.get("acao"));
+        } catch (Exception ignore) {}
+        return resp;
+    }
+
+    private Map<String, Object> responderInterno(Restaurante r, String textoBruto) {
         String texto = textoBruto == null ? "" : textoBruto.trim();
         String norm = MyHelpTexto.norm(texto);
         if (norm.isBlank()) return texto(pick("Oi! Me diz o que você precisa 🙂", "Opa! Como posso te ajudar?"));
@@ -114,17 +136,22 @@ public class MyHelpService {
         boolean falaDescricao = norm.matches(".*\\b(descricao|descric\\w*)\\b.*");
         boolean falaNome = norm.matches(".*\\b(nome|titulo|renomeia\\w*|renomear|rebatiza\\w*|apelido|chama)\\b.*");
         boolean falaProduto = norm.matches(".*\\b(produto|item|lanche|prato)\\b.*");
+        boolean falaPromo = norm.matches(".*\\b(promoc\\w*|promo|desconto|oferta)\\b.*");
 
         // ── Memória de contexto: se estou esperando um valor e a mensagem é
         //    "só o valor" (sem começar um comando novo), uso a pendência. ──
         boolean novoComando = falaBairro || falaTaxa || criar || falaGrupo || falaComplemento
-            || falaCategoria || falaDescricao || falaNome || falaProduto
+            || falaCategoria || falaDescricao || falaNome || falaProduto || falaPromo
             || INTENCAO_PRECO.matcher(norm).find();
         Map<String, Object> pend = pendencia.getIfPresent(r.getId());
         if (pend != null) {
             pendencia.invalidate(r.getId());              // usa uma vez só
             if (!novoComando) return resolverPendencia(r, pend, texto);
         }
+
+        // ── Ensino/correção explícito ("quando eu falar X é Y") → memória (com card) ──
+        Map<String, Object> ensino = fluxoAprender(r, texto, norm);
+        if (ensino != null) return ensino;
 
         // Complementos (grupo / item) — os mais específicos
         if (falaGrupo && criar && !grupoLocal) return fluxoNovoGrupo(r, texto, norm);
@@ -134,10 +161,13 @@ public class MyHelpService {
         // Categoria
         if (falaCategoria && criar && !categoriaLocal) return fluxoNovaCategoria(r, texto, norm);
         if (falaCategoria && !categoriaLocal && (falaNome || verbo)) return fluxoNomeCategoria(r, texto, norm);
-        // Produto — criar / descrição / nome
-        if (criar && (falaProduto || categoriaLocal)) return fluxoNovoProduto(r, texto, norm);
+        // Produto — criar (padrão de "cria X" quando não é grupo/categoria/promo) / descrição / nome
+        if (criar && !falaPromo) return fluxoNovoProduto(r, texto, norm);
         if (falaDescricao) return fluxoDescricaoProduto(r, texto, norm);
         if (falaNome && !falaCategoria) return fluxoNomeProduto(r, texto, norm);
+
+        // Promoção — ANTES do preço (usa precoOriginal, preserva o preço normal)
+        if (falaPromo) return fluxoPromocao(r, texto, norm);
 
         // Preço de produto (catch-all de dinheiro) — por último das ações
         if (INTENCAO_PRECO.matcher(norm).find() || (verbo && temNum)) return fluxoPreco(r, texto, norm);
@@ -219,6 +249,8 @@ public class MyHelpService {
         BigDecimal precoNovo = extrairPreco(texto);
         // Se falou "produto X" explícito, o alvo é X; senão, o resto da frase.
         String consulta = norm.matches(".*\\bproduto\\b.*") ? alvoProduto(texto, norm) : extrairConsulta(norm, false);
+        consulta = resolverPronome(r.getId(), consulta);          // contexto: "coloca ele por 25"
+        consulta = resolverApelidoProduto(r.getId(), consulta);   // memória: apelidos aprendidos
         if (consulta.isBlank()) {
             return texto("Qual produto você quer alterar? Me diz o nome como está no cardápio "
                 + "(ex.: *\"X-Bacon\"*, *\"Coca 2L\"*).");
@@ -444,6 +476,91 @@ public class MyHelpService {
             "Vou criar esta categoria nova. Confirma?");
     }
 
+    // ── Aprendizado: dono ensina/corrige um apelido ("quando eu falar X é Y") ──
+    private Map<String, Object> fluxoAprender(Restaurante r, String texto, String norm) {
+        String[] par = detectarEnsino(texto);
+        if (par == null || par[0] == null || par[1] == null || par[0].isBlank() || par[1].isBlank()) return null;
+        String gatilho = par[0], valor = par[1];
+        return card("aprender", item("aprender", "Aprender", null, "bulb",
+            null, "\"" + gatilho + "\" → " + valor, null,
+            mp("gatilho", gatilho, "valor", valor, "contexto", "product_ref")),
+            "Quer que eu lembre disso pra essa loja?");
+    }
+
+    /** Extrai [gatilho, valor] de um ensino explícito, ou null. Preserva a caixa do valor. */
+    private String[] detectarEnsino(String texto) {
+        String t = texto == null ? "" : texto.trim();
+        Matcher m = Pattern.compile("(?i)quando eu (?:falar|falo|digo|disser|mencionar|pedir)\\s+(.+?)\\s+(?:eh|é|e|quero dizer|significa|considera\\w*|me refiro a|to falando d[eo]|estou falando d[eo])\\s+(.+)$").matcher(t);
+        if (m.find()) return new String[]{ limpaNome(m.group(1)), limpaNome(m.group(2)) };
+        m = Pattern.compile("(?i)\\bconsidera(?:r|e)?\\s+(.+?)\\s+como\\s+(.+)$").matcher(t);
+        if (m.find()) return new String[]{ limpaNome(m.group(1)), limpaNome(m.group(2)) };
+        m = Pattern.compile("(?i)^(.+?)\\s+(?:quer dizer|significa)\\s+(.+)$").matcher(t);
+        if (m.find()) return new String[]{ limpaNome(m.group(1)), limpaNome(m.group(2)) };
+        return null;
+    }
+
+    // ── Promoção — usa `precoOriginal` como "de" e `preco` como promo. Preserva o normal. ──
+    private static final Set<String> STOP_PROMO;
+    static {
+        STOP_PROMO = new HashSet<>(STOP_ACAO);
+        STOP_PROMO.addAll(Arrays.asList("promocao", "promocoes", "promo", "promocional", "desconto", "descontos", "oferta", "ofertas", "em"));
+    }
+
+    private boolean promoAtiva(Produto p) {
+        return p != null && p.getPrecoOriginal() != null && p.getPreco() != null
+            && p.getPrecoOriginal().compareTo(p.getPreco()) > 0;
+    }
+
+    private Map<String, Object> itemPromo(Produto p, BigDecimal precoPromo, boolean tirar) {
+        String atual = promoAtiva(p) ? moeda(p.getPrecoOriginal()) + " → " + moeda(p.getPreco()) + " (promo)" : moeda(p.getPreco());
+        String novo = tirar
+            ? "volta pro normal " + moeda(promoAtiva(p) ? p.getPrecoOriginal() : p.getPreco())
+            : (precoPromo != null ? moeda(p.getPreco()) + " → " + moeda(precoPromo) + " (promo)" : null);
+        return item("promoProduto", p.getNome(), p.getFotoUrl(), "tag", atual, novo,
+            "coloca o " + p.getNome() + " em promoção por ",
+            mp("produtoId", p.getId(), "precoNovo", precoPromo, "tirar", tirar ? "1" : null));
+    }
+
+    private Map<String, Object> fluxoPromocao(Restaurante r, String texto, String norm) {
+        boolean tirar = norm.matches(".*\\b(tira|tirar|tire|remove|remover|retira\\w*|acaba\\w*|encerra\\w*|cancela\\w*|sem)\\b.*");
+        // alvo: depois de "produto X"; senão nome entre a promo e o preço (ambas as ordens).
+        String consulta;
+        if (norm.matches(".*\\bproduto\\b.*")) {
+            consulta = alvoProduto(texto, norm);
+        } else {
+            String m = fatiaEntre(texto, "(promoc\\w*|desconto|oferta)", "(por\\b|no valor|valor|pra|para)");
+            if (m == null || m.isBlank())
+                m = fatiaEntre(texto, "(coloca\\w*|poe|poem|bota\\w*|faz|fazer|faca|deixa\\w*|cria\\w*|adiciona\\w*|manda\\w*|da|dar|tira\\w*|remove\\w*)",
+                    "(em promoc\\w*|promoc\\w*|desconto|oferta|por\\b|no valor|valor|pra|para)");
+            consulta = (m != null && !m.isBlank()) ? MyHelpTexto.norm(m) : alvoConsulta(norm, STOP_PROMO);
+        }
+        consulta = resolverPronome(r.getId(), consulta);
+        consulta = resolverApelidoProduto(r.getId(), consulta);
+        if (consulta.isBlank())
+            return texto("De qual produto é a promoção? Ex.: *\"coloca o X-Bacon em promoção por 24,90\"*.");
+        List<Produto> cand = new ArrayList<>();
+        Produto p = melhorProduto(r.getId(), consulta, cand);
+        BigDecimal precoP = precoMarcado(texto);
+        if (p == null) {
+            if (cand.isEmpty()) return texto("Não achei *" + consulta + "* no seu cardápio 😕");
+            List<Map<String, Object>> ops = new ArrayList<>();
+            for (Produto x : cand) ops.add(itemPromo(x, tirar ? null : precoP, tirar));
+            return escolha("promoProduto", ops, tirar ? "Tirar promoção de qual?" : "Qual produto entra em promoção?");
+        }
+        if (tirar) {
+            if (!promoAtiva(p)) return texto("O *" + p.getNome() + "* não está em promoção agora 🙂");
+            return card("promoProduto", itemPromo(p, null, true), "Confere: tirar a promoção e voltar pro preço normal?");
+        }
+        if (precoP == null) {
+            pendencia.put(r.getId(), mp("acao", "promoProduto", "produtoId", p.getId()));
+            return texto("Por quanto fica a promoção do *" + p.getNome() + "*? (hoje " + moeda(p.getPreco()) + ")");
+        }
+        BigDecimal normal = promoAtiva(p) ? p.getPrecoOriginal() : p.getPreco();
+        if (precoP.compareTo(normal) >= 0)
+            return texto("A promoção (" + moeda(precoP) + ") precisa ser MENOR que o preço normal (" + moeda(normal) + ") 🙂");
+        return card("promoProduto", itemPromo(p, precoP, false), "Confere a promoção — o preço normal fica preservado:");
+    }
+
     // ── Novo produto ─────────────────────────────────────────────────────
     private Map<String, Object> fluxoNovoProduto(Restaurante r, String texto, String norm) {
         // Preço é OPCIONAL e só conta MARCADO ("por 12", "R$ 12", "12 reais").
@@ -457,9 +574,11 @@ public class MyHelpService {
         if (nome == null) nome = fatiaEntre(texto, "produto", fimNome);
         if (nome == null) nome = fatiaEntre(texto, "(cria|criar|crie|adiciona|adicione|cadastra|cadastre|novo|nova)", fimNome);
         nome = semSubstantivo(nome, "produto|item|lanche|prato");
+        nome = apelidoValorOriginal(r.getId(), nome);   // memória: "cria peixe" → "Peixe Frito"
         String descNova = fatiaEntre(texto, "descric\\w*", "(por\\b|no valor|custa|categoria|chamad\\w*)");
         if (nome == null || nome.isBlank())
             return texto("Qual o nome do produto? Ex.: *\"cria o produto 500g de franguinho na categoria Porções\"* — o preço você põe depois, se quiser.");
+        lembrarAlvo(r.getId(), nome);   // contexto pra "coloca ele por 29,90"
         String catConsulta = fatiaEntre(texto, "categoria", "(chamad\\w*|nome|por\\b|descric\\w*)");
         Categoria cat = null;
         if (catConsulta != null && !catConsulta.isBlank()) {
@@ -559,6 +678,7 @@ public class MyHelpService {
     // ── Helpers de match / extração das novas ações ──────────────────────
     /** Melhor produto (único e claro) ou null; preenche candOut com os parecidos. */
     private Produto melhorProduto(Long restId, String consulta, List<Produto> candOut) {
+        consulta = resolverApelidoProduto(restId, consulta);   // memória: "coca" → "Coca-Cola 350ml"
         List<Produto> produtos = produtoRepo.findByRestauranteId(restId);
         Set<String> q = MyHelpTexto.tokens(consulta);
         List<Pontuado> ranked = new ArrayList<>();
@@ -570,7 +690,10 @@ public class MyHelpService {
         ranked.sort(Comparator.comparingInt((Pontuado x) -> x.score).reversed());
         for (Pontuado x : ranked) if (x.score >= 40 && candOut.size() < 6) candOut.add(x.p);
         if (!ranked.isEmpty() && ranked.get(0).score >= 70
-            && (ranked.size() == 1 || ranked.get(0).score - ranked.get(1).score >= 20)) return ranked.get(0).p;
+            && (ranked.size() == 1 || ranked.get(0).score - ranked.get(1).score >= 20)) {
+            lembrarAlvo(restId, ranked.get(0).p.getNome());   // contexto: último produto falado
+            return ranked.get(0).p;
+        }
         return null;
     }
 
@@ -648,6 +771,53 @@ public class MyHelpService {
         return alvoConsulta(norm, STOP_ACAO);
     }
 
+    /**
+     * Memória (aprendizado da loja): se a consulta é EXATAMENTE um apelido que a
+     * loja ensinou (ex.: "coca"), resolve pro valor aprendido ("coca cola 350ml").
+     * Só troca em match EXATO da chave — texto explícito ("coca cola 2l") tem
+     * mais tokens, não bate a chave, e nunca é sobrescrito (evita conflito).
+     * Leitura pura (seguro no responder readOnly).
+     */
+    private String resolverApelidoProduto(Long restId, String consulta) {
+        if (consulta == null || consulta.isBlank() || restId == null) return consulta;
+        for (MyHelpMemoria mem : memoria.ativas(restId, "product_ref")) {
+            if (consulta.equals(mem.getChaveNorm()) && mem.getValor() != null) {
+                log.info("[myHelp-mem] loja={} apelido '{}' -> '{}'", restId, consulta, mem.getValor());
+                return MyHelpTexto.norm(mem.getValor());
+            }
+        }
+        return consulta;
+    }
+
+    /** Como resolverApelidoProduto, mas devolve o VALOR com a caixa original — pra
+     *  usar como NOME de produto novo ("cria peixe" → cria "Peixe Frito"). Só match exato. */
+    private String apelidoValorOriginal(Long restId, String nome) {
+        if (nome == null || nome.isBlank() || restId == null) return nome;
+        String chave = MyHelpTexto.norm(nome);
+        for (MyHelpMemoria mem : memoria.ativas(restId, "product_ref")) {
+            if (chave.equals(mem.getChaveNorm()) && mem.getValor() != null && !mem.getValor().isBlank())
+                return mem.getValor();
+        }
+        return nome;
+    }
+
+    /** Resolve pronome ("coloca ELE por 29,90") pro último produto falado na loja. */
+    private String resolverPronome(Long restId, String consulta) {
+        if (restId == null) return consulta;
+        String c = consulta == null ? "" : consulta.trim();
+        if (c.isBlank() || PRONOME.matcher(c).matches()) {
+            String u = ultimoAlvo.getIfPresent(restId);
+            if (u != null && !u.isBlank()) return u;
+        }
+        return consulta;
+    }
+
+    /** Registra o último produto falado (contexto de conversa, leitura-safe). */
+    private void lembrarAlvo(Long restId, String nomeProduto) {
+        if (restId != null && nomeProduto != null && !nomeProduto.isBlank())
+            ultimoAlvo.put(restId, MyHelpTexto.norm(nomeProduto));
+    }
+
     /** A mensagem atual é a RESPOSTA ao que o myHelp perguntou (memória curta). */
     private Map<String, Object> resolverPendencia(Restaurante r, Map<String, Object> pend, String texto) {
         String acao = pend == null ? null : (String) pend.get("acao");
@@ -682,6 +852,16 @@ public class MyHelpService {
                 if (nome == null) return texto("Não peguei o nome da categoria 🙂");
                 return card("novaCategoria", item("novaCategoria", "Nova categoria", null, "folder",
                     null, nome, null, mp("textoNovo", nome)), "Vou criar esta categoria nova. Confirma?");
+            }
+            case "promoProduto": {
+                Produto p = pid == null ? null : produtoRepo.findById(pid).orElse(null);
+                if (p == null) return texto("Ops, me perdi do produto. Manda o comando de novo 🙂");
+                BigDecimal v = precoMarcado(texto);
+                if (v == null) v = extrairPreco(texto);
+                if (v == null) return texto("Não peguei o preço da promoção. Me diz um número? 🙂");
+                BigDecimal normal = promoAtiva(p) ? p.getPrecoOriginal() : p.getPreco();
+                if (v.compareTo(normal) >= 0) return texto("A promoção precisa ser MENOR que " + moeda(normal) + " 🙂");
+                return card("promoProduto", itemPromo(p, v, false), "Confere a promoção — o preço normal fica preservado:");
             }
             default: return texto("Beleza! Me diz o que você quer fazer 🙂");
         }
@@ -744,6 +924,8 @@ public class MyHelpService {
         s = s.replaceAll("(?i)^(o|a|os|as|um|uma|de|do|da|meu|minha|chamad[oa]|com o nome|com|:|-)\\s+", "").trim();
         for (int i = 0; i < 4; i++) {
             String antes = s;
+            // pontuação no fim ("?", "!", ".", "…") — tira antes pra soltar a cortesia
+            s = s.replaceAll("[.?!…;:,\\s]+$", "").trim();
             // cortesias/enfeites no fim: "por favor", "pra mim", "obrigado"...
             s = s.replaceAll("(?i)[\\s,]+(por\\s+favor|por\\s+gentileza|por\\s+obsequio|pra\\s+mim|para\\s+mim|pra\\s+loja|pra\\s+gente|pra\\s+voce|pra\\s+vc|faz\\s+favor|faca\\s+favor|obrigad[oa]|valeu|vlw|please|pfv|pf)\\s*$", "").trim();
             // preço marcado no fim (R$, "por N", "N reais") — mantém tamanho ("Açaí 300")
@@ -865,6 +1047,8 @@ public class MyHelpService {
             case "novoProduto":      return confirmarNovoProduto(r, cvS(body.get("textoNovo")), cvD(body.get("precoNovo")), cvL(body.get("categoriaId")), cvS(body.get("textoDesc")));
             case "novoGrupo":        return confirmarNovoGrupo(r, cvL(body.get("produtoId")), cvS(body.get("textoNovo")));
             case "novoComplemento":  return confirmarNovoComplemento(r, cvL(body.get("grupoId")), cvS(body.get("textoNovo")), cvD(body.get("precoNovo")));
+            case "promoProduto":     return confirmarPromo(r, cvL(body.get("produtoId")), cvD(body.get("precoNovo")), "1".equals(cvS(body.get("tirar"))));
+            case "aprender":         return confirmarAprender(r, cvS(body.get("gatilho")), cvS(body.get("valor")), cvS(body.get("contexto")));
             default:                 return confirmarPreco(r, cvL(body.get("produtoId")), cvD(body.get("precoNovo")));
         }
     }
@@ -1014,6 +1198,54 @@ public class MyHelpService {
         Map<String, Object> out = texto("Pronto! ✅ Complemento *" + nome.trim() + "* (" + moeda(p) + ") adicionado ao grupo *" + g.getNome() + "*.");
         out.put("alterado", true);
         return out;
+    }
+
+    /**
+     * Promoção: usa os campos EXISTENTES do sistema — {@code precoOriginal} (o "de"
+     * riscado = preço normal) e {@code preco} (o valor efetivo = promo). NUNCA
+     * sobrescreve nem perde o preço normal. Tirar promoção = restaura preco a
+     * partir de precoOriginal e zera precoOriginal.
+     */
+    @Transactional
+    public Map<String, Object> confirmarPromo(Restaurante r, Long produtoId, BigDecimal precoPromo, boolean tirar) {
+        if (produtoId == null) return texto("Faltou o produto 🤔");
+        Produto p = produtoRepo.findById(produtoId).orElse(null);
+        if (p == null || p.getRestaurante() == null || !p.getRestaurante().getId().equals(r.getId()))
+            return texto("Não achei esse produto na sua loja 😕");
+        BigDecimal normal = promoAtiva(p) ? p.getPrecoOriginal() : p.getPreco();
+        if (tirar) {
+            p.setPreco(normal);
+            p.setPrecoOriginal(null);
+            produtoRepo.save(p);
+            invalidarCachePublico(r.getSlug());
+            log.info("[myHelp] loja={} promo removida produto={} normal={}", r.getSlug(), p.getId(), normal);
+            Map<String, Object> out = texto("Pronto! ✅ Promoção do *" + p.getNome() + "* removida. Preço normal: " + moeda(normal) + ".");
+            out.put("alterado", true);
+            return out;
+        }
+        if (precoPromo == null) return texto("Faltou o preço da promoção 🤔");
+        if (precoPromo.signum() <= 0 || precoPromo.compareTo(normal) >= 0)
+            return texto("A promoção precisa ser MENOR que o preço normal (" + moeda(normal) + ") 🙂");
+        p.setPrecoOriginal(normal);   // preserva o normal no campo "de"
+        p.setPreco(precoPromo);       // preço efetivo = promo
+        produtoRepo.save(p);
+        invalidarCachePublico(r.getSlug());
+        log.info("[myHelp] loja={} PROMO produto={} normal={} promo={}", r.getSlug(), p.getId(), normal, precoPromo);
+        Map<String, Object> out = texto("Pronto! ✅ *" + p.getNome() + "* em promoção: de " + moeda(normal)
+            + " por *" + moeda(precoPromo) + "*. O preço normal (" + moeda(normal) + ") fica preservado.");
+        out.put("alterado", true);
+        return out;
+    }
+
+    /** Confirma o aprendizado de um apelido da loja (grava na memória persistente). */
+    @Transactional
+    public Map<String, Object> confirmarAprender(Restaurante r, String gatilho, String valor, String contexto) {
+        if (gatilho == null || valor == null || gatilho.isBlank() || valor.isBlank())
+            return texto("Faltou o que eu devo aprender 🤔");
+        String ctx = (contexto == null || contexto.isBlank()) ? "product_ref" : contexto;
+        memoria.aprender(r.getId(), ctx, gatilho, valor);
+        return texto("Anotado! ✅ Quando você falar *" + gatilho + "* eu vou considerar *" + valor
+            + "*. Pode me corrigir depois quando quiser.");
     }
 
     private static String cvS(Object o) { String s = o == null ? null : o.toString(); return s == null || s.isBlank() ? null : s; }

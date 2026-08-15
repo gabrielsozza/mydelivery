@@ -74,6 +74,13 @@ public class MyHelpService {
     private static final Pattern PRONOME = Pattern.compile(
             "^(ele|ela|esse|essa|isso|isto|o mesmo|a mesma|dele|dela|nele|nela|mesmo)$");
 
+    /** Último TERMO que o dono mencionou (mesmo sem casar) — pra corrigir depois
+     *  ("não, era Peixe Frito" → ensina "peixe → Peixe Frito"). */
+    private final com.github.benmanes.caffeine.cache.Cache<Long, String> ultimoTermo =
+            com.github.benmanes.caffeine.cache.Caffeine.newBuilder()
+                    .expireAfterWrite(10, java.util.concurrent.TimeUnit.MINUTES)
+                    .maximumSize(5000).build();
+
     /** Slugs liberados no beta (vírgula). "*" libera todas. Vazio = ninguém. */
     @Value("${myhelp.beta-slugs:}")
     private String betaSlugs;
@@ -249,6 +256,7 @@ public class MyHelpService {
         BigDecimal precoNovo = extrairPreco(texto);
         // Se falou "produto X" explícito, o alvo é X; senão, o resto da frase.
         String consulta = norm.matches(".*\\bproduto\\b.*") ? alvoProduto(texto, norm) : extrairConsulta(norm, false);
+        lembrarTermo(r.getId(), consulta);                        // pra corrigir depois ("não, era Y")
         consulta = resolverPronome(r.getId(), consulta);          // contexto: "coloca ele por 25"
         consulta = resolverApelidoProduto(r.getId(), consulta);   // memória: apelidos aprendidos
         if (consulta.isBlank()) {
@@ -379,6 +387,7 @@ public class MyHelpService {
         String nomeNovo = textoNovoAposPra(texto);
         if (nomeNovo == null) nomeNovo = fatiaEntre(texto, "(chamad\\w*|nome|titulo)", "(no produto|do produto|produto|pra|para)");
         String consulta = alvoProduto(texto, norm);
+        lembrarTermo(r.getId(), consulta);
         if (consulta.isBlank())
             return texto("Qual produto você quer renomear? Ex.: *\"muda o nome do X-Tudo pra X-Bacon\"*.");
         List<Produto> cand = new ArrayList<>();
@@ -405,6 +414,7 @@ public class MyHelpService {
         String descNova = textoNovoAposPra(texto);
         if (descNova == null) descNova = fatiaEntre(texto, "descric\\w*", "(no produto|do produto|o produto|produto|pra|para)");
         String consulta = alvoProduto(texto, norm);
+        lembrarTermo(r.getId(), consulta);
         if (consulta.isBlank())
             return texto("Qual produto você quer descrever? Ex.: *\"muda a descrição do X-Tudo pra pão, 2 carnes, queijo e bacon\"*.");
         List<Produto> cand = new ArrayList<>();
@@ -479,27 +489,78 @@ public class MyHelpService {
             "Vou criar esta categoria nova. Confirma?");
     }
 
-    // ── Aprendizado: dono ensina/corrige um apelido ("quando eu falar X é Y") ──
+    // ── Aprendizado: dono ENSINA ("quando eu falar X é Y", "considera X como Y")
+    //    ou CORRIGE o último item ("não, era Y", "considera só Y"). O gatilho pode
+    //    vir por pronome ("quando eu falar ISSO") → resolvido pro último termo. ──
+    private static final Pattern PRONOME_ENSINO = Pattern.compile(
+        "^(isso|isto|esse|essa|este|esta|assim|nesse caso|nesses casos|neste caso|desse jeito|dessa forma|ele|ela)$");
+
     private Map<String, Object> fluxoAprender(Restaurante r, String texto, String norm) {
         String[] par = detectarEnsino(texto);
-        if (par == null || par[0] == null || par[1] == null || par[0].isBlank() || par[1].isBlank()) return null;
-        String gatilho = par[0], valor = par[1];
+        if (par == null) return null;
+        String gatilho = par[0];
+        String valor = limpaValorEnsino(par[1]);
+        if (valor == null || valor.isBlank() || isPronome(valor)) return null;   // nada útil pra guardar
+        // valor que é só número/preço NÃO é apelido ("não, era 25" = correção de preço, não ensino).
+        if (valor.matches("(?i)^r?\\$?\\s*\\d+(?:[.,]\\d+)?\\s*(?:reais|real|conto|pila)?$") || valor.length() > 60) return null;
+        // Gatilho ausente (correção) ou pronome ("isso") → usa o último termo falado.
+        if (gatilho == null || gatilho.isBlank() || isPronome(MyHelpTexto.norm(gatilho))) {
+            String ult = ultimoTermo.getIfPresent(r.getId());
+            if (ult == null || ult.isBlank())
+                return texto("Beleza, entendi que você quer me ensinar 🙂 mas *quando você falar o quê*? "
+                    + "Me diz assim: *\"quando eu falar coca, é Coca-Cola 350ml\"*.");
+            gatilho = ult;
+        }
+        gatilho = limpaNome(gatilho);
+        if (gatilho == null || gatilho.isBlank() || isPronome(MyHelpTexto.norm(gatilho)))
+            return texto("Me diz a palavra que você quer que eu aprenda? Ex.: *\"quando eu falar coca, é Coca-Cola 350ml\"*.");
         return card("aprender", item("aprender", "Aprender", null, "bulb",
             null, "\"" + gatilho + "\" → " + valor, null,
             mp("gatilho", gatilho, "valor", valor, "contexto", "product_ref")),
             "Quer que eu lembre disso pra essa loja?");
     }
 
-    /** Extrai [gatilho, valor] de um ensino explícito, ou null. Preserva a caixa do valor. */
+    private static boolean isPronome(String s) {
+        return s != null && PRONOME_ENSINO.matcher(s.trim()).matches();
+    }
+
+    /** Extrai [gatilho, valor] de um ensino OU correção (gatilho pode ser null = usar contexto). */
     private String[] detectarEnsino(String texto) {
         String t = texto == null ? "" : texto.trim();
-        Matcher m = Pattern.compile("(?i)quando eu (?:falar|falo|digo|disser|mencionar|pedir)\\s+(.+?)\\s+(?:eh|é|e|quero dizer|significa|considera\\w*|me refiro a|to falando d[eo]|estou falando d[eo])\\s+(.+)$").matcher(t);
-        if (m.find()) return new String[]{ limpaNome(m.group(1)), limpaNome(m.group(2)) };
-        m = Pattern.compile("(?i)\\bconsidera(?:r|e)?\\s+(.+?)\\s+como\\s+(.+)$").matcher(t);
-        if (m.find()) return new String[]{ limpaNome(m.group(1)), limpaNome(m.group(2)) };
-        m = Pattern.compile("(?i)^(.+?)\\s+(?:quer dizer|significa)\\s+(.+)$").matcher(t);
-        if (m.find()) return new String[]{ limpaNome(m.group(1)), limpaNome(m.group(2)) };
+        String conn = "(?:eh|é|e|significa|quer dizer|considera\\w*|considere|entenda?|entende|pode considerar|leva em conta|to falando d[eo]|estou falando d[eo]|me refiro a|equivale a|seria|é pra\\w*\\s+considerar|era pra\\w*\\s+considerar)";
+        // 1) "quando/toda vez/sempre que eu falar X <conn> Y"
+        Matcher m = Pattern.compile("(?i)(?:quando|toda vez que|sempre que|todas as vezes que|se|caso)\\s+eu\\s+(?:falar|falo|fala|digo|disser|diga|mencionar|menciono|pedir|pe[çc]o|escrever|escrevo)\\s+(.+?)[,]?\\s+" + conn + "\\s+(.+)$").matcher(t);
+        if (m.find()) return new String[]{ limpaNome(m.group(1)), m.group(2) };
+        // 2) INVERTIDO: "<valor> quando eu falar X"  (X pode ser pronome "isso")
+        m = Pattern.compile("(?i)(.+?)[,]?\\s+(?:quando|toda vez que|sempre que|todas as vezes que)\\s+eu\\s+(?:falar|falo|digo|disser|diga|mencionar|escrever)\\s+(.+)$").matcher(t);
+        if (m.find()) return new String[]{ limpaNome(m.group(2)), m.group(1) };
+        // 3) "considera/entenda/interpreta X como/= Y"
+        m = Pattern.compile("(?i)\\b(?:considera\\w*|considere|entenda?|entende|interpreta\\w*|assume|assuma|le[a]? em conta|leve em conta)\\s+(?:que\\s+)?(.+?)\\s+(?:como|=)\\s+(.+)$").matcher(t);
+        if (m.find()) return new String[]{ limpaNome(m.group(1)), m.group(2) };
+        // 4) "X significa/quer dizer Y"
+        m = Pattern.compile("(?i)^(?:o |a )?(.+?)\\s+(?:significa|quer dizer|equivale a|é a mesma coisa que|é sin[oô]nimo de|é igual a)\\s+(.+)$").matcher(t);
+        if (m.find()) return new String[]{ limpaNome(m.group(1)), m.group(2) };
+        // 5) CORREÇÃO do último ("não, era Y" / "na verdade é Y" / "considera só Y")
+        m = Pattern.compile("(?i)^(?:n[ãa]o|nops|opa|olha|calma|ei)[,.\\s]+(?:é|eh|era|na verdade\\s+é|na verdade|o certo\\s+é|o nome\\s+(?:certo\\s+)?é|o produto\\s+é|a categoria\\s+é|quis dizer|queria dizer|seria|considera\\s+s[óo]|considere\\s+s[óo]|considera\\s+apenas|é\\s+s[óo]|é\\s+apenas|pra\\w*\\s+considerar)\\s+(.+)$").matcher(t);
+        if (m.find()) return new String[]{ null, m.group(1) };
+        m = Pattern.compile("(?i)^(?:na verdade\\s+é|na verdade|o certo\\s+é|o nome\\s+é|considera\\s+s[óo]|considere\\s+s[óo]|considera\\s+apenas|leva em conta\\s+(?:s[óo]|apenas))\\s+(.+)$").matcher(t);
+        if (m.find()) return new String[]{ null, m.group(1) };
         return null;
+    }
+
+    /** Limpa o VALOR ensinado tirando enfeites do começo ("é pra você considerar
+     *  apenas o nome ..." → "..."). Casa no asciiLower (sem acento, tamanho igual)
+     *  e corta do original — assim "pra você"/"é" com acento não escapam pelo \b. */
+    private static final Pattern ENFEITE_ENSINO = Pattern.compile("(?i)^(nao no caso|nao|e|eh|era|na verdade|o certo|o nome|o produto|a categoria|pra voce|pra vc|pra|para|considerar|considere|considera|apenas|so|somente|a palavra|o termo|que|seria|pode considerar|leva em conta)(?:[\\s,.:]+|$)");
+    private String limpaValorEnsino(String v) {
+        if (v == null) return null;
+        String s = v.trim();
+        for (int i = 0; i < 10; i++) {
+            Matcher m = ENFEITE_ENSINO.matcher(asciiLower(s));   // mesmo tamanho do original
+            if (!m.find()) break;
+            s = s.substring(Math.min(m.end(), s.length())).trim();
+        }
+        return limpaNome(s);
     }
 
     // ── Promoção — usa `precoOriginal` como "de" e `preco` como promo. Preserva o normal. ──
@@ -537,6 +598,7 @@ public class MyHelpService {
                     "(em promoc\\w*|promoc\\w*|desconto|oferta|por\\b|no valor|valor|pra|para)");
             consulta = (m != null && !m.isBlank()) ? MyHelpTexto.norm(m) : alvoConsulta(norm, STOP_PROMO);
         }
+        lembrarTermo(r.getId(), consulta);
         consulta = resolverPronome(r.getId(), consulta);
         consulta = resolverApelidoProduto(r.getId(), consulta);
         if (consulta.isBlank())
@@ -577,6 +639,7 @@ public class MyHelpService {
         if (nome == null) nome = fatiaEntre(texto, "produto", fimNome);
         if (nome == null) nome = fatiaEntre(texto, "(cria|criar|crie|adiciona|adicione|cadastra|cadastre|novo|nova)", fimNome);
         nome = semSubstantivo(nome, "produto|item|lanche|prato");
+        lembrarTermo(r.getId(), nome);                  // pra corrigir depois ("não, era Y")
         nome = apelidoValorOriginal(r.getId(), nome);   // memória: "cria peixe" → "Peixe Frito"
         String descNova = fatiaEntre(texto, "descric\\w*", "(por\\b|no valor|custa|categoria|chamad\\w*)");
         if (nome == null || nome.isBlank())
@@ -819,6 +882,14 @@ public class MyHelpService {
     private void lembrarAlvo(Long restId, String nomeProduto) {
         if (restId != null && nomeProduto != null && !nomeProduto.isBlank())
             ultimoAlvo.put(restId, MyHelpTexto.norm(nomeProduto));
+    }
+
+    /** Guarda o termo que o dono mencionou (mesmo sem casar) pra permitir corrigir
+     *  depois ("não, era Peixe Frito"). Ignora pronomes. */
+    private void lembrarTermo(Long restId, String termo) {
+        if (restId == null || termo == null) return;
+        String t = MyHelpTexto.norm(termo);
+        if (!t.isBlank() && !PRONOME.matcher(t).matches() && !isPronome(t)) ultimoTermo.put(restId, t);
     }
 
     /** A mensagem atual é a RESPOSTA ao que o myHelp perguntou (memória curta). */

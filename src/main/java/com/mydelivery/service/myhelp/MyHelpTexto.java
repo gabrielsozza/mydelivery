@@ -50,9 +50,18 @@ public final class MyHelpTexto {
     public static final Set<String> STOPWORDS = new LinkedHashSet<>(Arrays.asList(
         "o", "a", "os", "as", "de", "do", "da", "dos", "das", "pra", "para", "por",
         "pro", "no", "na", "em", "que", "e", "com", "um", "uma", "meu", "minha",
-        "altera", "alterar", "muda", "mudar", "troca", "trocar", "coloca", "colocar",
-        "poe", "poem", "bota", "botar", "deixa", "deixar", "atualiza", "atualizar",
-        "ajusta", "ajustar", "sobe", "subir", "aumenta", "aumentar", "abaixa", "abaixar",
-        "preco", "precos", "valor", "valores", "custa", "custo", "reais", "real", "rs"
+        "esse", "essa", "esses", "essas", "este", "esta", "seu", "sua",
+        // comandos / verbos de alteração (todas as conjugações que aparecem)
+        "altera", "alterar", "altere", "alterando", "muda", "mudar", "mude", "mudando",
+        "troca", "trocar", "troque", "coloca", "colocar", "coloque", "poe", "poem",
+        "bota", "botar", "deixa", "deixar", "atualiza", "atualizar", "atualize",
+        "ajusta", "ajustar", "ajuste", "sobe", "subir", "aumenta", "aumentar",
+        "abaixa", "abaixar", "baixa", "baixar",
+        // pedidos educados / ligação
+        "myhelp", "preciso", "precisa", "quero", "queria", "gostaria", "poderia",
+        "pode", "voce", "vc", "favor", "por favor", "me", "ai", "entao", "agora",
+        // dinheiro
+        "preco", "precos", "valor", "valores", "custa", "custo",
+        "reais", "real", "reis", "riais", "riaes", "rs", "conto", "pila"
     ));
 }

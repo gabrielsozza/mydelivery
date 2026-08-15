@@ -11,8 +11,12 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.cache.Cache;
+import org.springframework.cache.CacheManager;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import com.mydelivery.model.BairroEntrega;
 import com.mydelivery.model.Produto;
@@ -39,6 +43,7 @@ public class MyHelpService {
     private final ProdutoRepository produtoRepo;
     private final RestauranteRepository restauranteRepo;
     private final MyHelpDominio dominio;
+    private final CacheManager cacheManager;
 
     /** Slugs liberados no beta (vírgula). "*" libera todas. Vazio = ninguém. */
     @Value("${myhelp.beta-slugs:}")
@@ -70,38 +75,88 @@ public class MyHelpService {
     public Map<String, Object> responder(Restaurante r, String textoBruto) {
         String texto = textoBruto == null ? "" : textoBruto.trim();
         String norm = MyHelpTexto.norm(texto);
-        if (norm.isBlank()) return texto("Oi! Me diga o que precisa 🙂");
+        if (norm.isBlank()) return texto(pick("Oi! Me diz o que você precisa 🙂", "Opa! Como posso te ajudar?"));
 
         boolean verbo = VERBO_ALTERA.matcher(norm).find();
+        boolean temNum = NUM.matcher(norm).find();
 
-        // Saudação / ajuda
-        if (norm.matches(".*\\b(oi|ola|opa|eae|bom dia|boa tarde|boa noite|ajuda|help|menu)\\b.*") && !verbo) {
-            return texto("Oi! Eu sou o myHelp 👋 Posso te ajudar no dia a dia da loja. Exemplos: "
-                + "*\"altera o preço do X-Tudo para 25\"* ou *\"muda a taxa do bairro Centro para 8\"*. "
-                + "Eu acho o item, mostro pra você e só altero depois que você confirmar. Também tiro dúvidas "
-                + "de como usar o sistema.");
-        }
-
-        // Taxa de bairro (checa antes do preço porque também usa "altera/muda")
+        // ── AÇÕES primeiro (mexer em dinheiro tem prioridade sobre bate-papo) ──
         boolean falaBairro = norm.contains("bairro");
         boolean falaTaxa = norm.matches(".*\\b(taxa|frete)\\b.*");
-        if (falaBairro || (falaTaxa && verbo)) {
-            return fluxoTaxaBairro(r, texto, norm);
-        }
+        if (falaBairro || (falaTaxa && verbo)) return fluxoTaxaBairro(r, texto, norm);
+        if (INTENCAO_PRECO.matcher(norm).find() || (verbo && temNum)) return fluxoPreco(r, texto, norm);
 
-        // Preço de produto
-        if (INTENCAO_PRECO.matcher(norm).find() || (verbo && NUM.matcher(norm).find())) {
-            return fluxoPreco(r, texto, norm);
-        }
+        // ── BATE-PAPO humano (oi, tudo bem, obrigado, como tá o dia...) ──
+        Map<String, Object> humano = humano(norm);
+        if (humano != null) return humano;
 
-        // FAQ (dúvidas de uso)
+        // ── FAQ (dúvidas de uso do sistema) ──
         Map<String, Object> faq = faq(norm);
         if (faq != null) return faq;
 
-        return texto("Não entendi direito 🤔 Posso *alterar o preço de um produto* "
-            + "(ex.: *\"muda o preço da coca lata pra 6\"*) ou a *taxa de um bairro* "
-            + "(ex.: *\"altera a taxa do Centro pra 7\"*). O que você quer fazer?");
+        // Fallback amigável e variado (não robótico)
+        return texto(pick(
+            "Hmm, não peguei bem essa 🤔 Mas relaxa — me fala do seu jeito, tipo *\"muda o preço da coca lata pra 6\"* ou *\"altera a taxa do Centro pra 7\"*, que eu resolvo.",
+            "Não entendi 100%, mas tô aqui pra ajudar 🙂 Posso mexer no preço de um produto ou na taxa de um bairro. O que você quer fazer?",
+            "Me explica de outro jeito? 😅 Consigo alterar preço de produto, taxa de bairro e tirar dúvidas do sistema."));
     }
+
+    /**
+     * Base de conversa "humana" — responde saudações, papo casual e agradecimento
+     * de forma espontânea e variada (custo zero, sem LLM). Retorna null se a
+     * mensagem não é papo (aí o responder segue pra FAQ/fallback).
+     */
+    private Map<String, Object> humano(String norm) {
+        // agradecimento
+        if (norm.matches(".*\\b(obrigad\\w*|valeu|vlw|brigad\\w*|agradec\\w*|tmj|gratidao)\\b.*"))
+            return texto(pick("Por nada! 😊 Tamo junto.", "Disponha! Qualquer coisa é só chamar. 🙌",
+                "Imagina! Precisando, é só falar comigo.", "Tmj! 💪 Bora fazer essa loja render."));
+        // tudo bem / como vai / beleza
+        if (norm.matches(".*\\b(tudo bem|tudo bom|como vai|como voce esta|como ta voce|beleza|de boa|suave|blz|como vc ta)\\b.*"))
+            return texto(pick(
+                "Tudo ótimo por aqui 😄 e você? Como tá o movimento hoje?",
+                "Tudo certo! 🙌 Pronto pra te ajudar. E aí, dia bom na loja?",
+                "Tudo tranquilo! E com você, muita correria hoje? 😅"));
+        // como tá o dia / movimento / vendas
+        if (norm.matches(".*(como.*(dia|movimento|vai o dia)|e o movimento|vendas hoje|ta vendendo|muito pedido).*"))
+            return texto(pick(
+                "Tomara que o balcão esteja bombando hoje! 🚀 Se quiser dar um gás, eu ajusto um preço rapidinho pra você.",
+                "Torcendo pra render bons pedidos! 💪 Precisando mexer em algo do cardápio, é só me falar.",
+                "Espero que muito pedido pingando! 😄 Qualquer ajuste de preço ou taxa, tô na mão."));
+        // quem é você / é robô / é humano
+        if (norm.matches(".*(quem e voce|voce e quem|o que voce faz|pra que voce serve|voce e um bot|voce e robo|voce e humano|seu nome).*"))
+            return texto("Sou o myHelp, seu parceiro aqui do MyDelivery 🤝 Fui feito pra te poupar tempo: você fala comigo em português normal e eu altero preço de produto, taxa de bairro e tiro dúvidas do sistema. Pode me tratar como aquele funcionário de confiança do balcão. 😉");
+        // elogio
+        if (norm.matches(".*\\b(voce e bom|gostei|muito bom|adorei|otimo|top|show|maneiro|legal|massa|sensacional|excelente)\\b.*"))
+            return texto(pick("Aí sim! 😄 Fico feliz em ajudar.", "Valeu demais! 🙌 Bora fazer essa loja crescer.",
+                "Que bom que curtiu! Tô aqui pro que precisar. 💪"));
+        // despedida
+        if (norm.matches(".*\\b(tchau|ate logo|ate mais|ate breve|falou|xau|fui|boa noite pra voce)\\b.*"))
+            return texto(pick("Até mais! Boas vendas 👋", "Falou! Qualquer coisa é só me chamar. 🙌",
+                "Tchau tchau! Tô por aqui quando precisar. 😊"));
+        // pedido de ajuda / o que sabe fazer
+        if (norm.matches(".*(ajuda|help|me ajuda|socorro|o que voce pode fazer|o que sabe fazer|menu|opcoes|comandos|como funciona).*"))
+            return texto("Claro! 🙌 Eu consigo, por exemplo:\n• *\"muda o preço do X-Tudo pra 25\"*\n• *\"altera a taxa do bairro Centro pra 8\"*\n• tirar dúvidas de cardápio, horário, taxa de entrega e impressão.\nÉ só falar do seu jeito que eu entendo. 😉");
+        // saudação (oi / olá / bom dia...)
+        if (norm.matches(".*\\b(oi+|ola+|opa|eae|e ai|salve|bom dia|boa tarde|boa noite|hey|alo|iai)\\b.*"))
+            return texto(pick(
+                saudacaoHora() + "! 😄 Sou o myHelp. Como posso te ajudar? Dá pra mexer em preço, taxa de bairro ou tirar dúvida do sistema.",
+                saudacaoHora() + ", chef! 👨‍🍳 Bora deixar a loja redonda? Me fala o que precisa.",
+                "Opa, " + saudacaoHora().toLowerCase() + "! Tô por aqui — é só dizer o que quer ajustar. 🙂"));
+        return null;
+    }
+
+    private String saudacaoHora() {
+        int h;
+        try { h = java.time.LocalTime.now(java.time.ZoneId.of("America/Sao_Paulo")).getHour(); }
+        catch (Exception e) { h = java.time.LocalTime.now().getHour(); }
+        if (h < 12) return "Bom dia";
+        if (h < 18) return "Boa tarde";
+        return "Boa noite";
+    }
+
+    private static final java.util.Random RND = new java.util.Random();
+    private static String pick(String... opcoes) { return opcoes[RND.nextInt(opcoes.length)]; }
 
     // ── Fluxo: preço de produto ──────────────────────────────────────────
     private Map<String, Object> fluxoPreco(Restaurante r, String texto, String norm) {
@@ -148,7 +203,7 @@ public class MyHelpService {
             List<Map<String, Object>> ops = new ArrayList<>();
             for (Produto p : cand) ops.add(produtoItem(p, precoNovo));
             String msg = precoNovo != null
-                ? "Não achei um produto exato pra \"" + consulta + "\". É algum destes? Toque pra alterar pra " + moeda(precoNovo) + ":"
+                ? "Não achei um produto específico pra \"" + consulta + "\". É algum destes? Toque pra alterar pra " + moeda(precoNovo) + ":"
                 : "É algum destes? (depois me diga o novo preço)";
             return escolha("preco", ops, msg);
         }
@@ -218,6 +273,9 @@ public class MyHelpService {
         BigDecimal antigo = p.getPreco();
         p.setPreco(precoNovo);
         produtoRepo.save(p);
+        // Cardápio público fica em cache (60s). Sem invalidar, o cliente veria o
+        // preço velho depois do myHelp dizer "alterei ✅". Limpa após o commit.
+        invalidarCachePublico(r.getSlug());
         log.info("[myHelp] loja={} preco produto={} {} -> {}", r.getSlug(), p.getId(), antigo, precoNovo);
         Map<String, Object> out = texto("Pronto! ✅ *" + p.getNome() + "* agora está " + moeda(precoNovo)
             + (antigo != null ? " (era " + moeda(antigo) + ")" : "") + ".");
@@ -240,11 +298,43 @@ public class MyHelpService {
         BigDecimal antiga = alvo.getTaxa();
         alvo.setTaxa(taxaNova);
         restauranteRepo.save(rr);
+        invalidarCachePublico(rr.getSlug());
         log.info("[myHelp] loja={} taxa bairro='{}' {} -> {}", rr.getSlug(), alvo.getNome(), antiga, taxaNova);
         Map<String, Object> out = texto("Pronto! ✅ A taxa do bairro *" + alvo.getNome() + "* agora é "
             + moeda(taxaNova) + (antiga != null ? " (era " + moeda(antiga) + ")" : "") + ".");
         out.put("alterado", true);
         return out;
+    }
+
+    /**
+     * Invalida o cache do cardápio público da loja DEPOIS que a transação commitar.
+     * Se limpasse antes do commit, uma leitura concorrente repopularia o cache com
+     * o dado antigo (ainda não commitado) — voltando a bug. Por isso usa
+     * afterCommit; sem transação ativa, limpa na hora.
+     */
+    private void invalidarCachePublico(String slug) {
+        Runnable limpar = () -> {
+            Cache cardapio = cacheManager.getCache("cardapio");
+            if (cardapio != null && slug != null) {
+                // chave é "slug::DIA_DA_SEMANA" — só o dia de hoje existe na prática,
+                // mas limpo os 7 por segurança (barato).
+                for (java.time.DayOfWeek d : java.time.DayOfWeek.values()) {
+                    cardapio.evict(slug + "::" + d.name());
+                }
+            }
+            // Config pública (taxa/bairros/banners) — caches pequenos, limpa geral.
+            Cache rp = cacheManager.getCache("restaurante-publico");
+            if (rp != null) rp.clear();
+            Cache banners = cacheManager.getCache("cardapio-banners");
+            if (banners != null) banners.clear();
+        };
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override public void afterCommit() { limpar.run(); }
+            });
+        } else {
+            limpar.run();
+        }
     }
 
     // ═════════════════════════════════════════════════════════════════════
@@ -267,13 +357,22 @@ public class MyHelpService {
         } catch (Exception e) { return null; }
     }
 
-    /** Sobra o nome procurado (produto ou bairro) após remover comando/preço. */
+    /** Sobra o nome procurado (produto ou bairro) após remover comando/preço.
+     *  MANTÉM números de TAMANHO (ex.: "açaí 300") — só o preço é removido, pra
+     *  o "300" ajudar a casar "Açaí 300ml" em vez de listar todos os açaís. */
     private String extrairConsulta(String norm, boolean bairro) {
+        String s = norm;
+        Matcher md = Pattern.compile("\\b(pra|para|por|=)\\b").matcher(norm);
+        if (md.find()) {
+            s = norm.substring(0, md.start());                 // corta em "... pra 20 reais"
+        } else {
+            // Sem "pra": remove só o ÚLTIMO número (o preço) + moeda ao fim.
+            s = s.replaceAll("\\s\\d+(?:[.,]\\d+)?\\s*(?:reais|real|reis|riais|riaes|rs|conto|pila)?\\s*$", " ");
+        }
         StringBuilder sb = new StringBuilder();
-        for (String tok : norm.split(" ")) {
+        for (String tok : s.split(" ")) {
             if (tok.isBlank()) continue;
-            if (tok.matches("\\d+([.,]\\d+)?")) continue;
-            if (MyHelpTexto.STOPWORDS.contains(tok)) continue;
+            if (MyHelpTexto.STOPWORDS.contains(tok)) continue; // números (tamanho) são mantidos
             if (bairro && (tok.equals("taxa") || tok.equals("frete") || tok.equals("bairro") || tok.equals("entrega"))) continue;
             sb.append(tok).append(' ');
         }
@@ -287,8 +386,15 @@ public class MyHelpService {
         if (pNorm.contains(qNorm) || qNorm.contains(pNorm)) s = 75;
         if (!qTokens.isEmpty()) {
             int comum = 0;
-            for (String t : qTokens) if (pTokens.contains(t)) comum++;
-            s = Math.max(s, (int) Math.round(65.0 * comum / qTokens.size()));
+            for (String qt : qTokens) {
+                boolean casa = pTokens.contains(qt);
+                if (!casa && qt.length() >= 3) {
+                    // "300" casa "300ml", "coca" casa "cocacola" — substring de token
+                    for (String pt : pTokens) { if (pt.contains(qt) || qt.contains(pt)) { casa = true; break; } }
+                }
+                if (casa) comum++;
+            }
+            s = Math.max(s, (int) Math.round(72.0 * comum / qTokens.size()));
         }
         if (qTokens.size() == 1) {
             String q = qTokens.iterator().next();

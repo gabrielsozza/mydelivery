@@ -414,9 +414,12 @@ public class MyHelpService {
     // ── Novo produto ─────────────────────────────────────────────────────
     private Map<String, Object> fluxoNovoProduto(Restaurante r, String texto, String norm) {
         BigDecimal preco = extrairPreco(texto);
-        String nome = fatiaEntre(texto, "produto", "(por|no valor|custa|categoria)");
-        if (nome == null) nome = fatiaEntre(texto, "(cria|criar|crie|adiciona|adicione|cadastra|cadastre|novo|nova)", "(por|no valor|custa|categoria)");
+        // Nome vai até "por/categoria/descrição" (descrição pode vir antes do preço).
+        String nome = fatiaEntre(texto, "produto", "(por|no valor|custa|categoria|descric\\w*)");
+        if (nome == null) nome = fatiaEntre(texto, "(cria|criar|crie|adiciona|adicione|cadastra|cadastre|novo|nova)", "(por|no valor|custa|categoria|descric\\w*)");
         nome = semSubstantivo(nome, "produto|item|lanche|prato");
+        // Descrição opcional: o que vem depois de "descrição ..." até preço/categoria.
+        String descNova = fatiaEntre(texto, "descric\\w*", "(por|no valor|custa|categoria)");
         if (nome == null || nome.isBlank())
             return texto("Qual o nome do produto? Ex.: *\"cria o produto Coca 2L por 12 na categoria Bebidas\"*.");
         if (preco == null)
@@ -429,18 +432,19 @@ public class MyHelpService {
             cat = melhorCategoria(r.getId(), MyHelpTexto.norm(catConsulta), cc);
             if (cat == null && !cc.isEmpty()) cat = cc.get(0);
         }
+        String resumo = nome + " • " + moeda(preco) + (descNova != null ? " • \"" + descNova + "\"" : "");
         if (cat == null) {
             List<Categoria> cats = categoriaRepo.findByRestauranteIdOrderByOrdemAsc(r.getId());
             if (cats.isEmpty())
                 return texto("Você ainda não tem categorias. Cria uma primeiro (ex.: *\"cria a categoria Bebidas\"*) e depois o produto.");
             List<Map<String, Object>> ops = new ArrayList<>();
             for (Categoria x : cats) if (ops.size() < 12) ops.add(item("novoProduto", x.getNome(), null, "folder",
-                null, nome + " • " + moeda(preco), null, mp("textoNovo", nome, "precoNovo", preco, "categoriaId", x.getId())));
+                null, resumo, null, mp("textoNovo", nome, "precoNovo", preco, "categoriaId", x.getId(), "textoDesc", descNova)));
             return escolha("novoProduto", ops, "Em qual categoria vai entrar o *" + nome + "* (" + moeda(preco) + ")?");
         }
         return card("novoProduto", item("novoProduto", "Novo produto", null, "tag",
-            null, nome + " • " + moeda(preco) + " • " + cat.getNome(), null,
-            mp("textoNovo", nome, "precoNovo", preco, "categoriaId", cat.getId())),
+            null, resumo + " • " + cat.getNome(), null,
+            mp("textoNovo", nome, "precoNovo", preco, "categoriaId", cat.getId(), "textoDesc", descNova)),
             "Vou criar este produto. Confirma?");
     }
 
@@ -589,10 +593,32 @@ public class MyHelpService {
         return limpaNome(m.group(1));
     }
 
+    /** Minúsculas + sem acento MANTENDO o tamanho (1 char → 1 char), pra casar
+     *  marcadores acentuados como "descrição" no texto original sem desalinhar índices. */
+    private static String asciiLower(String s) {
+        s = s.toLowerCase();
+        StringBuilder b = new StringBuilder(s.length());
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            switch (c) {
+                case 'á': case 'à': case 'â': case 'ã': case 'ä': c = 'a'; break;
+                case 'é': case 'è': case 'ê': case 'ë': c = 'e'; break;
+                case 'í': case 'ì': case 'î': case 'ï': c = 'i'; break;
+                case 'ó': case 'ò': case 'ô': case 'õ': case 'ö': c = 'o'; break;
+                case 'ú': case 'ù': case 'û': case 'ü': c = 'u'; break;
+                case 'ç': c = 'c'; break;
+                case 'ñ': c = 'n'; break;
+                default: break;
+            }
+            b.append(c);
+        }
+        return b.toString();
+    }
+
     /** Fatia do texto original entre a 1ª ocorrência de `depoisDe` (regex) e `antesDe` (regex). */
     private String fatiaEntre(String orig, String depoisDe, String antesDe) {
         if (orig == null) return null;
-        String low = orig.toLowerCase();
+        String low = asciiLower(orig);            // mesmo tamanho do original → índices batem
         int from = 0;
         if (depoisDe != null) {
             Matcher m = Pattern.compile("\\b(?:" + depoisDe + ")\\b").matcher(low);
@@ -607,17 +633,22 @@ public class MyHelpService {
         return limpaNome(orig.substring(from, to));
     }
 
-    /** Limpa nome capturado: tira artigos/conectores do começo, aspas e um preço no fim. */
+    /** Limpa nome capturado: tira artigos/conectores do começo, aspas/pontuação e
+     *  preço MARCADO no fim (R$, "por N", "N reais") — mantém número de tamanho
+     *  tipo "Açaí 300"/"Coca 2L". Strips de cauda em loop até estabilizar. */
     private String limpaNome(String s) {
         if (s == null) return null;
-        s = s.trim().replaceAll("^[\"'“”]+|[\"'“”]+$", "").trim();
-        s = s.replaceAll("(?i)^(o|a|os|as|um|uma|de|do|da|meu|minha|chamad[oa]|com o nome|:|-)\\s+", "").trim();
-        // Remove só PREÇO MARCADO no fim (R$, "por N", "N reais") — mantém número
-        // de tamanho tipo "Açaí 300" ou "Coca 2L".
-        s = s.replaceAll("(?i)\\s+(?:por\\s+)?(?:r\\$?|\\$)\\s*\\d+(?:[.,]\\d+)?\\s*$", "").trim();
-        s = s.replaceAll("(?i)\\s+por\\s+\\d+(?:[.,]\\d+)?\\s*(?:reais|real|conto|pila)?\\s*$", "").trim();
-        s = s.replaceAll("(?i)\\s+\\d+(?:[.,]\\d+)?\\s*(?:reais|real|conto|pila)\\s*$", "").trim();
-        s = s.replaceAll("(?i)\\s+(na|no|da|do|em|de|a|pra|para)$", "").trim();
+        s = s.trim().replaceAll("^[\"'“”]+|[\"'“”]+$", "").replaceAll("^[,;:\\-\\s]+|[,;:\\s]+$", "").trim();
+        s = s.replaceAll("(?i)^(o|a|os|as|um|uma|de|do|da|meu|minha|chamad[oa]|com o nome|com|:|-)\\s+", "").trim();
+        for (int i = 0; i < 3; i++) {
+            String antes = s;
+            s = s.replaceAll("(?i)\\s+(?:por\\s+)?(?:r\\$?|\\$)\\s*\\d+(?:[.,]\\d+)?\\s*$", "").trim();
+            s = s.replaceAll("(?i)\\s+por\\s+\\d+(?:[.,]\\d+)?\\s*(?:reais|real|conto|pila)?\\s*$", "").trim();
+            s = s.replaceAll("(?i)\\s+\\d+(?:[.,]\\d+)?\\s*(?:reais|real|conto|pila)\\s*$", "").trim();
+            s = s.replaceAll("(?i)\\s+(na|no|da|do|em|de|a|pra|para)$", "").trim();
+            s = s.replaceAll("[,;:\\s]+$", "").trim();
+            if (s.equals(antes)) break;
+        }
         return s.isEmpty() ? null : s;
     }
 
@@ -724,7 +755,7 @@ public class MyHelpService {
             case "nomeCategoria":    return confirmarNomeCategoria(r, cvL(body.get("categoriaId")), cvS(body.get("textoNovo")));
             case "precoComplemento": return confirmarPrecoComplemento(r, cvL(body.get("itemId")), cvD(body.get("precoNovo")));
             case "novaCategoria":    return confirmarNovaCategoria(r, cvS(body.get("textoNovo")));
-            case "novoProduto":      return confirmarNovoProduto(r, cvS(body.get("textoNovo")), cvD(body.get("precoNovo")), cvL(body.get("categoriaId")));
+            case "novoProduto":      return confirmarNovoProduto(r, cvS(body.get("textoNovo")), cvD(body.get("precoNovo")), cvL(body.get("categoriaId")), cvS(body.get("textoDesc")));
             case "novoGrupo":        return confirmarNovoGrupo(r, cvL(body.get("produtoId")), cvS(body.get("textoNovo")));
             case "novoComplemento":  return confirmarNovoComplemento(r, cvL(body.get("grupoId")), cvS(body.get("textoNovo")), cvD(body.get("precoNovo")));
             default:                 return confirmarPreco(r, cvL(body.get("produtoId")), cvD(body.get("precoNovo")));
@@ -811,7 +842,7 @@ public class MyHelpService {
     }
 
     @Transactional
-    public Map<String, Object> confirmarNovoProduto(Restaurante r, String nome, BigDecimal preco, Long categoriaId) {
+    public Map<String, Object> confirmarNovoProduto(Restaurante r, String nome, BigDecimal preco, Long categoriaId, String descricao) {
         if (nome == null || nome.isBlank() || preco == null) return texto("Faltou o nome ou o preço do produto 🤔");
         if (!precoValido(preco)) return texto("Esse preço não parece certo 🙂");
         Restaurante rr = restauranteRepo.findById(r.getId()).orElse(r);
@@ -820,6 +851,7 @@ public class MyHelpService {
         p.setNome(nome.trim());
         p.setPreco(preco);
         p.setDisponivel(true);
+        if (descricao != null && !descricao.isBlank()) p.setDescricao(descricao.trim());
         if (categoriaId != null) {
             Categoria cat = categoriaRepo.findById(categoriaId).orElse(null);
             if (cat != null && cat.getRestaurante() != null && cat.getRestaurante().getId().equals(rr.getId()))

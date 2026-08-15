@@ -56,6 +56,14 @@ public class MyHelpService {
     private final MyHelpDominio dominio;
     private final CacheManager cacheManager;
 
+    /** Memória curta de conversa: guarda a pendência (o que o myHelp perguntou e
+     *  está esperando resposta) por loja, por poucos minutos. Assim "qual a
+     *  descrição?" → a próxima mensagem já é entendida como a resposta. */
+    private final com.github.benmanes.caffeine.cache.Cache<Long, Map<String, Object>> pendencia =
+            com.github.benmanes.caffeine.cache.Caffeine.newBuilder()
+                    .expireAfterWrite(5, java.util.concurrent.TimeUnit.MINUTES)
+                    .maximumSize(5000).build();
+
     /** Slugs liberados no beta (vírgula). "*" libera todas. Vazio = ninguém. */
     @Value("${myhelp.beta-slugs:}")
     private String betaSlugs;
@@ -106,6 +114,17 @@ public class MyHelpService {
         boolean falaDescricao = norm.matches(".*\\b(descricao|descric\\w*)\\b.*");
         boolean falaNome = norm.matches(".*\\b(nome|titulo|renomeia\\w*|renomear|rebatiza\\w*|apelido|chama)\\b.*");
         boolean falaProduto = norm.matches(".*\\b(produto|item|lanche|prato)\\b.*");
+
+        // ── Memória de contexto: se estou esperando um valor e a mensagem é
+        //    "só o valor" (sem começar um comando novo), uso a pendência. ──
+        boolean novoComando = falaBairro || falaTaxa || criar || falaGrupo || falaComplemento
+            || falaCategoria || falaDescricao || falaNome || falaProduto
+            || INTENCAO_PRECO.matcher(norm).find();
+        Map<String, Object> pend = pendencia.getIfPresent(r.getId());
+        if (pend != null) {
+            pendencia.invalidate(r.getId());              // usa uma vez só
+            if (!novoComando) return resolverPendencia(r, pend, texto);
+        }
 
         // Complementos (grupo / item) — os mais específicos
         if (falaGrupo && criar && !grupoLocal) return fluxoNovoGrupo(r, texto, norm);
@@ -198,7 +217,8 @@ public class MyHelpService {
     // ── Fluxo: preço de produto ──────────────────────────────────────────
     private Map<String, Object> fluxoPreco(Restaurante r, String texto, String norm) {
         BigDecimal precoNovo = extrairPreco(texto);
-        String consulta = extrairConsulta(norm, false);
+        // Se falou "produto X" explícito, o alvo é X; senão, o resto da frase.
+        String consulta = norm.matches(".*\\bproduto\\b.*") ? alvoProduto(texto, norm) : extrairConsulta(norm, false);
         if (consulta.isBlank()) {
             return texto("Qual produto você quer alterar? Me diz o nome como está no cardápio "
                 + "(ex.: *\"X-Bacon\"*, *\"Coca 2L\"*).");
@@ -221,6 +241,7 @@ public class MyHelpService {
 
         if (best != null && best.score >= 70 && (second == null || best.score - second.score >= 20)) {
             if (precoNovo == null) {
+                pendencia.put(r.getId(), mp("acao", "precoProduto", "produtoId", best.p.getId()));
                 return texto("Achei o *" + best.p.getNome() + "* (hoje " + moeda(best.p.getPreco())
                     + "). Pra quanto você quer mudar?");
             }
@@ -322,8 +343,10 @@ public class MyHelpService {
 
     // ── Título de produto ────────────────────────────────────────────────
     private Map<String, Object> fluxoNomeProduto(Restaurante r, String texto, String norm) {
+        // valor: depois de "pra", senão inline depois de "nome/chamado/titulo".
         String nomeNovo = textoNovoAposPra(texto);
-        String consulta = alvoConsulta(norm, STOP_ACAO);
+        if (nomeNovo == null) nomeNovo = fatiaEntre(texto, "(chamad\\w*|nome|titulo)", "(no produto|do produto|produto|pra|para)");
+        String consulta = alvoProduto(texto, norm);
         if (consulta.isBlank())
             return texto("Qual produto você quer renomear? Ex.: *\"muda o nome do X-Tudo pra X-Bacon\"*.");
         List<Produto> cand = new ArrayList<>();
@@ -335,7 +358,10 @@ public class MyHelpService {
                 x.getNome(), nomeNovo, "muda o nome do " + x.getNome() + " pra ", mp("produtoId", x.getId(), "textoNovo", nomeNovo)));
             return escolha("nomeProduto", ops, nomeNovo != null ? "Qual produto vira *" + nomeNovo + "*?" : "Qual produto você quer renomear?");
         }
-        if (nomeNovo == null) return texto("Certo, o *" + p.getNome() + "*. Qual vai ser o novo nome?");
+        if (nomeNovo == null || nomeNovo.isBlank()) {
+            pendencia.put(r.getId(), mp("acao", "nomeProduto", "produtoId", p.getId()));
+            return texto("Certo, o *" + p.getNome() + "*. Qual vai ser o novo nome?");
+        }
         return card("nomeProduto", item("nomeProduto", p.getNome(), p.getFotoUrl(), "tag",
             p.getNome(), nomeNovo, null, mp("produtoId", p.getId(), "textoNovo", nomeNovo)),
             "Confere a troca de nome e confirma:");
@@ -343,8 +369,10 @@ public class MyHelpService {
 
     // ── Descrição de produto ─────────────────────────────────────────────
     private Map<String, Object> fluxoDescricaoProduto(Restaurante r, String texto, String norm) {
+        // valor: depois de "pra", senão inline depois de "descrição ...".
         String descNova = textoNovoAposPra(texto);
-        String consulta = alvoConsulta(norm, STOP_ACAO);
+        if (descNova == null) descNova = fatiaEntre(texto, "descric\\w*", "(no produto|do produto|o produto|produto|pra|para)");
+        String consulta = alvoProduto(texto, norm);
         if (consulta.isBlank())
             return texto("Qual produto você quer descrever? Ex.: *\"muda a descrição do X-Tudo pra pão, 2 carnes, queijo e bacon\"*.");
         List<Produto> cand = new ArrayList<>();
@@ -356,7 +384,10 @@ public class MyHelpService {
                 descTexto(x.getDescricao()), descNova, "muda a descrição do " + x.getNome() + " pra ", mp("produtoId", x.getId(), "textoNovo", descNova)));
             return escolha("descProduto", ops, "De qual produto é essa descrição?");
         }
-        if (descNova == null) return texto("Beleza, o *" + p.getNome() + "*. Qual vai ser a nova descrição?");
+        if (descNova == null || descNova.isBlank()) {
+            pendencia.put(r.getId(), mp("acao", "descProduto", "produtoId", p.getId()));
+            return texto("Beleza, o *" + p.getNome() + "*. Qual vai ser a nova descrição?");
+        }
         return card("descProduto", item("descProduto", p.getNome(), p.getFotoUrl(), "tag",
             descTexto(p.getDescricao()), descNova, null, mp("produtoId", p.getId(), "textoNovo", descNova)),
             "Confere a nova descrição e confirma:");
@@ -404,8 +435,10 @@ public class MyHelpService {
     // ── Nova categoria ───────────────────────────────────────────────────
     private Map<String, Object> fluxoNovaCategoria(Restaurante r, String texto, String norm) {
         String nome = fatiaEntre(texto, "categoria", null);
-        if (nome == null || nome.isBlank())
-            return texto("Qual o nome da nova categoria? Ex.: *\"cria a categoria Sobremesas\"*.");
+        if (nome == null || nome.isBlank()) {
+            pendencia.put(r.getId(), mp("acao", "novaCategoria"));
+            return texto("Qual o nome da nova categoria? Ex.: *\"Sobremesas\"*.");
+        }
         return card("novaCategoria", item("novaCategoria", "Nova categoria", null, "folder",
             null, nome, null, mp("textoNovo", nome)),
             "Vou criar esta categoria nova. Confirma?");
@@ -413,39 +446,60 @@ public class MyHelpService {
 
     // ── Novo produto ─────────────────────────────────────────────────────
     private Map<String, Object> fluxoNovoProduto(Restaurante r, String texto, String norm) {
-        BigDecimal preco = extrairPreco(texto);
-        // Nome vai até "por/categoria/descrição" (descrição pode vir antes do preço).
-        String nome = fatiaEntre(texto, "produto", "(por|no valor|custa|categoria|descric\\w*)");
-        if (nome == null) nome = fatiaEntre(texto, "(cria|criar|crie|adiciona|adicione|cadastra|cadastre|novo|nova)", "(por|no valor|custa|categoria|descric\\w*)");
+        // Preço é OPCIONAL e só conta MARCADO ("por 12", "R$ 12", "12 reais").
+        // Número colado em unidade ("500g", "2L", "300ml") é TAMANHO, nunca preço.
+        BigDecimal preco = precoMarcado(texto);
+        // Nome: prefere depois de "chamado/nome"; senão depois de "produto"; senão
+        // depois do verbo. Para em QUALQUER marcador (categoria/preço/descrição/chamado),
+        // em qualquer ordem — ex.: "produto dentro da categoria X chamado: Y".
+        String fimNome = "(por\\b|no valor|custa|categoria|descric\\w*|chamad\\w*|preco\\b|valor\\b)";
+        String nome = fatiaEntre(texto, "(chamad\\w*|nome)", fimNome);
+        if (nome == null) nome = fatiaEntre(texto, "produto", fimNome);
+        if (nome == null) nome = fatiaEntre(texto, "(cria|criar|crie|adiciona|adicione|cadastra|cadastre|novo|nova)", fimNome);
         nome = semSubstantivo(nome, "produto|item|lanche|prato");
-        // Descrição opcional: o que vem depois de "descrição ..." até preço/categoria.
-        String descNova = fatiaEntre(texto, "descric\\w*", "(por|no valor|custa|categoria)");
+        String descNova = fatiaEntre(texto, "descric\\w*", "(por\\b|no valor|custa|categoria|chamad\\w*)");
         if (nome == null || nome.isBlank())
-            return texto("Qual o nome do produto? Ex.: *\"cria o produto Coca 2L por 12 na categoria Bebidas\"*.");
-        if (preco == null)
-            return texto("Beleza, *" + nome + "*. Qual o preço? Ex.: *\"cria o produto " + nome + " por 12 na categoria Bebidas\"*.");
-        // Categoria (opcional, mas melhor ter): tenta casar pelo que veio depois de "categoria".
-        String catConsulta = fatiaEntre(texto, "categoria", null);
+            return texto("Qual o nome do produto? Ex.: *\"cria o produto 500g de franguinho na categoria Porções\"* — o preço você põe depois, se quiser.");
+        String catConsulta = fatiaEntre(texto, "categoria", "(chamad\\w*|nome|por\\b|descric\\w*)");
         Categoria cat = null;
         if (catConsulta != null && !catConsulta.isBlank()) {
             List<Categoria> cc = new ArrayList<>();
             cat = melhorCategoria(r.getId(), MyHelpTexto.norm(catConsulta), cc);
             if (cat == null && !cc.isEmpty()) cat = cc.get(0);
         }
-        String resumo = nome + " • " + moeda(preco) + (descNova != null ? " • \"" + descNova + "\"" : "");
+        String precoFmt = preco != null ? moeda(preco) : "preço a definir";
+        String resumo = nome + " • " + precoFmt + (descNova != null ? " • \"" + descNova + "\"" : "");
         if (cat == null) {
             List<Categoria> cats = categoriaRepo.findByRestauranteIdOrderByOrdemAsc(r.getId());
             if (cats.isEmpty())
-                return texto("Você ainda não tem categorias. Cria uma primeiro (ex.: *\"cria a categoria Bebidas\"*) e depois o produto.");
+                return texto("Você ainda não tem categorias. Cria uma primeiro (ex.: *\"cria a categoria Porções\"*) e depois o produto.");
             List<Map<String, Object>> ops = new ArrayList<>();
             for (Categoria x : cats) if (ops.size() < 12) ops.add(item("novoProduto", x.getNome(), null, "folder",
                 null, resumo, null, mp("textoNovo", nome, "precoNovo", preco, "categoriaId", x.getId(), "textoDesc", descNova)));
-            return escolha("novoProduto", ops, "Em qual categoria vai entrar o *" + nome + "* (" + moeda(preco) + ")?");
+            return escolha("novoProduto", ops, "Em qual categoria vai entrar o *" + nome + "*?");
         }
         return card("novoProduto", item("novoProduto", "Novo produto", null, "tag",
             null, resumo + " • " + cat.getNome(), null,
             mp("textoNovo", nome, "precoNovo", preco, "categoriaId", cat.getId(), "textoDesc", descNova)),
             "Vou criar este produto. Confirma?");
+    }
+
+    /** Preço só quando MARCADO ("por 12", "R$ 12", "preço 12", "12 reais"). Número
+     *  colado em unidade (500g, 2L, 300ml) é TAMANHO — nunca vira preço. null = sem preço. */
+    private BigDecimal precoMarcado(String texto) {
+        String t = asciiLower(texto);
+        String num = "(\\d{1,6}(?:[.,]\\d{1,2})?)";
+        String naoUnidade = "(?!\\s*(?:g|kg|gr|mg|ml|l|lt|litro|litros|grama|gramas|un|und|unid|unidade|cm|mm|kg|kilo|quilo))";
+        String achado = null;
+        Matcher m = Pattern.compile("(?:\\bpor\\b|\\bpreco\\b|\\bvalor\\b|\\bcusta\\b|no valor|r\\$)\\s*(?:de\\s+)?r?\\$?\\s*" + num + naoUnidade).matcher(t);
+        if (m.find()) achado = m.group(1);
+        if (achado == null) {
+            Matcher m2 = Pattern.compile(num + "\\s*(?:reais|real|conto|pila)\\b").matcher(t);
+            if (m2.find()) achado = m2.group(1);
+        }
+        if (achado == null) return null;
+        try { return achado.contains(",") ? new BigDecimal(achado.replace(".", "").replace(",", ".")) : new BigDecimal(achado); }
+        catch (Exception e) { return null; }
     }
 
     // ── Novo grupo de complemento (dentro de um produto) ─────────────────
@@ -585,6 +639,54 @@ public class MyHelpService {
         return sb.toString().trim();
     }
 
+    /** Alvo produto: prefere o nome logo depois de "produto"/"do produto"/"no
+     *  produto" (cortando no próximo verbo/marcador); senão o resto da frase. */
+    private String alvoProduto(String texto, String norm) {
+        String m = fatiaEntre(texto, "produto",
+            "(pra|para|=|:|por\\b|com\\b|no valor|valor|preco|descric\\w*|chamad\\w*|coloca|poe|bota|deixa|muda|altera|troca|ajusta|atualiza|sobe|aumenta|abaixa|baixa)");
+        if (m != null && !m.isBlank()) return MyHelpTexto.norm(m);
+        return alvoConsulta(norm, STOP_ACAO);
+    }
+
+    /** A mensagem atual é a RESPOSTA ao que o myHelp perguntou (memória curta). */
+    private Map<String, Object> resolverPendencia(Restaurante r, Map<String, Object> pend, String texto) {
+        String acao = pend == null ? null : (String) pend.get("acao");
+        if (acao == null) return texto("Beleza! Me diz o que você quer fazer 🙂");
+        Long pid = pend.get("produtoId") instanceof Number ? ((Number) pend.get("produtoId")).longValue() : null;
+        switch (acao) {
+            case "nomeProduto": {
+                Produto p = pid == null ? null : produtoRepo.findById(pid).orElse(null);
+                if (p == null) return texto("Ops, me perdi do produto. Manda o comando de novo 🙂");
+                String novo = limpaNome(texto);
+                if (novo == null) return texto("Não peguei o nome. Me diz de novo? 🙂");
+                return card("nomeProduto", item("nomeProduto", p.getNome(), p.getFotoUrl(), "tag",
+                    p.getNome(), novo, null, mp("produtoId", p.getId(), "textoNovo", novo)), "Confere a troca de nome e confirma:");
+            }
+            case "descProduto": {
+                Produto p = pid == null ? null : produtoRepo.findById(pid).orElse(null);
+                if (p == null) return texto("Ops, me perdi do produto. Manda o comando de novo 🙂");
+                String desc = limpaNome(texto);
+                if (desc == null) return texto("Não peguei a descrição. Me diz de novo? 🙂");
+                return card("descProduto", item("descProduto", p.getNome(), p.getFotoUrl(), "tag",
+                    descTexto(p.getDescricao()), desc, null, mp("produtoId", p.getId(), "textoNovo", desc)), "Confere a nova descrição e confirma:");
+            }
+            case "precoProduto": {
+                Produto p = pid == null ? null : produtoRepo.findById(pid).orElse(null);
+                if (p == null) return texto("Ops, me perdi do produto. Manda o comando de novo 🙂");
+                BigDecimal v = extrairPreco(texto);
+                if (v == null) return texto("Não peguei o preço. Me diz um número (ex.: 25)? 🙂");
+                return card("preco", produtoItem(p, v), "Confere e confirma que eu altero o preço:");
+            }
+            case "novaCategoria": {
+                String nome = limpaNome(texto);
+                if (nome == null) return texto("Não peguei o nome da categoria 🙂");
+                return card("novaCategoria", item("novaCategoria", "Nova categoria", null, "folder",
+                    null, nome, null, mp("textoNovo", nome)), "Vou criar esta categoria nova. Confirma?");
+            }
+            default: return texto("Beleza! Me diz o que você quer fazer 🙂");
+        }
+    }
+
     /** Novo texto (nome/descrição) preservando acento/caixa, após "pra/para/:". */
     private String textoNovoAposPra(String textoBruto) {
         if (textoBruto == null) return null;
@@ -648,7 +750,9 @@ public class MyHelpService {
             s = s.replaceAll("(?i)\\s+(?:por\\s+)?(?:r\\$?|\\$)\\s*\\d+(?:[.,]\\d+)?\\s*$", "").trim();
             s = s.replaceAll("(?i)\\s+por\\s+\\d+(?:[.,]\\d+)?\\s*(?:reais|real|conto|pila)?\\s*$", "").trim();
             s = s.replaceAll("(?i)\\s+\\d+(?:[.,]\\d+)?\\s*(?:reais|real|conto|pila)\\s*$", "").trim();
-            s = s.replaceAll("(?i)\\s+(na|no|da|do|em|de|a|pra|para)$", "").trim();
+            s = s.replaceAll("(?i)\\s+(na|no|da|do|em|de|a|pra|para|com)$", "").trim();
+            // enfeites/advérbios soltos no fim ("lá", "aí", "aqui", "então", "agora"...)
+            s = s.replaceAll("(?i)\\s+(la|lá|ai|aí|ali|aqui|entao|então|agora|mesmo|então)$", "").trim();
             s = s.replaceAll("[,;:\\s]+$", "").trim();
             if (s.equals(antes)) break;
         }

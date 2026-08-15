@@ -640,8 +640,11 @@ public class MyHelpService {
         if (s == null) return null;
         s = s.trim().replaceAll("^[\"'“”]+|[\"'“”]+$", "").replaceAll("^[,;:\\-\\s]+|[,;:\\s]+$", "").trim();
         s = s.replaceAll("(?i)^(o|a|os|as|um|uma|de|do|da|meu|minha|chamad[oa]|com o nome|com|:|-)\\s+", "").trim();
-        for (int i = 0; i < 3; i++) {
+        for (int i = 0; i < 4; i++) {
             String antes = s;
+            // cortesias/enfeites no fim: "por favor", "pra mim", "obrigado"...
+            s = s.replaceAll("(?i)[\\s,]+(por\\s+favor|por\\s+gentileza|por\\s+obsequio|pra\\s+mim|para\\s+mim|pra\\s+loja|pra\\s+gente|pra\\s+voce|pra\\s+vc|faz\\s+favor|faca\\s+favor|obrigad[oa]|valeu|vlw|please|pfv|pf)\\s*$", "").trim();
+            // preço marcado no fim (R$, "por N", "N reais") — mantém tamanho ("Açaí 300")
             s = s.replaceAll("(?i)\\s+(?:por\\s+)?(?:r\\$?|\\$)\\s*\\d+(?:[.,]\\d+)?\\s*$", "").trim();
             s = s.replaceAll("(?i)\\s+por\\s+\\d+(?:[.,]\\d+)?\\s*(?:reais|real|conto|pila)?\\s*$", "").trim();
             s = s.replaceAll("(?i)\\s+\\d+(?:[.,]\\d+)?\\s*(?:reais|real|conto|pila)\\s*$", "").trim();

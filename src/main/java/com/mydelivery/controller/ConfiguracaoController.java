@@ -166,4 +166,35 @@ public class ConfiguracaoController {
         restauranteRepository.save(r);
         return ResponseEntity.ok(Map.of("aceitarPedidosAutomaticamente", novo));
     }
+
+    /**
+     * Preferência de IMPRESSÃO AUTOMÁTICA persistida por restaurante. Antes vivia
+     * só no localStorage e o logout/401 (localStorage.clear) apagava — o dono
+     * reconfigurava todo dia. Agora o painel re-hidrata no boot por este GET e
+     * salva por este PATCH. É só a PREFERÊNCIA; a conexão física é reestabelecida
+     * pelo próprio módulo de impressão (WebUSB getDevices/RawBT/nativa).
+     */
+    @GetMapping("/api/restaurante/configuracoes/impressao-automatica")
+    @PreAuthorize("hasAnyRole('RESTAURANTE', 'ADMIN')")
+    public ResponseEntity<Map<String, Boolean>> getImpressaoAutomatica(
+            @AuthenticationPrincipal String email) {
+        Restaurante r = restauranteRepository.findByUsuarioEmail(email).orElseThrow();
+        // configurado=false → nunca setou (front migra o localStorage). Assim não
+        // desligamos quem já tinha a impressão ligada antes deste campo existir.
+        return ResponseEntity.ok(Map.of(
+                "ativo", Boolean.TRUE.equals(r.getImpressaoAutomatica()),
+                "configurado", r.getImpressaoAutomatica() != null));
+    }
+
+    @PatchMapping("/api/restaurante/configuracoes/impressao-automatica")
+    @PreAuthorize("hasAnyRole('RESTAURANTE', 'ADMIN')")
+    public ResponseEntity<Map<String, Boolean>> toggleImpressaoAutomatica(
+            @AuthenticationPrincipal String email,
+            @RequestBody Map<String, Boolean> body) {
+        Restaurante r = restauranteRepository.findByUsuarioEmail(email).orElseThrow();
+        boolean novo = Boolean.TRUE.equals(body.get("ativo"));
+        r.setImpressaoAutomatica(novo);
+        restauranteRepository.save(r);
+        return ResponseEntity.ok(Map.of("impressaoAutomatica", novo));
+    }
 }

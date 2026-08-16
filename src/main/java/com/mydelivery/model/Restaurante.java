@@ -181,6 +181,17 @@ public class Restaurante {
     @Builder.Default
     private Boolean aceitarPedidosAutomaticamente = false;
 
+    // ── Impressão automática (persistência da PREFERÊNCIA por restaurante) ──
+    // Antes vivia só no localStorage do navegador; o logout/401 (localStorage.clear)
+    // apagava e o dono precisava reconfigurar todo dia. Agora persiste server-side:
+    // o painel re-hidrata no boot e liga a impressão sozinho. NÃO é a conexão física
+    // (essa é reestabelecida via WebUSB getDevices()/RawBT/nativa) — é só a preferência.
+    // NULLABLE de propósito: null = nunca configurado (o front migra o que houver no
+    // localStorage), true/false = escolha explícita do dono. Evita desligar quem já
+    // tinha ligado no localStorage antes deste campo existir.
+    @Column(name = "impressao_automatica")
+    private Boolean impressaoAutomatica;
+
     /**
      * Se true, após o cliente finalizar o pedido no cardápio digital o
      * frontend mostra um botão "Confirmar via WhatsApp" que abre conversa

@@ -121,6 +121,10 @@ public class MyHelpService {
     }
 
     private Map<String, Object> responderInterno(Restaurante r, String textoBruto) {
+        return responderInterno(r, textoBruto, true);
+    }
+
+    private Map<String, Object> responderInterno(Restaurante r, String textoBruto, boolean permitirMulti) {
         String texto = textoBruto == null ? "" : textoBruto.trim();
         String norm = MyHelpTexto.norm(texto);
         if (norm.isBlank()) return texto(pick("Oi! Me diz o que você precisa 🙂", "Opa! Como posso te ajudar?"));
@@ -160,8 +164,29 @@ public class MyHelpService {
         Map<String, Object> ensino = fluxoAprender(r, texto, norm);
         if (ensino != null) return ensino;
 
+        // ── Múltiplas OPERAÇÕES na mesma frase ("cria X e Y ... e coloca a descrição ...") ──
+        if (permitirMulti) {
+            Map<String, Object> multi = fluxoMultiOperacao(r, texto, norm);
+            if (multi != null) return multi;
+        }
+
         // Complementos (grupo / item) — os mais específicos
         if (falaGrupo && criar && !grupoLocal) return fluxoNovoGrupo(r, texto, norm);
+        // Renomear grupo de complemento (NÃO é criar, NÃO é preço) — antes de nome de produto/categoria.
+        // Casa por CATÁLOGO REAL: separa "grupo Complemento" (nome real) de "produto Macarrão na Chapa".
+        if (!criar && !INTENCAO_PRECO.matcher(norm).find()) {
+            boolean sinalRenomeGrupo = falaGrupo && (falaNome || verbo
+                || norm.matches(".*\\b(renomeia\\w*|renomear|rebatiza\\w*|passa a (se )?chamar|deve se chamar|vira|agora (e|se chama))\\b.*"));
+            // Sem a palavra "grupo": só entra se houver um GRUPO real citado + verbo de troca ("Troque Complemento por...").
+            boolean semGrupoWord = !falaGrupo && !falaProduto && !falaCategoria
+                && norm.matches(".*\\b(troca|troque|trocar|renomeia\\w*|renomear|rebatiza\\w*)\\b.*")
+                && acharProdutoNaFrase(r.getId(), norm) != null
+                && !gruposNaFrase(r.getId(), norm, null).isEmpty();
+            if (sinalRenomeGrupo || semGrupoWord) {
+                Map<String, Object> res = fluxoNomeGrupo(r, texto, norm);
+                if (res != null) return res;   // se não é renomeação de grupo, cai pro fluxo normal
+            }
+        }
         if (criar && (grupoLocal || (falaComplemento && !falaGrupo))) return fluxoNovoComplemento(r, texto, norm);
         if (falaComplemento && (INTENCAO_PRECO.matcher(norm).find() || (verbo && temNum)))
             return fluxoPrecoComplemento(r, texto, norm);
@@ -192,6 +217,71 @@ public class MyHelpService {
             "Hmm, não peguei bem essa 🤔 Mas relaxa — me fala do seu jeito, tipo *\"muda o preço da coca lata pra 6\"* ou *\"altera a taxa do Centro pra 7\"*, que eu resolvo.",
             "Não entendi 100%, mas tô aqui pra ajudar 🙂 Posso mexer no preço de um produto ou na taxa de um bairro. O que você quer fazer?",
             "Me explica de outro jeito? 😅 Consigo alterar preço de produto, taxa de bairro e tirar dúvidas do sistema."));
+    }
+
+    // ── Fase 3: múltiplas OPERAÇÕES numa frase só ────────────────────────
+    /** Divide a frase em cláusulas em "... e/então <verbo de ação> ...". Só separa
+     *  quando o "e" é seguido de um VERBO (nova operação), não numa lista ("X e Y"). */
+    private List<String> separarOperacoes(String texto) {
+        List<String> out = new ArrayList<>();
+        if (texto == null) return out;
+        String verbos = "(?:coloca|coloque|poe|põe|bota|adiciona|adicione|adicionar|muda|mude|mudar|altera|altere|"
+            + "troca|troque|cria|crie|criar|cadastra|cadastre|inclui|inclua|renomeia|renomear|define|defina|deixa|"
+            + "atualiza|atualize|remova|remove|exclui|exclua|apaga|apague)";
+        for (String p : texto.split("(?i)\\s+(?:e|entao|então|depois|dai|daí|tambem|também)\\s+(?=" + verbos + "\\b)")) {
+            String t = p.trim();
+            if (!t.isBlank()) out.add(t);
+        }
+        return out;
+    }
+
+    /** Itens (cada um com payload) de uma resposta card/lote. */
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> itensDaResposta(Map<String, Object> resp) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        if (resp == null) return out;
+        Object tipo = resp.get("tipo");
+        if ("lote".equals(tipo) && resp.get("itens") instanceof List) {
+            for (Object o : (List<Object>) resp.get("itens")) if (o instanceof Map) out.add((Map<String, Object>) o);
+        } else if ("card".equals(tipo) && resp.get("item") instanceof Map) {
+            out.add((Map<String, Object>) resp.get("item"));
+        }
+        return out;
+    }
+
+    /** Encadeia várias operações numa frase só → um único LOTE. Reusa o interpretador
+     *  em cada cláusula; resolve "descrição ... nos dois/neles" pros produtos criados. */
+    private Map<String, Object> fluxoMultiOperacao(Restaurante r, String texto, String norm) {
+        List<String> clausulas = separarOperacoes(texto);
+        if (clausulas.size() < 2) return null;
+        List<Map<String, Object>> todosItens = new ArrayList<>();
+        List<String> produtosCriados = new ArrayList<>();
+        for (String cl : clausulas) {
+            String cln = MyHelpTexto.norm(cl);
+            boolean ehDesc = cln.matches(".*\\b(descricao|descric\\w*)\\b.*");
+            boolean backref = cln.matches(".*\\b(nos dois|nos 2|neles|nelas|em ambos|em todos|nos produtos|pros dois|nos itens|nos tres|nos 3)\\b.*");
+            if (ehDesc && backref && !produtosCriados.isEmpty()) {
+                String desc = fatiaEntre(cl, "descric\\w*", "(nos|neles|nelas|em ambos|em todos|em|pros|pro)");
+                if (desc == null || desc.isBlank()) desc = fatiaEntre(cl, "descric\\w*", null);
+                if (desc != null && !desc.isBlank())
+                    for (String nome : produtosCriados)
+                        todosItens.add(item("descProdutoNome", "Descrição de " + nome, null, "tag",
+                            null, desc, null, mp("nomeProduto", nome, "textoNovo", desc)));
+                continue;
+            }
+            Map<String, Object> resp = responderInterno(r, cl, false);
+            List<Map<String, Object>> its = itensDaResposta(resp);
+            todosItens.addAll(its);
+            for (Map<String, Object> it : its) {
+                Object pl = it.get("payload");
+                if (pl instanceof Map && "novoProduto".equals(((Map<?, ?>) pl).get("acao"))) {
+                    Object tn = ((Map<?, ?>) pl).get("textoNovo");
+                    if (tn != null) produtosCriados.add(tn.toString());
+                }
+            }
+        }
+        if (todosItens.isEmpty()) return null;   // não deu pra encadear → deixa o fluxo normal
+        return lote("multi", todosItens, "Vou fazer estas " + todosItens.size() + " alterações. Confirma?");
     }
 
     /**
@@ -412,7 +502,7 @@ public class MyHelpService {
     private Map<String, Object> fluxoDescricaoProduto(Restaurante r, String texto, String norm) {
         // valor: depois de "pra", senão inline depois de "descrição ...".
         String descNova = textoNovoAposPra(texto);
-        if (descNova == null) descNova = fatiaEntre(texto, "descric\\w*", "(no produto|do produto|o produto|produto|pra|para)");
+        if (descNova == null) descNova = fatiaEntre(texto, "descric\\w*", "(no produto|do produto|o produto|produto|na categoria|em categoria|categoria|pra|para)");
         String consulta = alvoProduto(texto, norm);
         lembrarTermo(r.getId(), consulta);
         if (consulta.isBlank())
@@ -456,6 +546,38 @@ public class MyHelpService {
             "Confere o novo nome da categoria e confirma:");
     }
 
+    // ── Renomear grupo de complemento (casa por catálogo real) ───────────
+    private Map<String, Object> fluxoNomeGrupo(Restaurante r, String texto, String norm) {
+        Produto p = acharProdutoNaFrase(r.getId(), norm);
+        List<ComplementoGrupo> gs = gruposNaFrase(r.getId(), norm, p);
+        if (gs.isEmpty() && p != null) gs = gruposNaFrase(r.getId(), norm, null);
+        boolean temGrupoWord = norm.matches(".*\\bgrupo(s)?\\b.*");
+        if (gs.isEmpty()) {
+            // Sem grupo real citado e sem a palavra "grupo" → não é essa intenção.
+            if (!temGrupoWord) return null;
+            return texto("Qual grupo você quer renomear? Ex.: *\"muda o grupo Complemento do X-Tudo para Adicionais\"*.");
+        }
+        String novo = novoNomeRenomear(texto, p);
+        if (novo == null || novo.isBlank())
+            return texto("Pra qual nome? Ex.: *\"renomeia o grupo " + gs.get(0).getNome() + " para Adicionais\"*.");
+        ComplementoGrupo g = gs.get(0);
+        // Ambíguo só quando o MESMO nome de grupo existe em vários produtos e não sabemos qual.
+        boolean ambiguo = gs.size() > 1 && p == null
+            && MyHelpTexto.norm(gs.get(0).getNome()).length() == MyHelpTexto.norm(gs.get(1).getNome()).length();
+        if (ambiguo) {
+            List<Map<String, Object>> ops = new ArrayList<>();
+            for (ComplementoGrupo x : gs) if (ops.size() < 8) ops.add(item("renameGrupo",
+                x.getNome() + (x.getProduto() != null ? " (" + x.getProduto().getNome() + ")" : ""), null, "layers",
+                x.getNome(), novo, null, mp("grupoId", x.getId(), "textoNovo", novo)));
+            return escolha("renameGrupo", ops, "Qual grupo *" + g.getNome() + "* você quer renomear pra *" + novo + "*?");
+        }
+        String prodNome = g.getProduto() != null ? g.getProduto().getNome() : null;
+        return card("renameGrupo", item("renameGrupo",
+            "Grupo" + (prodNome != null ? " em " + prodNome : ""), null, "layers",
+            g.getNome(), novo, null, mp("grupoId", g.getId(), "textoNovo", novo)),
+            "Vou renomear este grupo de complemento. Confirma?");
+    }
+
     // ── Preço de um complemento (item dentro de um grupo) ────────────────
     private Map<String, Object> fluxoPrecoComplemento(Restaurante r, String texto, String norm) {
         BigDecimal precoNovo = extrairPreco(texto);
@@ -476,6 +598,18 @@ public class MyHelpService {
 
     // ── Nova categoria ───────────────────────────────────────────────────
     private Map<String, Object> fluxoNovaCategoria(Restaurante r, String texto, String norm) {
+        // MÚLTIPLAS categorias? "cria as categorias A, B e C"
+        String segCats = fatiaEntreRaw(texto, "(categorias|categoria)", null);
+        if (segCats != null) {
+            List<String> nomes = new ArrayList<>();
+            for (String s : separarLista(segCats)) { String n = limpaNome(s); if (n != null && !n.isBlank()) nomes.add(n); }
+            if (nomes.size() > 1) {
+                List<Map<String, Object>> itens = new ArrayList<>();
+                for (String n : nomes) itens.add(item("novaCategoria", "Nova categoria", null, "folder",
+                    null, n, null, mp("textoNovo", n)));
+                return lote("novaCategoria", itens, "Vou criar estas " + nomes.size() + " categorias. Confirma?");
+            }
+        }
         // Nome: prefere depois de "chamada/com o nome/denominada"; senão depois de "categoria".
         String nome = fatiaEntre(texto, "(chamad\\w*|com o nome|denominad\\w*)", null);
         if (nome == null || nome.isBlank()) nome = fatiaEntre(texto, "categoria", "(chamad\\w*|com o nome|denominad\\w*)");
@@ -628,6 +762,38 @@ public class MyHelpService {
 
     // ── Novo produto ─────────────────────────────────────────────────────
     private Map<String, Object> fluxoNovoProduto(Restaurante r, String texto, String norm) {
+        // MÚLTIPLOS produtos? "cria os produtos X e Y na categoria Z" / "cria o X e o Y em Z"
+        String segProds = fatiaEntreRaw(texto, "produtos", "(na categoria|em categoria|categoria)");
+        if (segProds == null)
+            segProds = fatiaEntreRaw(texto, "(cria|criar|crie|adiciona|adicione|adicionar|cadastra|cadastre|inclui|inclua|registra|registre)", "(na categoria|em categoria|categoria)");
+        Categoria catShared = acharCategoriaNaFrase(r.getId(), norm);
+        if (segProds != null && catShared != null) segProds = tiraEntidadeFinal(segProds, catShared.getNome());
+        if (segProds != null) {
+            List<String> nomesP = new ArrayList<>();
+            for (String s : separarLista(segProds)) {
+                String n = limpaNome(semSubstantivo(s, "produto|item|lanche|prato"));
+                if (n != null && !n.isBlank()) nomesP.add(n);
+            }
+            if (nomesP.size() > 1) {
+                Categoria cat = catShared;
+                if (cat == null) {
+                    String catConsulta = fatiaEntre(texto, "categoria", "(chamad\\w*|nome|por\\b|descric\\w*)");
+                    if (catConsulta != null && !catConsulta.isBlank()) {
+                        List<Categoria> cc = new ArrayList<>();
+                        cat = melhorCategoria(r.getId(), MyHelpTexto.norm(catConsulta), cc);
+                        if (cat == null && !cc.isEmpty()) cat = cc.get(0);
+                    }
+                }
+                if (cat == null)
+                    return texto("Em qual categoria entram esses produtos? Ex.: *\"...na categoria Hambúrgueres\"*.");
+                BigDecimal precoMulti = precoMarcado(texto);
+                List<Map<String, Object>> itens = new ArrayList<>();
+                for (String n : nomesP) itens.add(item("novoProduto", n, null, "tag", null,
+                    n + " • " + (precoMulti != null ? moeda(precoMulti) : "preço a definir") + " • " + cat.getNome(), null,
+                    mp("textoNovo", n, "precoNovo", precoMulti, "categoriaId", cat.getId())));
+                return lote("novoProduto", itens, "Vou criar estes " + nomesP.size() + " produtos em *" + cat.getNome() + "*. Confirma?");
+            }
+        }
         // Preço é OPCIONAL e só conta MARCADO ("por 12", "R$ 12", "12 reais").
         // Número colado em unidade ("500g", "2L", "300ml") é TAMANHO, nunca preço.
         BigDecimal preco = precoMarcado(texto);
@@ -689,6 +855,29 @@ public class MyHelpService {
 
     // ── Novo grupo de complemento (dentro de um produto) ─────────────────
     private Map<String, Object> fluxoNovoGrupo(Restaurante r, String texto, String norm) {
+        // MÚLTIPLOS grupos? "cria os grupos Molhos, Adicionais e Extras no produto X-Tudo"
+        String segGrupos = fatiaEntreRaw(texto, "(grupos|grupo)", "(no produto|do produto|no|do|na|da|produto|em)");
+        if (segGrupos != null) {
+            List<String> nomesG = new ArrayList<>();
+            for (String s : separarLista(segGrupos)) { String n = limpaNome(s); if (n != null && !n.isBlank()) nomesG.add(n); }
+            if (nomesG.size() > 1) {
+                Produto pShared = acharProdutoNaFrase(r.getId(), norm);
+                if (pShared == null) {
+                    String prodConsulta = fatiaEntre(texto, "(no produto|do produto|no|do|produto|em)", null);
+                    if (prodConsulta != null && !prodConsulta.isBlank()) {
+                        List<Produto> cc = new ArrayList<>();
+                        pShared = melhorProduto(r.getId(), MyHelpTexto.norm(prodConsulta), cc);
+                        if (pShared == null && !cc.isEmpty()) pShared = cc.get(0);
+                    }
+                }
+                if (pShared == null)
+                    return texto("Em qual produto entram esses grupos? Ex.: *\"...no produto X-Tudo\"*.");
+                List<Map<String, Object>> itens = new ArrayList<>();
+                for (String n : nomesG) itens.add(item("novoGrupo", "Grupo em " + pShared.getNome(), pShared.getFotoUrl(), "layers",
+                    null, n, null, mp("produtoId", pShared.getId(), "textoNovo", n)));
+                return lote("novoGrupo", itens, "Vou criar estes " + nomesG.size() + " grupos em *" + pShared.getNome() + "*. Confirma?");
+            }
+        }
         String nomeGrupo = fatiaEntre(texto, "grupo", "(no|do|na|da|pro|para|produto|em)");
         String prodConsulta = fatiaEntre(texto, "(no|do|na|da|pro|produto|em)", null);
         if (nomeGrupo == null || nomeGrupo.isBlank())
@@ -711,6 +900,40 @@ public class MyHelpService {
 
     // ── Novo complemento (item) dentro de um grupo ───────────────────────
     private Map<String, Object> fluxoNovoComplemento(Restaurante r, String texto, String norm) {
+        // MÚLTIPLOS complementos? "adiciona Carne por 3, Bacon por 4 e Queijo por 2 no grupo Adicionais do X-Burger"
+        String segComps = fatiaEntreRaw(texto,
+            "(adiciona|adicione|adicionar|inclui|inclua|incluir|cria|criar|crie|cadastra|cadastre|coloca|coloque|complementos|complemento)",
+            "(no grupo|do grupo|na grupo|grupo)");
+        if (segComps != null) {
+            List<String> segs = separarLista(segComps);
+            // só é "múltiplo" se >1 segmento COM nome (evita split de nome com vírgula solta)
+            List<String[]> parsed = new ArrayList<>();   // [nome, precoStr]
+            for (String s : segs) {
+                BigDecimal pr = precoSegmento(s);
+                String n = limpaNome(semSubstantivo(s, "complemento|adicional|opcao|opcional|item"));
+                if (n != null && !n.isBlank()) parsed.add(new String[]{n, pr == null ? null : pr.toPlainString()});
+            }
+            if (parsed.size() > 1) {
+                String grupoConsulta = fatiaEntre(texto, "grupo", "(do|no|da|na|produto|em)");
+                List<ComplementoGrupo> cand = new ArrayList<>();
+                ComplementoGrupo g = grupoConsulta == null ? null : melhorGrupo(r.getId(), MyHelpTexto.norm(grupoConsulta), cand);
+                if (g == null && cand.size() == 1) g = cand.get(0);
+                if (g == null) {
+                    List<ComplementoGrupo> gs = gruposNaFrase(r.getId(), norm, null);
+                    if (gs.size() == 1) g = gs.get(0);
+                }
+                if (g == null)
+                    return texto("Em qual grupo entram esses complementos? Ex.: *\"...no grupo Adicionais\"*.");
+                List<Map<String, Object>> itens = new ArrayList<>();
+                for (String[] pc : parsed) {
+                    BigDecimal pr = pc[1] == null ? BigDecimal.ZERO : new BigDecimal(pc[1]);
+                    itens.add(item("novoComplemento", "Novo complemento em " + g.getNome(), null, "layers",
+                        null, pc[0] + " • " + moeda(pr), null,
+                        mp("grupoId", g.getId(), "textoNovo", pc[0], "precoNovo", pr)));
+                }
+                return lote("novoComplemento", itens, "Vou adicionar estes " + parsed.size() + " complementos em *" + g.getNome() + "*. Confirma?");
+            }
+        }
         BigDecimal preco = extrairPreco(texto);
         // Prefere pegar o nome logo após "complemento/adicional/opção"; senão, após o verbo.
         String nomeItem = fatiaEntre(texto, "(complemento|adicional|opcao|opcional|item)", "(por|no valor|custa|no grupo|do grupo|na grupo|grupo)");
@@ -811,6 +1034,58 @@ public class MyHelpService {
         if (!sc.isEmpty() && (Integer) sc.get(0)[1] >= 70
             && (sc.size() == 1 || (Integer) sc.get(0)[1] - (Integer) sc.get(1)[1] >= 20)) return (ComplementoItem) sc.get(0)[0];
         return null;
+    }
+
+    // ── Fase 1: resolvedor de entidades por CATÁLOGO REAL ────────────────
+    // Acha a entidade real da loja cujo nome aparece na frase (match de tokens
+    // CONTÍGUOS; o nome mais longo/específico vence). Resolve nomes compostos
+    // ("Macarrão na Chapa") sem depender da posição das palavras nem confundir
+    // com as palavras de contexto ("grupo", "produto", "no", "para"...).
+
+    /** Produto real cujo nome aparece na frase (o mais específico). null se nenhum. */
+    private Produto acharProdutoNaFrase(Long restId, String norm) {
+        String alvo = " " + norm + " ";
+        Produto best = null; int bestLen = -1;
+        for (Produto p : produtoRepo.findByRestauranteId(restId)) {
+            String pn = MyHelpTexto.norm(p.getNome());
+            if (!pn.isBlank() && alvo.contains(" " + pn + " ") && pn.length() > bestLen) { bestLen = pn.length(); best = p; }
+        }
+        return best;
+    }
+
+    /** Grupos reais cujo nome aparece na frase (filtra pelo produto, se informado);
+     *  mais específico (nome mais longo) primeiro. */
+    private List<ComplementoGrupo> gruposNaFrase(Long restId, String norm, Produto doProduto) {
+        String alvo = " " + norm + " ";
+        List<ComplementoGrupo> out = new ArrayList<>();
+        List<Produto> prods = doProduto != null ? java.util.Collections.singletonList(doProduto)
+                : produtoRepo.findByRestauranteId(restId);
+        for (Produto p : prods)
+            for (ComplementoGrupo g : grupoRepo.findByProdutoIdOrderByIdAsc(p.getId())) {
+                String gn = MyHelpTexto.norm(g.getNome() == null ? "" : g.getNome());
+                if (!gn.isBlank() && alvo.contains(" " + gn + " ")) out.add(g);
+            }
+        out.sort((x, y) -> MyHelpTexto.norm(y.getNome()).length() - MyHelpTexto.norm(x.getNome()).length());
+        return out;
+    }
+
+    /** Extrai o NOVO nome de uma renomeação: trecho após o separador de destino
+     *  ("para/pra/pro/por/=/:", "passa a chamar", "vira", "deve se chamar"...) e
+     *  tira um "(no|do...) <produto real>" no fim ("... no Macarrão na Chapa"). */
+    private String novoNomeRenomear(String texto, Produto produtoReal) {
+        if (texto == null) return null;
+        String low = asciiLower(texto);
+        Matcher m = Pattern.compile("\\b(?:passa a se chamar|passa a chamar|deve se chamar|agora se chama|agora e|vira|para|pra|pro|por|=|:)\\b").matcher(low);
+        int from = -1;
+        while (m.find()) from = m.end();     // usa o ÚLTIMO separador (o de destino)
+        if (from < 0) return null;
+        String cand = texto.substring(Math.min(from, texto.length()));
+        if (produtoReal != null && produtoReal.getNome() != null) {
+            String pnLow = asciiLower(produtoReal.getNome());
+            Matcher t = Pattern.compile("\\s+(?:no|na|do|da|em|pro|para)\\s+" + Pattern.quote(pnLow) + "\\s*$").matcher(asciiLower(cand));
+            if (t.find()) cand = cand.substring(0, t.start());
+        }
+        return limpaNome(cand);
     }
 
     /** Consulta do alvo: tudo antes de "pra", sem stopwords nem as palavras extra. */
@@ -989,6 +1264,76 @@ public class MyHelpService {
         return limpaNome(orig.substring(from, to));
     }
 
+    /** Como fatiaEntre, mas CRUA (sem limpaNome) — pra listas: o limpaNome comeria
+     *  o preço do último item ("... e Queijo por 2 reais"). */
+    private String fatiaEntreRaw(String orig, String depoisDe, String antesDe) {
+        if (orig == null) return null;
+        String low = asciiLower(orig);
+        int from = 0;
+        if (depoisDe != null) {
+            Matcher m = Pattern.compile("\\b(?:" + depoisDe + ")\\b").matcher(low);
+            if (m.find()) from = m.end(); else return null;
+        }
+        int to = orig.length();
+        if (antesDe != null) {
+            Matcher m = Pattern.compile("\\b(?:" + antesDe + ")\\b").matcher(low);
+            if (m.find(Math.min(from, low.length()))) to = m.start();
+        }
+        if (from > to) return null;
+        return orig.substring(from, to).trim();
+    }
+
+    /** Divide um trecho em itens por conectores de topo (",", " e ", "+"). Segmentos
+     *  CRUS (o chamador extrai preço e limpa o nome). Não quebra cego demais: só nesses. */
+    private List<String> separarLista(String trecho) {
+        List<String> out = new ArrayList<>();
+        if (trecho == null || trecho.isBlank()) return out;
+        for (String p : trecho.split("(?i)\\s*,\\s*|\\s+e\\s+|\\s*\\+\\s*")) {
+            String t = p.trim();
+            if (!t.isBlank()) out.add(t);
+        }
+        return out;
+    }
+
+    // Números por extenso 0..20 pra preço ("três reais" → 3).
+    private static final Map<String, Integer> NUM_EXTENSO = new java.util.HashMap<>();
+    static {
+        String[] u = {"zero","um","dois","tres","quatro","cinco","seis","sete","oito","nove","dez",
+            "onze","doze","treze","quatorze","catorze","quinze","dezesseis","dezessete","dezoito","dezenove","vinte"};
+        int[] v = {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,19,20};
+        for (int i = 0; i < u.length; i++) NUM_EXTENSO.put(u[i], v[i]);
+    }
+    /** Preço de um segmento: número marcado OU por extenso ("três reais"). null = sem preço. */
+    private BigDecimal precoSegmento(String seg) {
+        BigDecimal p = precoMarcado(seg);
+        if (p != null) return p;
+        Matcher m = Pattern.compile("(?:\\bpor\\b\\s+)?([a-z]+)\\s*(?:reais|real|conto|pila)\\b").matcher(asciiLower(seg == null ? "" : seg));
+        if (m.find() && NUM_EXTENSO.containsKey(m.group(1))) return new BigDecimal(NUM_EXTENSO.get(m.group(1)));
+        return null;
+    }
+
+    /** Categoria real cujo nome aparece na frase (a mais específica). null se nenhuma. */
+    private Categoria acharCategoriaNaFrase(Long restId, String norm) {
+        String alvo = " " + norm + " ";
+        Categoria best = null; int bestLen = -1;
+        for (Categoria c : categoriaRepo.findByRestauranteIdOrderByOrdemAsc(restId)) {
+            String cn = MyHelpTexto.norm(c.getNome() == null ? "" : c.getNome());
+            if (!cn.isBlank() && alvo.contains(" " + cn + " ") && cn.length() > bestLen) { bestLen = cn.length(); best = c; }
+        }
+        return best;
+    }
+
+    /** Corta do fim de `cand` um "(na categoria|no|na|do|da|em|de|pra|para) <entidade>"
+     *  (ex.: "X-Tudo e X-Burguer em Hambúrgueres" → remove " em Hambúrgueres"). */
+    private String tiraEntidadeFinal(String cand, String nomeEntidade) {
+        if (cand == null || nomeEntidade == null || nomeEntidade.isBlank()) return cand;
+        String pnLow = asciiLower(nomeEntidade);
+        Matcher t = Pattern.compile("\\s+(?:na categoria|em categoria|categoria|no|na|do|da|em|de|pro|para|pra)\\s+"
+            + Pattern.quote(pnLow) + "\\s*$").matcher(asciiLower(cand));
+        if (t.find()) return cand.substring(0, t.start()).trim();
+        return cand;
+    }
+
     /** Limpa nome capturado: tira artigos/conectores do começo, aspas/pontuação e
      *  preço MARCADO no fim (R$, "por N", "N reais") — mantém número de tamanho
      *  tipo "Açaí 300"/"Coca 2L". Strips de cauda em loop até estabilizar. */
@@ -1117,7 +1462,10 @@ public class MyHelpService {
             case "taxaBairro":       return confirmarTaxaBairro(r, cvS(body.get("bairroNome")), cvD(body.get("taxaNova")));
             case "nomeProduto":      return confirmarTextoProduto(r, cvL(body.get("produtoId")), cvS(body.get("textoNovo")), false);
             case "descProduto":      return confirmarTextoProduto(r, cvL(body.get("produtoId")), cvS(body.get("textoNovo")), true);
+            case "descProdutoNome":  return confirmarDescricaoPorNome(r, cvS(body.get("nomeProduto")), cvS(body.get("textoNovo")));
             case "nomeCategoria":    return confirmarNomeCategoria(r, cvL(body.get("categoriaId")), cvS(body.get("textoNovo")));
+            case "renameGrupo":      return confirmarNomeGrupo(r, cvL(body.get("grupoId")), cvS(body.get("textoNovo")));
+            case "lote":             return confirmarLote(r, body.get("operacoes"));
             case "precoComplemento": return confirmarPrecoComplemento(r, cvL(body.get("itemId")), cvD(body.get("precoNovo")));
             case "novaCategoria":    return confirmarNovaCategoria(r, cvS(body.get("textoNovo")));
             case "novoProduto":      return confirmarNovoProduto(r, cvS(body.get("textoNovo")), cvD(body.get("precoNovo")), cvL(body.get("categoriaId")), cvS(body.get("textoDesc")));
@@ -1127,6 +1475,28 @@ public class MyHelpService {
             case "aprender":         return confirmarAprender(r, cvS(body.get("gatilho")), cvS(body.get("valor")), cvS(body.get("contexto")));
             default:                 return confirmarPreco(r, cvL(body.get("produtoId")), cvD(body.get("precoNovo")));
         }
+    }
+
+    /** Aplica um LOTE de operações (várias criações/edições) numa única transação.
+     *  Cada operação reusa o confirmar() já existente — não duplica tool nenhuma. */
+    @Transactional
+    public Map<String, Object> confirmarLote(Restaurante r, Object operacoes) {
+        if (!(operacoes instanceof List) || ((List<?>) operacoes).isEmpty())
+            return texto("Não veio nada pra aplicar 🤔");
+        int ok = 0, falhou = 0;
+        for (Object o : (List<?>) operacoes) {
+            if (!(o instanceof Map)) { falhou++; continue; }
+            @SuppressWarnings("unchecked")
+            Map<String, Object> op = (Map<String, Object>) o;
+            try {
+                Map<String, Object> res = confirmar(r, op);
+                if (Boolean.TRUE.equals(res.get("alterado"))) ok++; else falhou++;
+            } catch (Exception e) { falhou++; log.warn("[myHelp-lote] op falhou: {}", e.getMessage()); }
+        }
+        Map<String, Object> out = texto("Pronto! ✅ Apliquei " + ok + (ok == 1 ? " alteração" : " alterações")
+            + (falhou > 0 ? " (" + falhou + (falhou == 1 ? " não deu" : " não deram") + ")" : "") + ".");
+        if (ok > 0) out.put("alterado", true);
+        return out;
     }
 
     @Transactional
@@ -1152,6 +1522,25 @@ public class MyHelpService {
         return out;
     }
 
+    /** Aplica descrição resolvendo o produto por NOME em tempo de confirmação — usado
+     *  no lote multi-operação (produto criado antes, na mesma transação). */
+    @Transactional
+    public Map<String, Object> confirmarDescricaoPorNome(Restaurante r, String nomeProduto, String desc) {
+        if (nomeProduto == null || nomeProduto.isBlank() || desc == null || desc.isBlank())
+            return texto("Faltou o produto ou a descrição 🤔");
+        String alvo = MyHelpTexto.norm(nomeProduto);
+        Produto p = null;
+        for (Produto x : produtoRepo.findByRestauranteId(r.getId()))
+            if (MyHelpTexto.norm(x.getNome()).equals(alvo)) { p = x; break; }
+        if (p == null) {
+            List<Produto> cand = new ArrayList<>();
+            p = melhorProduto(r.getId(), alvo, cand);
+            if (p == null && !cand.isEmpty()) p = cand.get(0);
+        }
+        if (p == null) return texto("Não achei o produto *" + nomeProduto + "* pra descrever 😕");
+        return confirmarTextoProduto(r, p.getId(), desc, true);
+    }
+
     @Transactional
     public Map<String, Object> confirmarNomeCategoria(Restaurante r, Long categoriaId, String nomeNovo) {
         if (categoriaId == null || nomeNovo == null || nomeNovo.isBlank()) return texto("Faltou a categoria ou o nome 🤔");
@@ -1164,6 +1553,26 @@ public class MyHelpService {
         invalidarCachePublico(r.getSlug());
         log.info("[myHelp] loja={} nome categoria={} '{}' -> '{}'", r.getSlug(), c.getId(), antigo, nomeNovo.trim());
         Map<String, Object> out = texto("Pronto! ✅ Categoria *" + antigo + "* agora é *" + nomeNovo.trim() + "*.");
+        out.put("alterado", true);
+        return out;
+    }
+
+    @Transactional
+    public Map<String, Object> confirmarNomeGrupo(Restaurante r, Long grupoId, String nomeNovo) {
+        if (grupoId == null || nomeNovo == null || nomeNovo.isBlank()) return texto("Faltou o grupo ou o nome 🤔");
+        ComplementoGrupo g = grupoRepo.findById(grupoId).orElse(null);
+        if (g == null || g.getProduto() == null || g.getProduto().getRestaurante() == null
+                || !g.getProduto().getRestaurante().getId().equals(r.getId()))
+            return texto("Não achei esse grupo na sua loja 😕");
+        String nn = nomeNovo.trim();
+        if (nn.length() > 80) return texto("Esse nome ficou muito longo. Manda um mais curtinho 🙂");
+        String antigo = g.getNome();
+        g.setNome(nn);
+        grupoRepo.save(g);
+        invalidarCachePublico(r.getSlug());
+        log.info("[myHelp] loja={} nome grupo={} '{}' -> '{}'", r.getSlug(), g.getId(), antigo, nn);
+        Map<String, Object> out = texto("Pronto! ✅ O grupo agora se chama *" + nn + "*"
+            + (g.getProduto() != null ? " (em " + g.getProduto().getNome() + ")" : "") + ".");
         out.put("alterado", true);
         return out;
     }
@@ -1469,6 +1878,19 @@ public class MyHelpService {
     private Map<String, Object> escolha(String acao, List<Map<String, Object>> ops, String msg) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("tipo", "escolha"); m.put("acao", acao); m.put("mensagem", msg); m.put("opcoes", ops);
+        return m;
+    }
+    /** Resposta em LOTE: vários mini-cards + UM "Confirmar tudo". O payload de topo
+     *  carrega a lista de operações (cada item.payload) pra aplicar numa transação. */
+    private Map<String, Object> lote(String acao, List<Map<String, Object>> itens, String msg) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("tipo", "lote");
+        m.put("acao", acao);
+        m.put("mensagem", msg);
+        m.put("itens", itens);
+        List<Object> ops = new ArrayList<>();
+        for (Map<String, Object> it : itens) { Object pl = it.get("payload"); if (pl != null) ops.add(pl); }
+        m.put("payload", mp("acao", "lote", "operacoes", ops));
         return m;
     }
     private Map<String, Object> produtoItem(Produto p, BigDecimal precoNovo) {

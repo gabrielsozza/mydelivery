@@ -21,6 +21,9 @@ public class MpPayer {
     private String email;
     /** "customer" | "registered" — pra PIX basta o email. */
     private String type;
+    /** ID do customer MP. OBRIGATÓRIO pra cobrar cartão salvo: o MP só casa o
+     *  token do cartão salvo ao dono se vier payer.type="customer" + payer.id. */
+    private String id;
     /** Nome de exibição pro recibo do PIX. */
     @com.fasterxml.jackson.annotation.JsonProperty("first_name")
     private String firstName;

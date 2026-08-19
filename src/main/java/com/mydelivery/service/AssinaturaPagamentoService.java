@@ -551,13 +551,13 @@ public class AssinaturaPagamentoService {
         String cardId = parts[2];
 
         // Pra usar customer+card num Payment, precisamos gerar um TOKEN do card.
-        // POST /v1/card_tokens com {card_id} usando autenticação do customer.
-        Map<String, Object> tokenBody = Map.of("card_id", cardId);
+        // POST /v1/card_tokens?public_key com {card_id} — token de uso único do
+        // cartão salvo (sem CVV, cartão já validado na tokenização do trial).
         Map<String, Object> tokenResp;
         try {
             tokenResp = checkoutClient.post()
                     .uri("/v1/card_tokens?public_key={pk}", adminPublicKey)
-                    .body(Map.of("card_id", cardId, "customer_id", customerId))
+                    .body(Map.of("card_id", cardId))
                     .retrieve().body(Map.class);
         } catch (RestClientResponseException e) {
             log.error("[AssPag][CARTAO-SAVED] card_tokens falhou: {}", e.getResponseBodyAsString());
@@ -565,13 +565,31 @@ public class AssinaturaPagamentoService {
         }
         String token = String.valueOf(tokenResp.get("id"));
 
+        // O MP exige que o payer do pagamento referencie o CUSTOMER dono do cartão
+        // (type="customer" + id=customerId), senão rejeita com "não encontrado".
+        // O email precisa bater com o do customer — busca o real (fallback: admin).
+        String customerEmail = adminPayerEmail;
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> cust = checkoutClient.get()
+                    .uri("/v1/customers/{cid}", customerId)
+                    .headers(h -> h.setBearerAuth(adminAccessToken))
+                    .retrieve().body(Map.class);
+            if (cust != null && cust.get("email") != null) {
+                customerEmail = String.valueOf(cust.get("email"));
+            }
+        } catch (RuntimeException e) {
+            log.warn("[AssPag][CARTAO-SAVED] não achei email do customer {} (usando admin): {}",
+                    customerId, e.getMessage());
+        }
+
         String idempotencyKey = "mydelivery-renov-" + r.getId() + "-" + plano.name() + "-"
                 + System.currentTimeMillis();
 
         MpPayer payer = MpPayer.builder()
-                .email(adminPayerEmail)
-                .firstName(safeFirst(r.getNome()))
-                .lastName("MyDelivery")
+                .type("customer")
+                .id(customerId)
+                .email(customerEmail)
                 .build();
 
         MpPaymentRequest body = MpPaymentRequest.builder()

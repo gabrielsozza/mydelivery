@@ -425,6 +425,25 @@ public class WhatsappService {
         });
     }
 
+    /**
+     * Versão fire-and-forget do reset. O reset varre a Uazapi (fetchInstances +
+     * logout + deletar de cada instância órfã) — chamadas BLOQUEANTES que, quando
+     * a Uazapi está lenta/instável, seguravam a request além do read-timeout do
+     * cliente (o painel admin recebia "I/O error ... Read timed out" e achava que
+     * falhou, mesmo o reset acontecendo depois). Aqui rodamos em background e o
+     * endpoint responde na hora. Erros ficam só no log — reset é idempotente e
+     * pode ser reexecutado.
+     */
+    @org.springframework.scheduling.annotation.Async
+    public void resetarAssincrono(Restaurante restaurante) {
+        try {
+            resetar(restaurante);
+        } catch (Exception e) {
+            log.error("[WhatsApp] reset assíncrono falhou p/ restaurante {}: {}",
+                    restaurante.getId(), e.getMessage(), e);
+        }
+    }
+
     /** Toggle do bot — uso futuro pela UI (1-clique no painel). */
     @Transactional
     public WhatsappInstance toggleBot(Restaurante restaurante, boolean ativo) {

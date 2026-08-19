@@ -296,11 +296,15 @@ public class WhatsappHealthController {
         WhatsappInstance inst = instanceRepo.findByInstanceName(instanceName)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
         Restaurante r = inst.getRestaurante();
-        whatsappService.resetar(r);
-        return ResponseEntity.ok(Map.of(
+        // Fire-and-forget: a limpeza na Uazapi (logout/delete de órfãs) pode demorar
+        // e antes estourava o read-timeout do painel. Dispara em background e
+        // responde imediatamente — o reset roda até o fim de qualquer jeito.
+        whatsappService.resetarAssincrono(r);
+        return ResponseEntity.accepted().body(Map.of(
                 "ok", true,
                 "instanceName", instanceName,
-                "mensagem", "Reset completo executado. Restaurante precisa escanear QR novo."
+                "mensagem", "Reset iniciado. Em alguns segundos a instância some da lista — "
+                        + "o restaurante escaneia um QR novo pelo painel dele."
         ));
     }
 

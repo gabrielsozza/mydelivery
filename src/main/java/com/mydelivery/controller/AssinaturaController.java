@@ -54,6 +54,52 @@ public class AssinaturaController {
     }
 
     /**
+     * Verifica um pagamento PIX DIRETO no Mercado Pago e ativa na hora
+     * (idempotente), sem esperar o webhook nem o job de reconciliação — é o que
+     * o frontend fica consultando enquanto o QR está aberto, pra liberar o acesso
+     * IMEDIATAMENTE quando o MP identifica o pagamento.
+     *
+     * Body: { paymentId }. Resposta: status atual (igual /status) + { confirmado }.
+     * Segurança: a reconciliação ativa o dono REAL do pagamento (extraído do
+     * external_reference "assinatura-{id}-..."), então "confirmado" só é true
+     * quando o pagamento pertence a QUEM está chamando — ninguém ativa a si
+     * mesmo com pagamento alheio.
+     */
+    @PostMapping("/verificar-pagamento")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Map<String, Object>> verificarPagamento(
+            @AuthenticationPrincipal String email,
+            @RequestBody(required = false) Map<String, Object> body) {
+        Restaurante r = restauranteRepository.findByUsuarioEmail(email).orElseThrow();
+        Map<String, Object> statusAtual = assinaturaService.obterStatus(r);
+        boolean jaAtiva = "ATIVA".equals(String.valueOf(statusAtual.get("fase")));
+        boolean confirmado = jaAtiva;
+
+        Object raw = body == null ? null : body.get("paymentId");
+        // Só bate no MP se ainda não estiver ATIVA (evita consulta à toa).
+        if (!jaAtiva && raw != null && !String.valueOf(raw).isBlank()) {
+            try {
+                Long mpPaymentId = Long.valueOf(String.valueOf(raw).trim());
+                Map<String, Object> rec = reconciliacaoService.reconciliarPorMpPaymentId(mpPaymentId);
+                Object donoId = rec.get("restauranteId");
+                if (Boolean.TRUE.equals(rec.get("ok"))
+                        && donoId != null && String.valueOf(donoId).equals(String.valueOf(r.getId()))) {
+                    confirmado = true;
+                    statusAtual = assinaturaService.obterStatus(r); // re-lê após ativar
+                }
+            } catch (NumberFormatException ignored) {
+                // paymentId inválido — devolve status atual
+            } catch (Exception e) {
+                // Falha na consulta MP NUNCA quebra o polling — devolve status atual.
+            }
+        }
+
+        Map<String, Object> out = new java.util.LinkedHashMap<>(statusAtual);
+        out.put("confirmado", confirmado);
+        return ResponseEntity.ok(out);
+    }
+
+    /**
      * Ativa o plano. Body: { plano: "MENSAL"|"SEMESTRAL"|"ANUAL", metodoPagamento: "PIX"|"CARTAO" }
      * Em produção, este endpoint é idealmente chamado pelo webhook do MP após confirmação.
      * Em dev/MVP, aceita chamada direta do front depois do pagamento.

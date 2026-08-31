@@ -114,11 +114,14 @@ public class PedidoService {
             final String deviceUuidFinal = deviceUuid;
             cliente = null;
             if (deviceUuidFinal != null) {
-                cliente = clienteRepository.findByRestauranteIdAndDeviceUuid(
+                // Usa a variante tolerante a duplicata — pega o mais antigo se
+                // houver 2+ clientes com o mesmo device_uuid (evita
+                // "Query did not return a unique result" que barrava o checkout).
+                cliente = clienteRepository.findFirstByRestauranteIdAndDeviceUuidOrderByIdAsc(
                         restaurante.getId(), deviceUuidFinal).orElse(null);
             }
             if (cliente == null) {
-                cliente = clienteRepository.findByTelefoneAndRestauranteId(telefone, restaurante.getId())
+                cliente = clienteRepository.findFirstByTelefoneAndRestauranteIdOrderByIdAsc(telefone, restaurante.getId())
                         .orElseGet(() -> {
                             Cliente c = new Cliente();
                             c.setRestaurante(restaurante);

@@ -19,4 +19,16 @@ public interface ClienteRepository extends JpaRepository<Cliente, Long> {
      * NUNCA use só device_uuid sem restaurante_id — quebra o isolamento por loja.
      */
     Optional<Cliente> findByRestauranteIdAndDeviceUuid(Long restauranteId, String deviceUuid);
+
+    /**
+     * Variantes tolerantes a DUPLICATA — pegam o cliente mais antigo (menor id)
+     * quando existe mais de um registro pro mesmo device/telefone no mesmo
+     * restaurante. Existe UNIQUE lógico no schema, mas dados históricos (imports,
+     * race no bot/balcão criando cliente antes do PedidoService) podem ter
+     * quebrado — as versões Optional acima estouravam
+     * "Query did not return a unique result: 2 results were returned",
+     * BARRANDO o checkout inteiro do cliente final. Estas versões nunca falham.
+     */
+    Optional<Cliente> findFirstByRestauranteIdAndDeviceUuidOrderByIdAsc(Long restauranteId, String deviceUuid);
+    Optional<Cliente> findFirstByTelefoneAndRestauranteIdOrderByIdAsc(String telefone, Long restauranteId);
 }

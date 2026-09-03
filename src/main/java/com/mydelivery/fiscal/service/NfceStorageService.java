@@ -37,4 +37,15 @@ public class NfceStorageService {
     }
 
     public String backendAtivo() { return backend.nome(); }
+
+    // ══ Relatórios mensais pré-gerados pelo cron ═════════════════════════
+    public String gravarRelatorio(String cnpj, String ym, byte[] bytes) {
+        return backend.gravarRelatorio(cnpj, ym, bytes);
+    }
+    public byte[] lerRelatorio(String cnpj, String ym) {
+        return backend.lerRelatorio(cnpj, ym);
+    }
+    public java.util.List<String> listarRelatorios(String cnpj) {
+        return backend.listarRelatorios(cnpj);
+    }
 }

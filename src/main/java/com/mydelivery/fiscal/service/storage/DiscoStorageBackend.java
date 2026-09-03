@@ -76,6 +76,49 @@ public class DiscoStorageBackend implements XmlStorageBackend {
         }
     }
 
+    // ══ Relatórios pré-gerados pelo cron mensal ══════════════════════════
+    @Override
+    public String gravarRelatorio(String cnpj, String ym, byte[] bytes) {
+        try {
+            Path dir = Paths.get(rootDir, sanitizar(cnpj), "_relatorios");
+            Files.createDirectories(dir);
+            Path arq = dir.resolve(sanitizar(ym) + ".zip");
+            Files.write(arq, bytes, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+            return arq.toString();
+        } catch (Exception e) {
+            log.error("[Fiscal][Disco] gravarRelatorio {}/{}: {}", cnpj, ym, e.getMessage(), e);
+            return null;
+        }
+    }
+
+    @Override
+    public byte[] lerRelatorio(String cnpj, String ym) {
+        try {
+            Path arq = Paths.get(rootDir, sanitizar(cnpj), "_relatorios", sanitizar(ym) + ".zip");
+            return Files.exists(arq) ? Files.readAllBytes(arq) : null;
+        } catch (Exception e) {
+            log.warn("[Fiscal][Disco] lerRelatorio {}/{}: {}", cnpj, ym, e.getMessage());
+            return null;
+        }
+    }
+
+    @Override
+    public java.util.List<String> listarRelatorios(String cnpj) {
+        try {
+            Path dir = Paths.get(rootDir, sanitizar(cnpj), "_relatorios");
+            if (!Files.exists(dir)) return java.util.List.of();
+            try (var stream = Files.list(dir)) {
+                return stream.filter(p -> p.getFileName().toString().endsWith(".zip"))
+                        .map(p -> p.getFileName().toString().replace(".zip", ""))
+                        .sorted(java.util.Comparator.reverseOrder())
+                        .toList();
+            }
+        } catch (Exception e) {
+            log.warn("[Fiscal][Disco] listarRelatorios {}: {}", cnpj, e.getMessage());
+            return java.util.List.of();
+        }
+    }
+
     private static String sanitizar(String s) {
         return s == null ? "" : s.replaceAll("[^A-Za-z0-9_.-]", "_");
     }

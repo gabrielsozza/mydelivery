@@ -145,6 +145,57 @@ public class R2StorageBackend implements XmlStorageBackend {
         catch (Exception e) { return false; }
     }
 
+    // ══ Relatórios pré-gerados pelo cron mensal ══════════════════════════
+    @Override
+    public String gravarRelatorio(String cnpj, String ym, byte[] bytes) {
+        try {
+            String key = sanitizar(cnpj) + "/_relatorios/" + sanitizar(ym) + ".zip";
+            // Sobrescreve OK — se rodar de novo, atualiza o ZIP mensal.
+            s3.putObject(software.amazon.awssdk.services.s3.model.PutObjectRequest.builder()
+                    .bucket(bucket).key(key)
+                    .contentType("application/zip")
+                    .build(),
+                software.amazon.awssdk.core.sync.RequestBody.fromBytes(bytes));
+            return "r2://" + bucket + "/" + key;
+        } catch (Exception e) {
+            log.error("[Fiscal][R2] gravarRelatorio {}/{}: {}", cnpj, ym, e.getMessage(), e);
+            return null;
+        }
+    }
+
+    @Override
+    public byte[] lerRelatorio(String cnpj, String ym) {
+        try {
+            String key = sanitizar(cnpj) + "/_relatorios/" + sanitizar(ym) + ".zip";
+            var res = s3.getObjectAsBytes(GetObjectRequest.builder().bucket(bucket).key(key).build());
+            return res.asByteArray();
+        } catch (NoSuchKeyException e) {
+            return null;
+        } catch (Exception e) {
+            log.warn("[Fiscal][R2] lerRelatorio {}/{}: {}", cnpj, ym, e.getMessage());
+            return null;
+        }
+    }
+
+    @Override
+    public java.util.List<String> listarRelatorios(String cnpj) {
+        try {
+            String prefix = sanitizar(cnpj) + "/_relatorios/";
+            var lista = s3.listObjectsV2(software.amazon.awssdk.services.s3.model.ListObjectsV2Request.builder()
+                    .bucket(bucket).prefix(prefix).maxKeys(60).build());
+            java.util.List<String> out = new java.util.ArrayList<>();
+            for (var o : lista.contents()) {
+                String k = o.key().substring(prefix.length()).replace(".zip", "");
+                out.add(k);
+            }
+            out.sort(java.util.Comparator.reverseOrder());
+            return out;
+        } catch (Exception e) {
+            log.warn("[Fiscal][R2] listarRelatorios {}: {}", cnpj, e.getMessage());
+            return java.util.List.of();
+        }
+    }
+
     private static String sanitizar(String s) {
         return s == null ? "" : s.replaceAll("[^A-Za-z0-9_.-]", "_");
     }

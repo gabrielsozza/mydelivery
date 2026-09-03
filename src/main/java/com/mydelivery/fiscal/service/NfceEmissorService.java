@@ -19,10 +19,12 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.mydelivery.fiscal.model.ContadorNumeroNfce;
 import com.mydelivery.fiscal.model.NotaFiscalEmitida;
+import com.mydelivery.fiscal.model.NotaFiscalEntrada;
 import com.mydelivery.fiscal.model.PerfilFiscalProduto;
 import com.mydelivery.fiscal.model.PerfilFiscalRestaurante;
 import com.mydelivery.fiscal.repository.ContadorNumeroNfceRepository;
 import com.mydelivery.fiscal.repository.NotaFiscalEmitidaRepository;
+import com.mydelivery.fiscal.repository.NotaFiscalEntradaRepository;
 import com.mydelivery.fiscal.repository.PerfilFiscalProdutoRepository;
 import com.mydelivery.fiscal.repository.PerfilFiscalRestauranteRepository;
 import com.mydelivery.model.Pedido;
@@ -60,6 +62,7 @@ public class NfceEmissorService {
     private final PerfilFiscalProdutoRepository perfilProdRepo;
     private final ContadorNumeroNfceRepository contadorRepo;
     private final NotaFiscalEmitidaRepository notaRepo;
+    private final NotaFiscalEntradaRepository notaEntradaRepo;
     private final PedidoRepository pedidoRepo;
     private final CertificadoService certificadoService;
     private final PerfilFiscalService perfilFiscalService;
@@ -643,7 +646,7 @@ public class NfceEmissorService {
                     try {
                         String xml = storage.lerXml(n.getCnpj(), n.getChaveAcesso());
                         if (xml != null && !xml.isBlank()) {
-                            zip.putNextEntry(new ZipEntry("xmls/" + n.getChaveAcesso() + ".xml"));
+                            zip.putNextEntry(new ZipEntry("saidas/xmls/" + n.getChaveAcesso() + ".xml"));
                             zip.write(xml.getBytes(StandardCharsets.UTF_8));
                             zip.closeEntry();
                         }
@@ -654,26 +657,60 @@ public class NfceEmissorService {
                 }
             }
 
+            // ══ NF-e de ENTRADA (fornecedor — upload manual) ══════════════
+            var entradas = notaEntradaRepo.findByRestauranteIdAndDataEmissaoBetween(restauranteId, di, df);
+            BigDecimal totalEntradas = BigDecimal.ZERO;
+            StringBuilder csvEntradas = new StringBuilder();
+            csvEntradas.append("NumeroNF;DataEmissao;CnpjFornecedor;NomeFornecedor;Chave;ValorTotal\n");
+            for (var e : entradas) {
+                if (e.getValorTotal() != null) totalEntradas = totalEntradas.add(e.getValorTotal());
+                csvEntradas.append(nvl(e.getNumero())).append(';')
+                        .append(e.getDataEmissao() == null ? "" : e.getDataEmissao().format(FMT)).append(';')
+                        .append(nvl(e.getCnpjEmitente())).append(';')
+                        .append(sanitizaCsv(e.getNomeEmitente())).append(';')
+                        .append(nvl(e.getChaveAcesso())).append(';')
+                        .append(e.getValorTotal() == null ? "0,00"
+                                : e.getValorTotal().toPlainString().replace('.', ',')).append('\n');
+                try {
+                    if (e.getXmlConteudo() != null && !e.getXmlConteudo().isBlank()) {
+                        zip.putNextEntry(new ZipEntry("entradas/" + e.getChaveAcesso() + ".xml"));
+                        zip.write(e.getXmlConteudo().getBytes(StandardCharsets.UTF_8));
+                        zip.closeEntry();
+                    }
+                } catch (Exception ex) {
+                    log.warn("[Fiscal][Rel] XML entrada {} falhou: {}", e.getChaveAcesso(), ex.toString());
+                }
+            }
+
             // README explicativo pro contador
             String readme = "" +
                 "RELATÓRIO FISCAL — MyDelivery\n" +
                 "Período: " + di.format(FMT) + " a " + df.format(FMT) + "\n\n" +
-                "RESUMO\n" +
-                "  Notas autorizadas: " + qtdAut + "\n" +
-                "  Notas canceladas:  " + qtdCanc + "\n" +
-                "  Notas rejeitadas:  " + qtdRej + "\n" +
+                "RESUMO — SAÍDAS (NFC-e emitidas)\n" +
+                "  Autorizadas: " + qtdAut + "\n" +
+                "  Canceladas:  " + qtdCanc + "\n" +
+                "  Rejeitadas:  " + qtdRej + "\n" +
                 "  Valor total (autorizadas): R$ " +
                     totalAutorizadas.toPlainString().replace('.', ',') + "\n\n" +
-                "CONTEÚDO\n" +
-                "  resumo.csv       — lista de todas as notas do período (Excel/LibreOffice)\n" +
-                "  xmls/*.xml       — arquivos XML autorizados, prontos pra importar\n\n" +
+                "RESUMO — ENTRADAS (NF-e recebidas de fornecedor)\n" +
+                "  Qtd notas: " + entradas.size() + "\n" +
+                "  Valor total: R$ " + totalEntradas.toPlainString().replace('.', ',') + "\n\n" +
+                "CONTEÚDO DO ZIP\n" +
+                "  saidas/resumo.csv    — lista das NFC-e emitidas (Excel/LibreOffice)\n" +
+                "  saidas/xmls/*.xml    — XMLs autorizados prontos pra importar (SPED/EFD)\n" +
+                "  entradas/resumo.csv  — lista das NF-e recebidas de fornecedor\n" +
+                "  entradas/*.xml       — XMLs de entrada (upload manual do dono)\n\n" +
                 "Gerado em " + LocalDateTime.now().format(FMT) + "\n";
             zip.putNextEntry(new ZipEntry("LEIA-ME.txt"));
             zip.write(readme.getBytes(StandardCharsets.UTF_8));
             zip.closeEntry();
 
-            zip.putNextEntry(new ZipEntry("resumo.csv"));
+            zip.putNextEntry(new ZipEntry("saidas/resumo.csv"));
             zip.write(csv.toString().getBytes(StandardCharsets.UTF_8));
+            zip.closeEntry();
+
+            zip.putNextEntry(new ZipEntry("entradas/resumo.csv"));
+            zip.write(csvEntradas.toString().getBytes(StandardCharsets.UTF_8));
             zip.closeEntry();
 
             zip.finish();

@@ -1,5 +1,6 @@
 package com.mydelivery.fiscal.controller;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -21,9 +22,12 @@ import com.mydelivery.fiscal.repository.ContadorNumeroNfceRepository;
 import com.mydelivery.fiscal.repository.LogAuditoriaFiscalRepository;
 import com.mydelivery.fiscal.repository.PerfilFiscalRestauranteRepository;
 import com.mydelivery.fiscal.model.NotaFiscalEmitida;
+import com.mydelivery.fiscal.repository.NotaFiscalEntradaRepository;
 import com.mydelivery.fiscal.service.CategoriaTributariaService;
 import com.mydelivery.fiscal.service.CertificadoService;
 import com.mydelivery.fiscal.service.NfceEmissorService;
+import com.mydelivery.fiscal.service.NfceStorageService;
+import com.mydelivery.fiscal.service.NfeEntradaService;
 import com.mydelivery.fiscal.service.PerfilFiscalService;
 import com.mydelivery.model.Restaurante;
 import com.mydelivery.repository.RestauranteRepository;
@@ -51,6 +55,9 @@ public class FiscalController {
     private final LogAuditoriaFiscalRepository auditoriaRepo;
     private final CategoriaTributariaService categoriaService;
     private final ContadorNumeroNfceRepository contadorRepo;
+    private final NfeEntradaService nfeEntradaService;
+    private final NotaFiscalEntradaRepository nfeEntradaRepo;
+    private final NfceStorageService storage;
 
     // ── STATUS geral do módulo (pra o front decidir se mostra a aba) ──────
     @GetMapping("/status")
@@ -95,7 +102,19 @@ public class FiscalController {
         out.put("enderecoComplemento", p.getEnderecoComplemento());
         out.put("cscId", p.getCscId());
         out.put("temCsc", p.getCscCiphertext() != null && p.getCscCiphertext().length > 0);
+        out.put("cscConfigurado", p.getCscCiphertext() != null && p.getCscCiphertext().length > 0);
         out.put("emissaoAtiva", Boolean.TRUE.equals(p.getEmissaoAtiva()));
+        out.put("manifestoHabilitado", Boolean.TRUE.equals(p.getManifestoHabilitado()));
+        out.put("mensagemRodape", p.getMensagemRodape());
+        out.put("cfopEntradaPadrao", p.getCfopEntradaPadrao() == null ? "1102" : p.getCfopEntradaPadrao());
+        // Anexa metadata do certificado (validade, se subiu) — evita chamada
+        // extra no front pra montar a linha da tabela "Vencimento cert."
+        var certStatus = certificadoService.statusCertificado(r.getId());
+        if (certStatus != null) {
+            out.put("temCertificado", certStatus.get("temCertificado"));
+            out.put("validadeCertificado", certStatus.get("validoAte"));
+            out.put("certificadoValido", Boolean.TRUE.equals(certStatus.get("temCertificado")));
+        }
         return ResponseEntity.ok(out);
     }
 
@@ -508,6 +527,73 @@ public class FiscalController {
         return ResponseEntity.ok(categoriaService.toMap(c));
     }
 
+    // ─── NF-e DE ENTRADA (fornecedor — upload manual) ─────────────────────
+    /**
+     * Upload de XML de NF-e recebida de fornecedor. Extrai chave, emitente,
+     * valor, data emissão. Idempotente (mesma chave = mesma nota).
+     */
+    @PostMapping(path = "/notas-entrada/upload", consumes = "multipart/form-data")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Map<String, Object>> uploadNotaEntrada(
+            @AuthenticationPrincipal String email,
+            @RequestParam("arquivo") MultipartFile arquivo) {
+        Restaurante r = exigirAtivo(email);
+        try {
+            var salva = nfeEntradaService.salvarUpload(r, arquivo.getBytes(), email);
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("ok", true);
+            out.put("id", salva.getId());
+            out.put("chaveAcesso", salva.getChaveAcesso());
+            out.put("cnpjEmitente", salva.getCnpjEmitente());
+            out.put("nomeEmitente", salva.getNomeEmitente());
+            out.put("valorTotal", salva.getValorTotal());
+            out.put("dataEmissao", salva.getDataEmissao() == null ? null : salva.getDataEmissao().toString());
+            return ResponseEntity.ok(out);
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("ok", false, "erro", e.getMessage()));
+        } catch (Exception e) {
+            log.error("[Fiscal][Entrada] Falha no upload rest={}", r.getId(), e);
+            return ResponseEntity.internalServerError().body(Map.of("ok", false,
+                    "erro", "Falha interna ao processar XML."));
+        }
+    }
+
+    /** Lista NF-e recebidas do restaurante — mais recentes primeiro. */
+    @GetMapping("/notas-entrada")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<List<Map<String, Object>>> listarNotasEntrada(@AuthenticationPrincipal String email) {
+        Restaurante r = exigirAtivo(email);
+        var lista = nfeEntradaRepo.findByRestauranteIdOrderByDataEmissaoDesc(r.getId());
+        var out = new ArrayList<Map<String, Object>>();
+        for (var n : lista) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("id", n.getId());
+            m.put("chaveAcesso", n.getChaveAcesso());
+            m.put("cnpjEmitente", n.getCnpjEmitente());
+            m.put("nomeEmitente", n.getNomeEmitente());
+            m.put("numero", n.getNumero());
+            m.put("valorTotal", n.getValorTotal());
+            m.put("dataEmissao", n.getDataEmissao() == null ? null : n.getDataEmissao().toString());
+            m.put("criadoEm", n.getCriadoEm() == null ? null : n.getCriadoEm().toString());
+            out.add(m);
+        }
+        return ResponseEntity.ok(out);
+    }
+
+    /** Remove uma NF-e de entrada — só do próprio restaurante. */
+    @DeleteMapping("/notas-entrada/{id}")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Map<String, Object>> removerNotaEntrada(
+            @AuthenticationPrincipal String email, @PathVariable Long id) {
+        Restaurante r = exigirAtivo(email);
+        var n = nfeEntradaRepo.findById(id).orElse(null);
+        if (n == null || n.getRestaurante() == null || !r.getId().equals(n.getRestaurante().getId())) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("ok", false));
+        }
+        nfeEntradaRepo.delete(n);
+        return ResponseEntity.ok(Map.of("ok", true));
+    }
+
     // ─── RELATÓRIO pro contador (Fase 4) ─────────────────────────────────
     /**
      * Baixa um ZIP com os XMLs autorizados do período + um resumo CSV que o
@@ -534,6 +620,51 @@ public class FiscalController {
             return ResponseEntity.internalServerError()
                     .body(("Falha ao gerar relatório: " + e.getMessage()).getBytes());
         }
+    }
+
+    // ─── FECHAMENTOS MENSAIS pré-gerados (cron dia 1º) ────────────────────
+    /** Lista os "yyyy-MM" disponíveis pra download já pré-gerados. */
+    @GetMapping("/fechamentos")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Map<String, Object>> listarFechamentos(@AuthenticationPrincipal String email) {
+        Restaurante r = exigirAtivo(email);
+        var perfil = perfilRepo.findByRestauranteId(r.getId()).orElse(null);
+        if (perfil == null || perfil.getCnpj() == null) {
+            return ResponseEntity.ok(Map.of("mesesDisponiveis", List.of()));
+        }
+        var meses = storage.listarRelatorios(perfil.getCnpj());
+        return ResponseEntity.ok(Map.of("mesesDisponiveis", meses));
+    }
+
+    /** Baixa o ZIP mensal pré-gerado. {@code ym} = "yyyy-MM". */
+    @GetMapping(path = "/fechamentos/{ym}", produces = "application/zip")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<byte[]> baixarFechamento(
+            @AuthenticationPrincipal String email, @PathVariable String ym) {
+        Restaurante r = exigirAtivo(email);
+        var perfil = perfilRepo.findByRestauranteId(r.getId()).orElse(null);
+        if (perfil == null || perfil.getCnpj() == null) {
+            return ResponseEntity.notFound().build();
+        }
+        byte[] zip = storage.lerRelatorio(perfil.getCnpj(), ym);
+        if (zip == null) {
+            // Fallback: gera on-demand se ainda não tem pré-gerado (comum no
+            // mês corrente ou antes do 1º cron ter rodado).
+            try {
+                var yr = Integer.parseInt(ym.substring(0, 4));
+                var mo = Integer.parseInt(ym.substring(5, 7));
+                var ini = java.time.LocalDate.of(yr, mo, 1);
+                var fim = ini.withDayOfMonth(ini.lengthOfMonth());
+                zip = emissor.montarRelatorioZip(r.getId(), ini.toString(), fim.toString());
+            } catch (Exception e) {
+                return ResponseEntity.notFound().build();
+            }
+        }
+        String nome = "nfe-" + r.getSlug() + "-" + ym + ".zip";
+        return ResponseEntity.ok()
+                .header("Content-Disposition", "attachment; filename=\"" + nome + "\"")
+                .header("Content-Type", "application/zip")
+                .body(zip);
     }
 
     // ─── helpers ─────────────────────────────────────────────────────────

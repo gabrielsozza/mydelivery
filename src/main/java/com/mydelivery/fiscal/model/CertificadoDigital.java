@@ -35,8 +35,11 @@ public class CertificadoDigital {
     private String nomeTitular;
 
     /** Cert PKCS12 criptografado com AES-256-GCM. */
+    // Hibernate 6 + MySQL: @Lob byte[] vira TINYBLOB (255 bytes) por default —
+    // certificado A1 cifrado tem ~3-4 KB, então TRUNCATE. columnDefinition
+    // força LONGBLOB (4 GB) e Hibernate cria/mantém corretamente.
     @Lob
-    @Column(name = "pfx_ciphertext", nullable = false)
+    @Column(name = "pfx_ciphertext", nullable = false, columnDefinition = "LONGBLOB")
     private byte[] pfxCiphertext;
 
     @Column(name = "pfx_iv", nullable = false, length = 16)

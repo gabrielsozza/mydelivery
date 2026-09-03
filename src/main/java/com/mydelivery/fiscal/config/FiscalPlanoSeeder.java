@@ -36,7 +36,10 @@ import lombok.extern.slf4j.Slf4j;
 @Configuration
 public class FiscalPlanoSeeder {
 
-    private static final String[] SLUGS_PILOTO = { "teste", "mydelivery-teste", "admin" };
+    private static final String[] SLUGS_PILOTO = {
+            "teste", "mydelivery-teste", "admin",
+            "picanha-da-esquina"    // 1º cliente comercial do plano fiscal
+    };
 
     @Bean
     ApplicationRunner semearPlanoFiscal(

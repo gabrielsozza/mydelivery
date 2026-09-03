@@ -79,6 +79,26 @@ public class CategoriaTributaria {
     private BigDecimal aliquotaCofins = BigDecimal.ZERO;
 
     /**
+     * IBS (Imposto sobre Bens e Serviços) — reforma tributária, começa a
+     * substituir ICMS/ISS em 2026 gradualmente até 2033. Guardado por
+     * categoria mesmo que a maioria das lojas ainda não emita com IBS.
+     * Quando obrigatório na SEFAZ, o gateway já lê essa coluna e monta
+     * o grupo <IBSCBS> na NFC-e sem precisar migrar dados.
+     */
+    @Column(name = "aliquota_ibs", precision = 5, scale = 4)
+    @Builder.Default
+    private BigDecimal aliquotaIbs = BigDecimal.ZERO;
+
+    /**
+     * CBS (Contribuição sobre Bens e Serviços) — reforma tributária, substitui
+     * PIS/COFINS. Alíquota federal única. Vale a partir de 2027 pra maioria
+     * dos setores. Mesmo raciocínio do IBS.
+     */
+    @Column(name = "aliquota_cbs", precision = 5, scale = 4)
+    @Builder.Default
+    private BigDecimal aliquotaCbs = BigDecimal.ZERO;
+
+    /**
      * Categoria semente (padrão MyDelivery) — não permite excluir, só editar.
      * Ativado no seed inicial pra 5 categorias pré-criadas ao usar pela 1ª vez.
      */

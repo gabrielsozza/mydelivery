@@ -102,6 +102,8 @@ public class CategoriaTributariaService {
         c.setAliquotaIcms(bd(body, "aliquotaIcms", BigDecimal.ZERO));
         c.setAliquotaPis(bd(body, "aliquotaPis", BigDecimal.ZERO));
         c.setAliquotaCofins(bd(body, "aliquotaCofins", BigDecimal.ZERO));
+        c.setAliquotaIbs(bd(body, "aliquotaIbs", BigDecimal.ZERO));
+        c.setAliquotaCbs(bd(body, "aliquotaCbs", BigDecimal.ZERO));
         return catRepo.save(c);
     }
 
@@ -186,6 +188,8 @@ public class CategoriaTributariaService {
         m.put("aliquotaIcms", c.getAliquotaIcms());
         m.put("aliquotaPis", c.getAliquotaPis());
         m.put("aliquotaCofins", c.getAliquotaCofins());
+        m.put("aliquotaIbs", c.getAliquotaIbs());
+        m.put("aliquotaCbs", c.getAliquotaCbs());
         m.put("semente", c.getSemente());
         List<Map<String, Object>> prods = new ArrayList<>();
         try {

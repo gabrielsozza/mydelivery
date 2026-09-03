@@ -339,16 +339,30 @@ public class NfceEmissorService {
             dest = new NfeGateway.Destinatario(null, p.getCliente().getNome(), p.getCliente().getEmail());
         }
 
-        // Itens
+        // Itens — coleta TODOS os produtos sem fiscal do pedido antes de
+        // lançar exception (dono vê a lista completa de uma vez, não item
+        // por item). Mensagem aponta pra a tela nova de Categorias.
+        List<String> semFiscal = new ArrayList<>();
+        for (PedidoItem pi : p.getItens()) {
+            if (pi.getProduto() == null) continue;
+            if (perfilProdRepo.findByProdutoId(pi.getProduto().getId()).isEmpty()) {
+                semFiscal.add(pi.getNomeProduto() != null ? pi.getNomeProduto()
+                              : pi.getProduto().getNome());
+            }
+        }
+        if (!semFiscal.isEmpty()) {
+            throw new IllegalStateException(
+                    "Não emite: item(ns) do pedido sem NCM/CFOP configurado — "
+                  + String.join(", ", semFiscal)
+                  + ". Vincule a alguma Categoria tributária (Área Fiscal → Categorias tributárias → aba Produtos).");
+        }
+
         List<NfeGateway.ItemNota> itens = new ArrayList<>();
         int seq = 0;
         for (PedidoItem pi : p.getItens()) {
             seq++;
             if (pi.getProduto() == null) continue;
-            PerfilFiscalProduto pf = perfilProdRepo.findByProdutoId(pi.getProduto().getId())
-                    .orElseThrow(() -> new IllegalStateException(
-                            "Produto '" + pi.getNomeProduto() + "' sem config fiscal (NCM/CFOP). "
-                          + "Vá em Fiscal → Produtos e configure antes de emitir."));
+            PerfilFiscalProduto pf = perfilProdRepo.findByProdutoId(pi.getProduto().getId()).orElseThrow();
             itens.add(new NfeGateway.ItemNota(
                     seq,
                     String.valueOf(pi.getProduto().getId()),

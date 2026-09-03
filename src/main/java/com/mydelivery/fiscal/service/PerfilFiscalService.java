@@ -198,20 +198,32 @@ public class PerfilFiscalService {
             }
         }
 
-        // Produtos sem perfil
+        // Produtos sem perfil — SÓ produtos DISPONÍVEIS/ATIVOS contam.
+        // A partir da mudança "emissão por-pedido": produtos sem fiscal
+        // NÃO bloqueiam mais a ativação da emissão — viram AVISO. Pedidos
+        // que contenham só produtos configurados são emitidos normalmente;
+        // pedidos com produto sem fiscal ficam marcados como pendentes.
         List<Produto> produtos = produtoRepo.findByRestauranteId(restauranteId);
         int semFiscal = 0;
+        int ativos = 0;
+        List<String> avisos = new ArrayList<>();
         for (Produto pr : produtos) {
+            if (!Boolean.TRUE.equals(pr.getDisponivel())) continue;
+            ativos++;
             if (perfilProdutoRepo.findByProdutoId(pr.getId()).isEmpty()) semFiscal++;
         }
         resumo.put("totalProdutos", produtos.size());
+        resumo.put("produtosAtivos", ativos);
         resumo.put("produtosSemFiscal", semFiscal);
         if (semFiscal > 0) {
-            pend.add(semFiscal + " produto(s) sem NCM/CFOP configurado. Configure na aba 'Produtos'.");
+            avisos.add(semFiscal + " produto(s) ativo(s) sem NCM/CFOP configurado. Pedidos com esses itens NÃO vão emitir nota automática — configure em Categorias tributárias quando quiser.");
         }
 
         boolean pronto = pend.isEmpty();
-        return Map.of("pronto", pronto, "pendencias", pend, "resumo", resumo);
+        return Map.of("pronto", pronto,
+                      "pendencias", pend,       // bloqueiam ativação
+                      "avisos", avisos,         // não bloqueiam mas dono deve saber
+                      "resumo", resumo);
     }
 
     /**

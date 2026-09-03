@@ -50,6 +50,26 @@ public class CategoriaTributariaService {
         return lista;
     }
 
+    /**
+     * Lista já convertida em Map — evita LazyInitializationException quando
+     * o controller mapeia fora do @Transactional (produtos é lazy). Chame ESTE
+     * do controller pra listagem web.
+     */
+    @Transactional
+    public List<Map<String, Object>> listarComoMap(Restaurante r) {
+        var lista = catRepo.findByRestauranteIdOrderByNomeAsc(r.getId());
+        if (lista.isEmpty()) {
+            lista = criarSeedPadrao(r);
+        }
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (var c : lista) {
+            // Força inicialização da coleção lazy DENTRO da sessão
+            c.getProdutos().size();
+            out.add(toMap(c));
+        }
+        return out;
+    }
+
     @Transactional
     public CategoriaTributaria salvar(Restaurante r, Long id, Map<String, Object> body) {
         CategoriaTributaria c = id == null
@@ -153,12 +173,18 @@ public class CategoriaTributariaService {
         m.put("aliquotaPis", c.getAliquotaPis());
         m.put("aliquotaCofins", c.getAliquotaCofins());
         m.put("semente", c.getSemente());
-        Set<Produto> ps = c.getProdutos() == null ? Collections.emptySet() : c.getProdutos();
         List<Map<String, Object>> prods = new ArrayList<>();
-        for (var p : ps) {
-            Map<String, Object> pm = new LinkedHashMap<>();
-            pm.put("id", p.getId()); pm.put("nome", p.getNome()); pm.put("ncm", c.getNcm());
-            prods.add(pm);
+        try {
+            // Acesso lazy — se estivermos fora de @Transactional, pode falhar.
+            // Nesse caso devolve lista vazia em vez de propagar exception.
+            Set<Produto> ps = c.getProdutos() == null ? Collections.emptySet() : c.getProdutos();
+            for (var p : ps) {
+                Map<String, Object> pm = new LinkedHashMap<>();
+                pm.put("id", p.getId()); pm.put("nome", p.getNome()); pm.put("ncm", c.getNcm());
+                prods.add(pm);
+            }
+        } catch (Exception e) {
+            log.debug("[Cat] Lazy load produtos falhou (ok — retorno vazio): {}", e.toString());
         }
         m.put("produtos", prods);
         m.put("qtdProdutos", prods.size());

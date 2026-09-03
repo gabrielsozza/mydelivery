@@ -393,8 +393,9 @@ public class FiscalController {
     @PreAuthorize("hasRole('RESTAURANTE')")
     public ResponseEntity<List<Map<String,Object>>> listarCategorias(@AuthenticationPrincipal String email) {
         Restaurante r = exigirAtivo(email);
-        var lista = categoriaService.listar(r).stream().map(categoriaService::toMap).toList();
-        return ResponseEntity.ok(lista);
+        // Usa listarComoMap (dentro do @Transactional) pra evitar
+        // LazyInitializationException ao acessar c.getProdutos().
+        return ResponseEntity.ok(categoriaService.listarComoMap(r));
     }
 
     /** Cria/edita categoria tributária. Se {@code id=null} no body, cria. */

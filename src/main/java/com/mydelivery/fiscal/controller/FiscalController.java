@@ -15,7 +15,9 @@ import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
 
 import com.mydelivery.fiscal.config.FiscalConfig;
+import com.mydelivery.fiscal.model.ContadorNumeroNfce;
 import com.mydelivery.fiscal.model.PerfilFiscalRestaurante;
+import com.mydelivery.fiscal.repository.ContadorNumeroNfceRepository;
 import com.mydelivery.fiscal.repository.LogAuditoriaFiscalRepository;
 import com.mydelivery.fiscal.repository.PerfilFiscalRestauranteRepository;
 import com.mydelivery.fiscal.model.NotaFiscalEmitida;
@@ -48,6 +50,7 @@ public class FiscalController {
     private final NfceEmissorService emissor;
     private final LogAuditoriaFiscalRepository auditoriaRepo;
     private final CategoriaTributariaService categoriaService;
+    private final ContadorNumeroNfceRepository contadorRepo;
 
     // ── STATUS geral do módulo (pra o front decidir se mostra a aba) ──────
     @GetMapping("/status")
@@ -382,6 +385,67 @@ public class FiscalController {
             return m;
         }).toList();
         return ResponseEntity.ok(out);
+    }
+
+    // ─── CONTADOR de numeração NFC-e (série + próximo número) ────────────
+    /**
+     * Lê contador atual do restaurante — pra o dono ver série e próximo
+     * número que a próxima NFC-e vai receber. Útil pra conferência.
+     * Params: {@code serie} (default 1) e {@code ambiente} (default 2 = homol).
+     */
+    @GetMapping("/contador")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Map<String, Object>> lerContador(
+            @AuthenticationPrincipal String email,
+            @RequestParam(defaultValue = "1") Integer serie,
+            @RequestParam(defaultValue = "2") Integer ambiente) {
+        Restaurante r = exigirAtivo(email);
+        var perfil = perfilRepo.findByRestauranteId(r.getId()).orElse(null);
+        if (perfil == null || perfil.getCnpj() == null || perfil.getCnpj().isBlank()) {
+            return ResponseEntity.ok(Map.of("serie", serie, "proximoNumero", 1,
+                    "ambiente", ambiente, "temPerfil", false));
+        }
+        var contador = contadorRepo.findByCnpjAndSerieAndAmbiente(perfil.getCnpj(), serie, ambiente).orElse(null);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("serie", serie);
+        out.put("ambiente", ambiente);
+        out.put("proximoNumero", contador == null ? 1L : contador.getProximoNumero());
+        out.put("temPerfil", true);
+        out.put("existe", contador != null);
+        return ResponseEntity.ok(out);
+    }
+
+    /**
+     * Ajusta série + próximo número da NFC-e. Útil quando o dono está migrando
+     * de outro sistema e precisa retomar a numeração de onde parou (ex: já
+     * emitiu 8437 notas em outro emissor — configura próximo=8438).
+     * <br>Body: {@code {serie: 1, ambiente: 2, proximoNumero: 8438}}
+     */
+    @PutMapping("/contador")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Map<String, Object>> ajustarContador(
+            @AuthenticationPrincipal String email,
+            @RequestBody Map<String, Object> body) {
+        Restaurante r = exigirAtivo(email);
+        var perfil = perfilRepo.findByRestauranteId(r.getId()).orElse(null);
+        if (perfil == null || perfil.getCnpj() == null || perfil.getCnpj().isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("ok", false,
+                    "erro", "Preencha CNPJ do perfil fiscal antes de configurar contador."));
+        }
+        Integer serie = intOr(body, "serie", 1);
+        Integer ambiente = intOr(body, "ambiente", 2);
+        long proximo = Math.max(1, Long.parseLong(String.valueOf(body.getOrDefault("proximoNumero", 1))));
+
+        var contador = contadorRepo.findByCnpjAndSerieAndAmbiente(perfil.getCnpj(), serie, ambiente)
+                .orElseGet(() -> ContadorNumeroNfce.builder()
+                        .cnpj(perfil.getCnpj()).serie(serie).ambiente(ambiente)
+                        .proximoNumero(proximo).build());
+        contador.setProximoNumero(proximo);
+        contadorRepo.save(contador);
+        log.info("[Fiscal][Contador] rest={} cnpj={} serie={} amb={} proximo={}",
+                r.getId(), perfil.getCnpj(), serie, ambiente, proximo);
+        return ResponseEntity.ok(Map.of("ok", true, "serie", serie,
+                "ambiente", ambiente, "proximoNumero", proximo));
     }
 
     // ─── CATEGORIAS TRIBUTÁRIAS (Fase 2) ─────────────────────────────────

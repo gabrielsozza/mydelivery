@@ -46,6 +46,20 @@ public class CategoriaTributariaService {
         var lista = catRepo.findByRestauranteIdOrderByNomeAsc(r.getId());
         if (lista.isEmpty()) {
             lista = criarSeedPadrao(r);
+        } else {
+            // Auto-fix idempotente: se a semente "Produtos produzidos" foi
+            // criada com CFOP 5102 (venda de mercadoria de terceiros — errado
+            // pra quem PRODUZ), corrige pra 5101 (venda de produção do
+            // estabelecimento). Roda uma vez, sem impacto se já tá certo.
+            for (var c : lista) {
+                if (Boolean.TRUE.equals(c.getSemente())
+                        && "Produtos produzidos".equalsIgnoreCase(c.getNome())
+                        && "5102".equals(c.getCfop())) {
+                    c.setCfop("5101");
+                    catRepo.save(c);
+                    log.info("[Fiscal][Cat] Auto-fix CFOP 5102→5101 em 'Produtos produzidos' rest={}", r.getId());
+                }
+            }
         }
         return lista;
     }
@@ -144,7 +158,7 @@ public class CategoriaTributariaService {
         seeds.add(cat(r, "Cervejas", "5405", "22030000", "0302100", "500"));
         seeds.add(cat(r, "Refrigerantes", "5405", "22021000", "0301100", "500"));
         seeds.add(cat(r, "Sucos", "5101", "22011000", "1701300", "102"));
-        seeds.add(cat(r, "Produtos produzidos", "5102", "21069090", null, "102"));
+        seeds.add(cat(r, "Produtos produzidos", "5101", "21069090", null, "102"));
         for (var c : seeds) { c.setSemente(true); catRepo.save(c); }
         return catRepo.findByRestauranteIdOrderByNomeAsc(r.getId());
     }

@@ -156,7 +156,22 @@ public class FiscalAdminController {
 
     // ─── helpers ─────────────────────────────────────────────────────────
     private boolean validar(String secret) {
-        return esperado != null && !esperado.isBlank() && esperado.equals(secret);
+        if (esperado == null || esperado.isBlank()) {
+            log.warn("[FiscalAdmin] validar FALSE: esperado vazio (env ADMIN_INTERNAL_SECRET nao lida)");
+            return false;
+        }
+        String esp = esperado.trim();
+        String rec = secret == null ? "" : secret.trim();
+        boolean ok = esp.equals(rec);
+        if (!ok) {
+            log.warn("[FiscalAdmin] validar FALSE: esperadoLen={} recebidoLen={} " +
+                     "esperadoInicio={} recebidoInicio={} match(afterTrim)={}",
+                     esp.length(), rec.length(),
+                     esp.substring(0, Math.min(6, esp.length())),
+                     rec.substring(0, Math.min(6, rec.length())),
+                     esp.equals(rec));
+        }
+        return ok;
     }
 
     private Map<String, Object> serializar(NotaFiscalEmitida n) {

@@ -195,6 +195,17 @@
             <artifactId>s3</artifactId>
             <version>2.28.16</version>
         </dependency>
+        <!-- HTTP client explícito pro AWS SDK — sem essa dep o SDK tenta
+             instanciar ApacheHttpClient no boot e crasha com
+             ClassNotFoundException: DefaultClientConnectionReuseStrategy
+             (a Apache HttpClient legacy 4.x não está no shaded jar). O
+             url-connection-client é 20 KB, usa java.net.HttpURLConnection
+             puro — suficiente pro R2 que só faz PUT/GET simples. -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>url-connection-client</artifactId>
+            <version>2.28.16</version>
+        </dependency>
     </dependencies>
 
     <!-- JitPack — distribuição da biblioteca wmixvideo/nfe. -->

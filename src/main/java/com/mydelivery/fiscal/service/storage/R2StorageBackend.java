@@ -12,6 +12,7 @@ import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.core.ResponseBytes;
 import software.amazon.awssdk.core.sync.RequestBody;
+import software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.S3Configuration;
@@ -78,6 +79,11 @@ public class R2StorageBackend implements XmlStorageBackend {
         }
         this.bucket = bucket;
         this.s3 = S3Client.builder()
+                // HTTP client explícito — sem isso o SDK procura ApacheHttpClient
+                // no classpath e crasha se não achar (ClassNotFoundException).
+                // UrlConnectionHttpClient é leve (HttpURLConnection puro) e
+                // suficiente pro perfil de uso do R2 (PUT/GET/HEAD de XMLs).
+                .httpClient(UrlConnectionHttpClient.builder().build())
                 .endpointOverride(URI.create(endpoint))
                 .region(Region.of("auto"))            // R2 aceita "auto"
                 .credentialsProvider(StaticCredentialsProvider.create(

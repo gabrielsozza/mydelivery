@@ -128,6 +128,9 @@ public class FiscalController {
         if (body.containsKey("enderecoBairro"))      p.setEnderecoBairro(str(body, "enderecoBairro", null));
         if (body.containsKey("enderecoCep"))         p.setEnderecoCep(str(body, "enderecoCep", null));
         if (body.containsKey("enderecoComplemento")) p.setEnderecoComplemento(str(body, "enderecoComplemento", null));
+        if (body.containsKey("manifestoHabilitado")) p.setManifestoHabilitado(Boolean.TRUE.equals(body.get("manifestoHabilitado")));
+        if (body.containsKey("mensagemRodape"))      p.setMensagemRodape(str(body, "mensagemRodape", null));
+        if (body.containsKey("cfopEntradaPadrao"))   p.setCfopEntradaPadrao(str(body, "cfopEntradaPadrao", "1102"));
         // NÃO aceita alterar emissaoAtiva por aqui — endpoint separado exige checagens.
         perfilRepo.save(p);
         log.info("[Fiscal][Perfil] Restaurante {} salvou perfil (ambiente={}, uf={})",

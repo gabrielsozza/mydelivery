@@ -109,6 +109,16 @@ public class PerfilFiscalRestaurante {
     @Column(name = "mensagem_rodape", length = 500)
     private String mensagemRodape;
 
+    /**
+     * CFOP de entrada padrão usado no relatório mensal pro contador —
+     * espelha o CFOP de saída (5xxx) pro código de entrada correspondente
+     * na escrituração dele. Default 1102 (compra pra comercialização) que
+     * é o mais comum. Contador pode mudar por loja se precisar.
+     */
+    @Column(name = "cfop_entrada_padrao", length = 4)
+    @Builder.Default
+    private String cfopEntradaPadrao = "1102";
+
     @Column(name = "criado_em", updatable = false, insertable = false)
     private LocalDateTime criadoEm;
 

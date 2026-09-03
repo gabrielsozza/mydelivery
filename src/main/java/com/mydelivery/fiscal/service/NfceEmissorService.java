@@ -589,6 +589,13 @@ public class NfceEmissorService {
         LocalDateTime di = parseDataIso(dataInicial, LocalDate.of(2000, 1, 1).atStartOfDay());
         LocalDateTime df = parseDataIso(dataFinal, LocalDate.now().atTime(23, 59, 59));
 
+        // CFOP de entrada padrão que o contador quer ver ESPELHANDO cada saída
+        // (pra facilitar a escrituração dele). Default 1102.
+        String cfopEntrada = perfilRepo.findByRestauranteId(restauranteId)
+                .map(p -> p.getCfopEntradaPadrao() == null || p.getCfopEntradaPadrao().isBlank()
+                        ? "1102" : p.getCfopEntradaPadrao())
+                .orElse("1102");
+
         var todas = notaRepo.findByRestauranteIdOrderByCriadoEmDesc(restauranteId);
         var noPeriodo = new ArrayList<NotaFiscalEmitida>();
         for (var n : todas) {
@@ -606,8 +613,9 @@ public class NfceEmissorService {
              ZipOutputStream zip = new ZipOutputStream(baos)) {
 
             // CSV-resumo — abre em Excel/LibreOffice, importa direto em contabilidade.
+            // CfopEntrada = espelho pro contador escriturar; vem do perfil da loja.
             StringBuilder csv = new StringBuilder();
-            csv.append("Numero;Serie;Data;Chave;Status;ValorTotal;Protocolo;Motivo\n");
+            csv.append("Numero;Serie;Data;Chave;Status;ValorTotal;CfopEntrada;Protocolo;Motivo\n");
 
             for (var n : noPeriodo) {
                 String status = n.getStatus() == null ? "" : n.getStatus().name();
@@ -625,6 +633,7 @@ public class NfceEmissorService {
                    .append(status).append(';')
                    .append(n.getValorTotal() == null ? "0,00"
                             : n.getValorTotal().toPlainString().replace('.', ',')).append(';')
+                   .append(cfopEntrada).append(';')
                    .append(nvl(n.getProtocolo())).append(';')
                    .append(sanitizaCsv(n.getSefazMotivo())).append('\n');
 

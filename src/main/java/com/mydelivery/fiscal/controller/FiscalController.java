@@ -22,6 +22,8 @@ import com.mydelivery.fiscal.repository.ContadorNumeroNfceRepository;
 import com.mydelivery.fiscal.repository.LogAuditoriaFiscalRepository;
 import com.mydelivery.fiscal.repository.PerfilFiscalRestauranteRepository;
 import com.mydelivery.fiscal.model.NotaFiscalEmitida;
+import com.mydelivery.equipe.Permissao;
+import com.mydelivery.equipe.PermissaoRequerida;
 import com.mydelivery.fiscal.repository.NotaFiscalEntradaRepository;
 import com.mydelivery.fiscal.service.CategoriaTributariaService;
 import com.mydelivery.fiscal.service.CertificadoService;
@@ -62,6 +64,7 @@ public class FiscalController {
     // ── STATUS geral do módulo (pra o front decidir se mostra a aba) ──────
     @GetMapping("/status")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
     public ResponseEntity<Map<String, Object>> status(@AuthenticationPrincipal String email) {
         Restaurante r = restauranteRepo.findByUsuarioEmail(email).orElseThrow();
         Map<String, Object> out = new LinkedHashMap<>();
@@ -77,6 +80,7 @@ public class FiscalController {
     // ── PERFIL fiscal do restaurante (config) ────────────────────────────
     @GetMapping("/perfil")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
     public ResponseEntity<Map<String, Object>> perfil(@AuthenticationPrincipal String email) {
         Restaurante r = exigirAtivo(email);
         PerfilFiscalRestaurante p = perfilRepo.findByRestauranteId(r.getId()).orElse(null);
@@ -122,6 +126,7 @@ public class FiscalController {
      *  liga só depois de tudo validado. */
     @PutMapping("/perfil")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
     public ResponseEntity<Map<String, Object>> salvarPerfil(
             @AuthenticationPrincipal String email,
             @RequestBody Map<String, Object> body,
@@ -160,6 +165,7 @@ public class FiscalController {
     // ── UPLOAD do certificado A1 (.pfx) ───────────────────────────────────
     @PostMapping(path = "/certificado", consumes = "multipart/form-data")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
     public ResponseEntity<Map<String, Object>> uploadCertificado(
             @AuthenticationPrincipal String email,
             @RequestParam("arquivo") MultipartFile arquivo,
@@ -200,6 +206,7 @@ public class FiscalController {
     /** Salva/troca o CSC. Corpo: { cscId, cscValor }. */
     @PutMapping("/csc")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
     public ResponseEntity<Map<String, Object>> salvarCsc(
             @AuthenticationPrincipal String email,
             @RequestBody Map<String, Object> body,
@@ -218,6 +225,7 @@ public class FiscalController {
     // ── PRODUTOS: config fiscal individual + em lote ─────────────────────
     @GetMapping("/produtos")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
     public ResponseEntity<List<Map<String, Object>>> listarProdutos(@AuthenticationPrincipal String email) {
         Restaurante r = exigirAtivo(email);
         return ResponseEntity.ok(perfilFiscalService.listarProdutosComFiscal(r.getId()));
@@ -225,6 +233,7 @@ public class FiscalController {
 
     @PutMapping("/produtos/{id}")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
     public ResponseEntity<Map<String, Object>> salvarPerfilProduto(
             @AuthenticationPrincipal String email,
             @PathVariable("id") Long produtoId,
@@ -244,6 +253,7 @@ public class FiscalController {
     /** Aplica a mesma config em vários produtos. Body: { produtoIds:[...], config:{...} } */
     @PostMapping("/produtos/lote")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
     @SuppressWarnings("unchecked")
     public ResponseEntity<Map<String, Object>> aplicarLote(
             @AuthenticationPrincipal String email,
@@ -262,6 +272,7 @@ public class FiscalController {
     // ── HABILITAR / DESABILITAR EMISSÃO ──────────────────────────────────
     @GetMapping("/pre-check")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
     public ResponseEntity<Map<String, Object>> preCheck(@AuthenticationPrincipal String email) {
         Restaurante r = exigirAtivo(email);
         return ResponseEntity.ok(perfilFiscalService.validarProntoParaEmitir(r.getId()));
@@ -269,6 +280,7 @@ public class FiscalController {
 
     @PostMapping("/habilitar-emissao")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
     public ResponseEntity<Map<String, Object>> habilitar(
             @AuthenticationPrincipal String email, HttpServletRequest req) {
         Restaurante r = exigirAtivo(email);
@@ -284,6 +296,7 @@ public class FiscalController {
 
     @PostMapping("/desabilitar-emissao")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
     public ResponseEntity<Map<String, Object>> desabilitar(
             @AuthenticationPrincipal String email,
             @RequestBody(required = false) Map<String, Object> body,
@@ -298,6 +311,7 @@ public class FiscalController {
     /** Emite (ou reemite se rejeitada) a NFC-e do pedido informado. */
     @PostMapping("/emitir-nfce/{pedidoId}")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
     public ResponseEntity<Map<String, Object>> emitirNfce(
             @AuthenticationPrincipal String email,
             @PathVariable Long pedidoId,
@@ -327,6 +341,7 @@ public class FiscalController {
     /** Lista as notas emitidas pelo restaurante (mais recentes primeiro). */
     @GetMapping("/notas")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
     public ResponseEntity<List<Map<String, Object>>> listarNotas(@AuthenticationPrincipal String email) {
         Restaurante r = exigirAtivo(email);
         return ResponseEntity.ok(emissor.listarNotas(r.getId()));
@@ -339,6 +354,7 @@ public class FiscalController {
      */
     @GetMapping("/pedido/{id}/dados-fiscais")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
     public ResponseEntity<Map<String, Object>> dadosFiscaisDoPedido(
             @AuthenticationPrincipal String email, @PathVariable Long id) {
         Restaurante r = exigirAtivo(email);
@@ -366,6 +382,7 @@ public class FiscalController {
      */
     @PostMapping("/notas/{id}/cancelar")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
     public ResponseEntity<Map<String, Object>> cancelarNota(
             @AuthenticationPrincipal String email,
             @PathVariable Long id,
@@ -392,6 +409,7 @@ public class FiscalController {
     // ── AUDITORIA fiscal (só as 200 ultimas do restaurante) ──────────────
     @GetMapping("/auditoria")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
     public ResponseEntity<List<Map<String, Object>>> auditoria(@AuthenticationPrincipal String email) {
         Restaurante r = exigirAtivo(email);
         var lista = auditoriaRepo.findTop200ByRestauranteIdOrderByCriadoEmDesc(r.getId());
@@ -417,6 +435,7 @@ public class FiscalController {
      */
     @GetMapping("/contador")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
     public ResponseEntity<Map<String, Object>> lerContador(
             @AuthenticationPrincipal String email,
             @RequestParam(defaultValue = "1") Integer serie,
@@ -445,6 +464,7 @@ public class FiscalController {
      */
     @PutMapping("/contador")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
     public ResponseEntity<Map<String, Object>> ajustarContador(
             @AuthenticationPrincipal String email,
             @RequestBody Map<String, Object> body) {
@@ -477,6 +497,7 @@ public class FiscalController {
      */
     @GetMapping("/categorias")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
     public ResponseEntity<List<Map<String,Object>>> listarCategorias(@AuthenticationPrincipal String email) {
         Restaurante r = exigirAtivo(email);
         // Usa listarComoMap (dentro do @Transactional) pra evitar
@@ -487,6 +508,7 @@ public class FiscalController {
     /** Cria/edita categoria tributária. Se {@code id=null} no body, cria. */
     @PutMapping("/categorias")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
     public ResponseEntity<Map<String,Object>> salvarCategoria(
             @AuthenticationPrincipal String email, @RequestBody Map<String,Object> body) {
         Restaurante r = exigirAtivo(email);
@@ -502,6 +524,7 @@ public class FiscalController {
     /** Exclui categoria (categorias semente não podem ser excluídas). */
     @DeleteMapping("/categorias/{id}")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
     public ResponseEntity<Map<String,Object>> excluirCategoria(
             @AuthenticationPrincipal String email, @PathVariable Long id) {
         Restaurante r = exigirAtivo(email);
@@ -516,6 +539,7 @@ public class FiscalController {
      */
     @PutMapping("/categorias/{id}/produtos")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
     public ResponseEntity<Map<String,Object>> vincularProdutosCategoria(
             @AuthenticationPrincipal String email, @PathVariable Long id,
             @RequestBody Map<String,Object> body) {
@@ -534,6 +558,7 @@ public class FiscalController {
      */
     @PostMapping(path = "/notas-entrada/upload", consumes = "multipart/form-data")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
     public ResponseEntity<Map<String, Object>> uploadNotaEntrada(
             @AuthenticationPrincipal String email,
             @RequestParam("arquivo") MultipartFile arquivo) {
@@ -561,6 +586,7 @@ public class FiscalController {
     /** Lista NF-e recebidas do restaurante — mais recentes primeiro. */
     @GetMapping("/notas-entrada")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
     public ResponseEntity<List<Map<String, Object>>> listarNotasEntrada(@AuthenticationPrincipal String email) {
         Restaurante r = exigirAtivo(email);
         var lista = nfeEntradaRepo.findByRestauranteIdOrderByDataEmissaoDesc(r.getId());
@@ -583,6 +609,7 @@ public class FiscalController {
     /** Remove uma NF-e de entrada — só do próprio restaurante. */
     @DeleteMapping("/notas-entrada/{id}")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
     public ResponseEntity<Map<String, Object>> removerNotaEntrada(
             @AuthenticationPrincipal String email, @PathVariable Long id) {
         Restaurante r = exigirAtivo(email);
@@ -602,6 +629,7 @@ public class FiscalController {
      */
     @GetMapping(path = "/relatorio.zip", produces = "application/zip")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
     public ResponseEntity<byte[]> relatorioZip(
             @AuthenticationPrincipal String email,
             @RequestParam(value = "dataInicial", required = false) String dataInicial,
@@ -626,6 +654,7 @@ public class FiscalController {
     /** Lista os "yyyy-MM" disponíveis pra download já pré-gerados. */
     @GetMapping("/fechamentos")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
     public ResponseEntity<Map<String, Object>> listarFechamentos(@AuthenticationPrincipal String email) {
         Restaurante r = exigirAtivo(email);
         var perfil = perfilRepo.findByRestauranteId(r.getId()).orElse(null);
@@ -639,6 +668,7 @@ public class FiscalController {
     /** Baixa o ZIP mensal pré-gerado. {@code ym} = "yyyy-MM". */
     @GetMapping(path = "/fechamentos/{ym}", produces = "application/zip")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
     public ResponseEntity<byte[]> baixarFechamento(
             @AuthenticationPrincipal String email, @PathVariable String ym) {
         Restaurante r = exigirAtivo(email);

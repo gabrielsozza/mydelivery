@@ -54,6 +54,7 @@ public enum Permissao {
     VER_PROMOCOES,
     VER_IMPRESSORAS,
     VER_INTEGRACOES,
+    VER_FISCAL,
 
     // ── Ações específicas (backend protege via @PermissaoRequerida) ────
     CANCELAR_PEDIDOS,
@@ -69,7 +70,15 @@ public enum Permissao {
     ALTERAR_CONFIGURACOES,
     CADASTRAR_USUARIOS,
     EDITAR_USUARIOS,
-    EXCLUIR_USUARIOS;
+    EXCLUIR_USUARIOS,
+    /** Permite editar configuração fiscal, categorias tributárias, upload de
+     *  cert A1, ajustar contador, subir NF-e de entrada, baixar relatórios,
+     *  emitir/cancelar NFC-e manualmente. Contador padrão recebe essa. */
+    EDITAR_FISCAL,
+    /** Emite NFC-e manualmente (subset separado pra dono limitar contador
+     *  só a "conferir/baixar" sem poder emitir se quiser). Contador padrão
+     *  também recebe essa. */
+    EMITIR_NFCE;
 
     /**
      * Grupo lógico da permissão (usado pelo front pra agrupar checkboxes
@@ -115,6 +124,7 @@ public enum Permissao {
             case VER_PROMOCOES: return "Promoções";
             case VER_IMPRESSORAS: return "Impressoras";
             case VER_INTEGRACOES: return "Integrações";
+            case VER_FISCAL: return "Área Fiscal (NFC-e)";
             // Ações
             case CANCELAR_PEDIDOS: return "Cancelar pedidos";
             case ALTERAR_STATUS_PEDIDOS: return "Alterar status dos pedidos";
@@ -130,6 +140,8 @@ public enum Permissao {
             case CADASTRAR_USUARIOS: return "Cadastrar novos usuários";
             case EDITAR_USUARIOS: return "Editar usuários";
             case EXCLUIR_USUARIOS: return "Excluir usuários";
+            case EDITAR_FISCAL: return "Editar área fiscal (config, categorias, contador, entradas)";
+            case EMITIR_NFCE: return "Emitir/cancelar NFC-e manualmente";
             default: return name();
         }
     }
@@ -153,6 +165,18 @@ public enum Permissao {
                 gerente.remove(EXCLUIR_USUARIOS);
                 gerente.remove(ALTERAR_CONFIGURACOES);
                 return gerente;
+            case CONTADOR:
+                // Só Área Fiscal — nada de operação. Dono passa acesso pro
+                // contador da loja pra ele configurar cert/CSC/categorias,
+                // subir XMLs de fornecedor, baixar relatórios, emitir/cancelar
+                // NFC-e sem depender do dono. Não vê pedidos/cardápio/clientes.
+                return EnumSet.of(
+                        VER_FISCAL,
+                        VER_RELATORIOS,     // relatório mensal financeiro complementa fiscal
+                        EDITAR_FISCAL,
+                        EMITIR_NFCE,
+                        EMITIR_RELATORIOS
+                );
             case FUNCIONARIO:
             default:
                 // Só operacional: vê e mexe em pedidos, cardápio (leitura),

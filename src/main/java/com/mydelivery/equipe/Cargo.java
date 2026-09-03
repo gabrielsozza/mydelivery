@@ -19,13 +19,18 @@ package com.mydelivery.equipe;
 public enum Cargo {
     PROPRIETARIO,
     GERENTE,
-    FUNCIONARIO;
+    FUNCIONARIO,
+    /** Contador: acesso completo à Área Fiscal (config, categorias tributárias,
+     *  contador NFC-e, entradas de fornecedor, relatórios, emitir/cancelar).
+     *  Sem acesso a operação da loja (pedidos, cardápio, config geral). */
+    CONTADOR;
 
     public String getLabel() {
         switch (this) {
             case PROPRIETARIO: return "Proprietário";
             case GERENTE: return "Gerente";
             case FUNCIONARIO: return "Funcionário";
+            case CONTADOR: return "Contador";
             default: return name();
         }
     }

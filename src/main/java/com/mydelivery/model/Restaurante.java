@@ -193,6 +193,18 @@ public class Restaurante {
     private Boolean impressaoAutomatica;
 
     /**
+     * Add-on Fiscal (NFC-e) contratado — R$ 99,90/mês (300 notas) ou R$ 129,90/mês
+     * (ilimitado). Quando true, o menu "Área Fiscal" aparece no painel, os
+     * endpoints /fiscal respondem e o botão "Emitir NFC-e" fica disponível no
+     * card do pedido. Contratação é feita em /planos.html (add-on separado do
+     * plano principal). Coluna criada via Hibernate ddl-auto — MySQL Railway
+     * não aceita ALTER ADD COLUMN IF NOT EXISTS.
+     */
+    @Column(name = "fiscal_habilitado", nullable = false)
+    @Builder.Default
+    private Boolean fiscalHabilitado = false;
+
+    /**
      * Se true, após o cliente finalizar o pedido no cardápio digital o
      * frontend mostra um botão "Confirmar via WhatsApp" que abre conversa
      * com o restaurante já com a mensagem pré-preenchida. O bot WhatsApp

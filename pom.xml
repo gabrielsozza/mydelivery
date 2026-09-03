@@ -170,7 +170,40 @@
             <artifactId>bcprov-jdk18on</artifactId>
             <version>1.78.1</version>
         </dependency>
+
+        <!-- ═══ FISCAL / NFC-e (motor de emissão) ═══
+             Biblioteca Java open-source wmixvideo/nfe via JitPack.
+             Repo: https://github.com/wmixvideo/nfe
+             Ativação: mydelivery.fiscal.gateway=real. Enquanto property
+             não estiver "real", o SimuladorNfeGateway cobre o fluxo sem
+             chamar SEFAZ. Distribuída via JitPack (repositório abaixo). -->
+        <dependency>
+            <groupId>com.github.wmixvideo</groupId>
+            <artifactId>nfe</artifactId>
+            <version>master-SNAPSHOT</version>
+        </dependency>
+
+        <!-- ═══ CLOUDFLARE R2 (S3-compatible) ═══
+             Armazenamento durável dos XMLs de NFC-e (SEFAZ obriga guardar 5 anos).
+             Usamos AWS SDK for S3 apontando pro endpoint R2 (mesma API). Tier
+             grátis do R2 = 10 GB storage + 1M leituras + 10M escritas/mês
+             (sem taxa de egress) — cobre facilmente muitas lojas por anos.
+             Ativação: mydelivery.fiscal.storage=r2 + credenciais R2. Default
+             continua "local" (disco) pra dev/teste. -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>s3</artifactId>
+            <version>2.28.16</version>
+        </dependency>
     </dependencies>
+
+    <!-- JitPack — distribuição da biblioteca wmixvideo/nfe. -->
+    <repositories>
+        <repository>
+            <id>jitpack.io</id>
+            <url>https://jitpack.io</url>
+        </repository>
+    </repositories>
 
     <build>
         <plugins>

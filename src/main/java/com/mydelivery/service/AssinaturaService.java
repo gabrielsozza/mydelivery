@@ -779,7 +779,14 @@ public class AssinaturaService {
         List<PlanoCatalogo> ativos = planoCatalogoService.listarAtivos();
         if (!ativos.isEmpty()) {
             List<Map<String, Object>> lista = new ArrayList<>();
-            for (PlanoCatalogo p : ativos) lista.add(planoCatalogoService.toMapRestaurante(p, r));
+            for (PlanoCatalogo p : ativos) {
+                // Planos ADD-ON (fiscal, etc.) não entram na lista de planos
+                // principais — se aparecessem, o dono trocaria o plano PRINCIPAL
+                // pelo add-on por engano. Add-ons ficam num endpoint separado
+                // consumido pela tela de configuração do módulo.
+                if ("FISCAL".equalsIgnoreCase(p.getOnboardingTipo())) continue;
+                lista.add(planoCatalogoService.toMapRestaurante(p, r));
+            }
             return lista;
         }
         // Fallback de segurança — só roda se tabela ficou vazia (caso patológico)

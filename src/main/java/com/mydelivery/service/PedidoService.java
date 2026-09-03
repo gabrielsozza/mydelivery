@@ -50,6 +50,12 @@ public class PedidoService {
     private final EstoqueService estoqueService;
     private final PagamentoService pagamentoService;
     private final HorarioLojaService horarioLojaService;
+
+    /** Módulo fiscal — auto-emissão de NFC-e quando pedido vira ENTREGUE.
+     *  Opcional: se módulo fiscal não estiver no classpath, PedidoService segue
+     *  funcionando (só não emite nota). Fail-safe total. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.mydelivery.fiscal.service.NfceEmissorService fiscalEmissor;
     private final com.mydelivery.service.ifood.IfoodClient ifoodClient;
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private WebPushService webPushService;
@@ -701,6 +707,22 @@ public class PedidoService {
             }
         }
 
+        // ── AUTO-EMISSÃO DE NFC-e ─────────────────────────────────────────
+        // Quando pedido vira ENTREGUE, dispara emissão automática. Fail-safe:
+        // se o módulo fiscal não estiver ativo pra essa loja, retorna cedo
+        // sem barulho; se der erro na emissão, fica REJEITADA pro retry (R5).
+        // A mudança de status do pedido NUNCA falha por causa da nota.
+        if (fiscalEmissor != null
+                && statusNovo == Pedido.Status.ENTREGUE
+                && statusAntigo != Pedido.Status.ENTREGUE) {
+            try {
+                fiscalEmissor.emitirParaPedidoSeguro(salvo.getId(), "sistema:auto", null);
+            } catch (Exception e) {
+                log.warn("[Fiscal][AutoEmit] pedido={} falhou (não bloqueou entrega): {}",
+                        salvo.getId(), e.getMessage());
+            }
+        }
+
         // ── NOTIFICAÇÃO PRO CLIENTE VIA WHATSAPP ──────────────────────────
         // Async — nunca bloqueia a transição no painel. Dedup por (pedido,
         // status) dentro do próprio serviço evita 2× o mesmo aviso quando o
@@ -928,6 +950,15 @@ public class PedidoService {
             if (p.getPagoEm() == null) p.setPagoEm(agora);
         });
         pedidoRepository.saveAll(ativos);
+
+        // Auto-emit fiscal pra cada pedido da mesa fechada (fail-safe: erro
+        // em um não impede os outros nem falha o fechamento).
+        if (fiscalEmissor != null) {
+            for (Pedido p : ativos) {
+                try { fiscalEmissor.emitirParaPedidoSeguro(p.getId(), "sistema:mesa", null); }
+                catch (Exception e) { log.warn("[Fiscal][AutoEmit] mesa pedido={} falhou: {}", p.getId(), e.getMessage()); }
+            }
+        }
         return ativos.size();
     }
 

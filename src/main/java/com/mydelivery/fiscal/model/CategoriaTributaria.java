@@ -99,6 +99,22 @@ public class CategoriaTributaria {
     private BigDecimal aliquotaCbs = BigDecimal.ZERO;
 
     /**
+     * CST IBS/CBS — Código de Situação Tributária da reforma (3 dígitos).
+     * Ex: "000" tributação integral, "200" alíquota reduzida, "410" isenção.
+     * Vem do catálogo oficial da Fazenda (arquivo cClassTrib-YYYY-MM-DD.xlsx).
+     */
+    @Column(name = "cst_ibs_cbs", length = 3)
+    private String cstIbsCbs;
+
+    /**
+     * cClassTrib — Classificação tributária IBS/CBS (6 dígitos). Especifica
+     * qual regime dentro do CST se aplica. Ex: "000001" tributação integral
+     * padrão, "010001" operações do FGTS não realizadas pela Caixa.
+     */
+    @Column(name = "cclass_trib", length = 6)
+    private String cClassTrib;
+
+    /**
      * Categoria semente (padrão MyDelivery) — não permite excluir, só editar.
      * Ativado no seed inicial pra 5 categorias pré-criadas ao usar pela 1ª vez.
      */

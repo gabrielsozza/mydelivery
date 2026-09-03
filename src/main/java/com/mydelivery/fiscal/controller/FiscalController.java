@@ -490,6 +490,24 @@ public class FiscalController {
                 "ambiente", ambiente, "proximoNumero", proximo));
     }
 
+    // ─── CATÁLOGO cClassTrib (reforma tributária IBS/CBS) ────────────────
+    /**
+     * Serve o catálogo oficial da Fazenda pra IBS/CBS filtrado só pra NFC-e
+     * (43 códigos do universo de 1000+). Usado pelo front pra autocomplete/
+     * dropdown na tela de categorias tributárias. Estático — muda quando a
+     * Fazenda publicar nova versão do XLSX.
+     */
+    @GetMapping("/cclass-trib")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
+    public ResponseEntity<org.springframework.core.io.Resource> cClassTrib() {
+        var res = new org.springframework.core.io.ClassPathResource("fiscal/cclass-trib-nfce.json");
+        return ResponseEntity.ok()
+                .header("Content-Type", "application/json;charset=UTF-8")
+                .header("Cache-Control", "public, max-age=86400")   // 24h
+                .body(res);
+    }
+
     // ─── CATEGORIAS TRIBUTÁRIAS (Fase 2) ─────────────────────────────────
     /**
      * Lista categorias tributárias do restaurante. Se ainda não existir

@@ -45,6 +45,18 @@ public class FiscalAdminController {
     @Value("${mydelivery.admin.internal-secret:}")
     private String esperado;
 
+    /**
+     * Log de boot — confirma se a env {@code ADMIN_INTERNAL_SECRET} foi lida.
+     * Se aparecer {@code esperado=0chars} = env vazia (ninguém do admin panel
+     * consegue chamar). Se aparecer {@code esperado=NNchars} = OK, e se admin
+     * envia mesma qtd de chars, deveria bater.
+     */
+    @jakarta.annotation.PostConstruct
+    public void logBoot() {
+        log.info("[FiscalAdmin][MainApi] boot: esperado={}chars",
+                esperado == null ? 0 : esperado.length());
+    }
+
     // ═════ NOTAS (com filtros) ══════════════════════════════════════════
     /**
      * Lista notas com filtros. Params:

@@ -608,7 +608,11 @@ public class WmixvideoNfeGateway implements NfeGateway {
             @Override public DFUnidadeFederativa getCUF() { return cuf; }
             @Override public KeyStore getCertificadoKeyStore() { return ksFinal; }
             @Override public String getCertificadoSenha() { return senhaPfx == null ? "" : senhaPfx; }
-            @Override public KeyStore getCadeiaCertificadosKeyStore() { return null; }
+            @Override public KeyStore getCadeiaCertificadosKeyStore() {
+                // Bundle Mozilla+ICP-Brasil — necessário pq JRE do Railway não
+                // tem certs raiz brasileiros no cacerts padrão (PKIX error).
+                return com.mydelivery.fiscal.config.CadeiaCertificadosCA.obter();
+            }
             @Override public String getCadeiaCertificadosSenha() { return ""; }
             @Override public Integer getCodigoSegurancaContribuinteID() { return cscIdInt; }
             @Override public String getCodigoSegurancaContribuinte() { return csc == null ? "" : csc; }

@@ -379,6 +379,8 @@ public class WmixvideoNfeGateway implements NfeGateway {
             p.setValorUnitarioTributavel(scale4(it.valorUnitario()));
             p.setCodigoDeBarras("SEM GTIN");
             p.setCodigoDeBarrasTributavel("SEM GTIN");
+            // indTot obrigatório: 1 = valor do item COMPÕE o total da NF-e.
+            p.setCompoeValorNota(com.fincatto.documentofiscal.nfe400.classes.NFProdutoCompoeValorNota.SIM);
             item.setProduto(p);
 
             item.setImposto(montarImposto(it, simples));

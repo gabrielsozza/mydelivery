@@ -106,7 +106,19 @@ public class CategoriaTributariaService {
         c.setAliquotaCbs(bd(body, "aliquotaCbs", BigDecimal.ZERO));
         c.setCstIbsCbs(strNull(body, "cstIbsCbs"));
         c.setCClassTrib(strNull(body, "cClassTrib"));
-        return catRepo.save(c);
+        CategoriaTributaria salvo = catRepo.save(c);
+        // Propaga TODAS as mudanças pros produtos já vinculados a essa
+        // categoria — antes só rodava no vincularProdutos, e editar a
+        // categoria depois deixava o PerfilFiscalProduto com valores antigos
+        // (dono trocava CFOP mas nota continuava saindo com CFOP velho).
+        if (salvo.getProdutos() != null) {
+            for (var p : salvo.getProdutos()) {
+                try { propagarParaPerfil(p, salvo); } catch (Exception ignore) {}
+            }
+            log.info("[Fiscal][Cat] Salvou categoria {} — propagou pra {} produto(s) vinculado(s)",
+                    salvo.getId(), salvo.getProdutos().size());
+        }
+        return salvo;
     }
 
     @Transactional

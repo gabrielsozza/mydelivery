@@ -61,6 +61,8 @@ import com.fincatto.documentofiscal.nfe400.classes.nota.NFNotaInfoItemImpostoICM
 import com.fincatto.documentofiscal.nfe400.classes.nota.NFNotaInfoItemImpostoICMSSN102;
 import com.fincatto.documentofiscal.nfe400.classes.nota.NFNotaInfoItemImpostoPIS;
 import com.fincatto.documentofiscal.nfe400.classes.nota.NFNotaInfoItemImpostoPISAliquota;
+import com.fincatto.documentofiscal.nfe400.classes.nota.NFNotaInfoItemImpostoPISOutrasOperacoes;
+import com.fincatto.documentofiscal.nfe400.classes.nota.NFNotaInfoItemImpostoCOFINSOutrasOperacoes;
 import com.fincatto.documentofiscal.nfe400.classes.nota.NFNotaInfoItemProduto;
 import com.fincatto.documentofiscal.nfe400.classes.nota.NFNotaInfoPagamento;
 import com.fincatto.documentofiscal.nfe400.classes.nota.NFNotaInfoTotal;
@@ -408,29 +410,47 @@ public class WmixvideoNfeGateway implements NfeGateway {
         }
         imp.setIcms(icms);
 
-        // PIS
+        // PIS — CST 49 (Simples Nacional "Sem tributação") NÃO usa PISAliquota,
+        // usa PISOutrasOperacoes com valores zerados (a SEFAZ rejeita alíquota
+        // preenchida quando o CST é de "sem tributação").
         NFNotaInfoItemImpostoPIS pis = new NFNotaInfoItemImpostoPIS();
-        NFNotaInfoItemImpostoPISAliquota pisAliq = new NFNotaInfoItemImpostoPISAliquota();
-        pisAliq.setSituacaoTributaria(simples ? NFNotaInfoSituacaoTributariaPIS.CST_49
-                                              : NFNotaInfoSituacaoTributariaPIS.CST_01);
         BigDecimal basePis = scale2(it.quantidade().multiply(it.valorUnitario()));
-        BigDecimal aliqPis = it.aliquotaPis() == null ? BigDecimal.ZERO : it.aliquotaPis();
-        pisAliq.setValorBaseCalculo(basePis);
-        pisAliq.setPercentualAliquota(scale4(aliqPis));
-        pisAliq.setValorTributo(scale2(basePis.multiply(aliqPis).divide(new BigDecimal("100"), 2, RoundingMode.HALF_UP)));
-        pis.setAliquota(pisAliq);
+        if (simples) {
+            NFNotaInfoItemImpostoPISOutrasOperacoes pisOutras = new NFNotaInfoItemImpostoPISOutrasOperacoes();
+            pisOutras.setSituacaoTributaria(NFNotaInfoSituacaoTributariaPIS.CST_49);
+            pisOutras.setValorBaseCalculo(scale2(BigDecimal.ZERO));
+            pisOutras.setPercentualAliquota(scale4(BigDecimal.ZERO));
+            pisOutras.setValor(scale2(BigDecimal.ZERO));
+            pis.setOutrasOperacoes(pisOutras);
+        } else {
+            NFNotaInfoItemImpostoPISAliquota pisAliq = new NFNotaInfoItemImpostoPISAliquota();
+            pisAliq.setSituacaoTributaria(NFNotaInfoSituacaoTributariaPIS.CST_01);
+            BigDecimal aliqPis = it.aliquotaPis() == null ? BigDecimal.ZERO : it.aliquotaPis();
+            pisAliq.setValorBaseCalculo(basePis);
+            pisAliq.setPercentualAliquota(scale4(aliqPis));
+            pisAliq.setValorTributo(scale2(basePis.multiply(aliqPis).divide(new BigDecimal("100"), 2, RoundingMode.HALF_UP)));
+            pis.setAliquota(pisAliq);
+        }
         imp.setPis(pis);
 
-        // COFINS
+        // COFINS — mesma lógica do PIS pra CST 49.
         NFNotaInfoItemImpostoCOFINS cof = new NFNotaInfoItemImpostoCOFINS();
-        NFNotaInfoItemImpostoCOFINSAliquota cofAliq = new NFNotaInfoItemImpostoCOFINSAliquota();
-        cofAliq.setSituacaoTributaria(simples ? NFNotaInfoSituacaoTributariaCOFINS.CST_49
-                                              : NFNotaInfoSituacaoTributariaCOFINS.CST_01);
-        BigDecimal aliqCof = it.aliquotaCofins() == null ? BigDecimal.ZERO : it.aliquotaCofins();
-        cofAliq.setValorBaseCalculo(basePis);
-        cofAliq.setPercentualAliquota(scale4(aliqCof));
-        cofAliq.setValor(scale2(basePis.multiply(aliqCof).divide(new BigDecimal("100"), 2, RoundingMode.HALF_UP)));
-        cof.setAliquota(cofAliq);
+        if (simples) {
+            NFNotaInfoItemImpostoCOFINSOutrasOperacoes cofOutras = new NFNotaInfoItemImpostoCOFINSOutrasOperacoes();
+            cofOutras.setSituacaoTributaria(NFNotaInfoSituacaoTributariaCOFINS.CST_49);
+            cofOutras.setValorBaseCalculo(scale2(BigDecimal.ZERO));
+            cofOutras.setPercentualAliquota(scale4(BigDecimal.ZERO));
+            cofOutras.setValor(scale2(BigDecimal.ZERO));
+            cof.setOutrasOperacoes(cofOutras);
+        } else {
+            NFNotaInfoItemImpostoCOFINSAliquota cofAliq = new NFNotaInfoItemImpostoCOFINSAliquota();
+            cofAliq.setSituacaoTributaria(NFNotaInfoSituacaoTributariaCOFINS.CST_01);
+            BigDecimal aliqCof = it.aliquotaCofins() == null ? BigDecimal.ZERO : it.aliquotaCofins();
+            cofAliq.setValorBaseCalculo(basePis);
+            cofAliq.setPercentualAliquota(scale4(aliqCof));
+            cofAliq.setValor(scale2(basePis.multiply(aliqCof).divide(new BigDecimal("100"), 2, RoundingMode.HALF_UP)));
+            cof.setAliquota(cofAliq);
+        }
         imp.setCofins(cof);
 
         return imp;

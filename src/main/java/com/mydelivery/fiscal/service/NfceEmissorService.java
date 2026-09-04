@@ -345,6 +345,7 @@ public class NfceEmissorService {
      * com o try/catch abaixo — porque quem falha na hora do commit é a
      * transação, não o método.
      */
+    @org.springframework.scheduling.annotation.Async
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.REQUIRES_NEW)
     public void emitirParaPedidoSeguro(Long pedidoId, String usuarioEmail, String ipOrigem) {
         try {

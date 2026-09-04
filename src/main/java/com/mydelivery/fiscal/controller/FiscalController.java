@@ -426,6 +426,15 @@ public class FiscalController {
         return ResponseEntity.ok(Map.of("ok", true, "categoriasRepropagadas", cats));
     }
 
+    /** Diagnóstico do pedido — mostra CFOP/CSOSN gravados pra CADA item. */
+    @GetMapping("/pedido/{id}/diag-itens")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Map<String, Object>> diagPedidoItens(
+            @AuthenticationPrincipal String email, @PathVariable Long id) {
+        exigirAtivo(email);
+        return ResponseEntity.ok(emissor.diagnosticoItensPedido(id));
+    }
+
     /** Diagnóstico do PerfilFiscalProduto de um produto — mostra o CFOP/CSOSN gravados. */
     @GetMapping("/produto/{produtoId}/perfil-fiscal")
     @PreAuthorize("hasRole('RESTAURANTE')")

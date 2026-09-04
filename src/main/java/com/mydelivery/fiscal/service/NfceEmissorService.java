@@ -273,6 +273,35 @@ public class NfceEmissorService {
         return notaRepo.save(n);
     }
 
+    /** Diagnóstico: lista os itens do pedido com o CFOP/CSOSN gravados em cada. */
+    public Map<String, Object> diagnosticoItensPedido(Long pedidoId) {
+        Map<String, Object> out = new java.util.LinkedHashMap<>();
+        Pedido p = pedidoRepo.findById(pedidoId).orElse(null);
+        if (p == null) { out.put("erro", "pedido nao encontrado"); return out; }
+        out.put("pedidoId", pedidoId);
+        List<Map<String, Object>> its = new ArrayList<>();
+        for (PedidoItem pi : p.getItens()) {
+            Map<String, Object> item = new java.util.LinkedHashMap<>();
+            item.put("produtoId", pi.getProduto() == null ? null : pi.getProduto().getId());
+            item.put("nome", pi.getNomeProduto());
+            if (pi.getProduto() != null) {
+                var perfil = perfilProdRepo.findByProdutoId(pi.getProduto().getId()).orElse(null);
+                if (perfil == null) {
+                    item.put("perfilFiscal", "NAO CONFIGURADO");
+                } else {
+                    item.put("ncm", perfil.getNcm());
+                    item.put("cfop", perfil.getCfop());
+                    item.put("cst", perfil.getCst());
+                    item.put("csosn", perfil.getCsosn());
+                    item.put("origem", perfil.getOrigem());
+                }
+            }
+            its.add(item);
+        }
+        out.put("itens", its);
+        return out;
+    }
+
     /**
      * Auto-emissão SEGURA — usada pelo PedidoService quando pedido vira ENTREGUE.
      * NUNCA lança exceção pro chamador (o pedido não pode falhar por causa da
@@ -379,6 +408,9 @@ public class NfceEmissorService {
             seq++;
             if (pi.getProduto() == null) continue;
             PerfilFiscalProduto pf = perfilProdRepo.findByProdutoId(pi.getProduto().getId()).orElseThrow();
+            log.info("[Fiscal][Debug] Pedido {} item {} produto='{}' → ncm={} cfop={} cst={} csosn={} origem={}",
+                    p.getId(), seq, pi.getNomeProduto(),
+                    pf.getNcm(), pf.getCfop(), pf.getCst(), pf.getCsosn(), pf.getOrigem());
             itens.add(new NfeGateway.ItemNota(
                     seq,
                     String.valueOf(pi.getProduto().getId()),

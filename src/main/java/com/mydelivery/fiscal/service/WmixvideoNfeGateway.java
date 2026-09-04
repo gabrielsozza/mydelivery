@@ -439,8 +439,8 @@ public class WmixvideoNfeGateway implements NfeGateway {
             NFNotaInfoItemImpostoCOFINSOutrasOperacoes cofOutras = new NFNotaInfoItemImpostoCOFINSOutrasOperacoes();
             cofOutras.setSituacaoTributaria(NFNotaInfoSituacaoTributariaCOFINS.CST_49);
             cofOutras.setValorBaseCalculo(scale2(BigDecimal.ZERO));
-            cofOutras.setPercentualAliquota(scale4(BigDecimal.ZERO));
-            cofOutras.setValorTributo(scale2(BigDecimal.ZERO));
+            cofOutras.setPercentualCOFINS(scale4(BigDecimal.ZERO));
+            cofOutras.setValorCOFINS(scale2(BigDecimal.ZERO));
             cof.setOutrasOperacoes(cofOutras);
         } else {
             NFNotaInfoItemImpostoCOFINSAliquota cofAliq = new NFNotaInfoItemImpostoCOFINSAliquota();

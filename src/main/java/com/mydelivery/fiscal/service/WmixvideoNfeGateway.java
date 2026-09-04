@@ -420,7 +420,7 @@ public class WmixvideoNfeGateway implements NfeGateway {
             pisOutras.setSituacaoTributaria(NFNotaInfoSituacaoTributariaPIS.CST_49);
             pisOutras.setValorBaseCalculo(scale2(BigDecimal.ZERO));
             pisOutras.setPercentualAliquota(scale4(BigDecimal.ZERO));
-            pisOutras.setValor(scale2(BigDecimal.ZERO));
+            pisOutras.setValorTributo(scale2(BigDecimal.ZERO));
             pis.setOutrasOperacoes(pisOutras);
         } else {
             NFNotaInfoItemImpostoPISAliquota pisAliq = new NFNotaInfoItemImpostoPISAliquota();
@@ -440,7 +440,7 @@ public class WmixvideoNfeGateway implements NfeGateway {
             cofOutras.setSituacaoTributaria(NFNotaInfoSituacaoTributariaCOFINS.CST_49);
             cofOutras.setValorBaseCalculo(scale2(BigDecimal.ZERO));
             cofOutras.setPercentualAliquota(scale4(BigDecimal.ZERO));
-            cofOutras.setValor(scale2(BigDecimal.ZERO));
+            cofOutras.setValorTributo(scale2(BigDecimal.ZERO));
             cof.setOutrasOperacoes(cofOutras);
         } else {
             NFNotaInfoItemImpostoCOFINSAliquota cofAliq = new NFNotaInfoItemImpostoCOFINSAliquota();

@@ -230,9 +230,12 @@ public class NfceEmissorService {
             log.info("[Fiscal][Cancel] Nota {} já estava cancelada", notaId);
             return n;
         }
-        if (n.getStatus() != NotaFiscalEmitida.Status.AUTORIZADA) {
+        // Aceita cancelar AUTORIZADA e CONTINGENCIA_EPEC — a nota EPEC já tem
+        // chave/protocolo válidos e pode ser cancelada na SEFAZ do mesmo jeito.
+        if (n.getStatus() != NotaFiscalEmitida.Status.AUTORIZADA
+                && n.getStatus() != NotaFiscalEmitida.Status.CONTINGENCIA_EPEC) {
             throw new IllegalStateException(
-                    "Só notas AUTORIZADAS podem ser canceladas (estado atual: " + n.getStatus() + ")");
+                    "Só notas AUTORIZADAS ou em CONTINGÊNCIA podem ser canceladas (estado atual: " + n.getStatus() + ")");
         }
         if (n.getEmitidaEm() != null
                 && n.getEmitidaEm().isBefore(LocalDateTime.now().minusMinutes(30))) {

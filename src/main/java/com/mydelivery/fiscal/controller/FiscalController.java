@@ -409,6 +409,55 @@ public class FiscalController {
     }
 
     /**
+     * Diagnóstico do QR: retorna todos os campos usados no cálculo do hash
+     * SHA-1 pra dono conferir com o portal SEFAZ. Ajuda a identificar quando
+     * o CSC ou o cscId no perfil está diferente do cadastrado na SEFAZ.
+     */
+    @GetMapping("/notas/{id}/qr-debug")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
+    public ResponseEntity<Map<String, Object>> qrDebug(@AuthenticationPrincipal String email, @PathVariable Long id) {
+        Restaurante r = exigirAtivo(email);
+        var nota = notaRepo.findById(id).orElse(null);
+        if (nota == null || nota.getRestaurante() == null
+                || !nota.getRestaurante().getId().equals(r.getId())
+                || nota.getChaveAcesso() == null) {
+            return ResponseEntity.notFound().build();
+        }
+        var perfil = perfilRepo.findByRestauranteId(r.getId()).orElse(null);
+        if (perfil == null) return ResponseEntity.notFound().build();
+        String csc = perfilFiscalService.abrirCscParaUso(r.getId());
+        int cscLen = csc == null ? 0 : csc.length();
+        String cscMascara = cscLen == 0 ? "" :
+                csc.substring(0, Math.min(4, cscLen)) + "…" + csc.substring(Math.max(0, cscLen - 4));
+        // Recalcula o hash aqui — se der diferente do qrCodeUrl salvo, o CSC
+        // no perfil foi ATUALIZADO depois da emissão da nota (fica desalinhado).
+        String chave = nota.getChaveAcesso();
+        Integer tpAmb = nota.getAmbiente();
+        String cscId = perfil.getCscId() == null ? "1" : perfil.getCscId().trim();
+        String dadosHash = chave + "|2|" + tpAmb + "|" + cscId + "|" + csc;
+        String hashRecalculado = "";
+        try {
+            var md = java.security.MessageDigest.getInstance("SHA-1");
+            byte[] dig = md.digest(dadosHash.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            for (byte b : dig) sb.append(String.format("%02X", b));
+            hashRecalculado = sb.toString();
+        } catch (Exception ignored) {}
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("chaveAcesso", chave);
+        out.put("versaoQR", 2);
+        out.put("ambiente", tpAmb);
+        out.put("cscId", cscId);
+        out.put("cscValorLength", cscLen);
+        out.put("cscValorMascara", cscMascara);
+        out.put("dadosParaHash", chave + "|2|" + tpAmb + "|" + cscId + "|<CSC-oculto>");
+        out.put("hashRecalculado", hashRecalculado);
+        out.put("qrUrlSalvoNoBanco", nota.getQrcodeUrlConsulta());
+        return ResponseEntity.ok(out);
+    }
+
+    /**
      * Dados fiscais de UM pedido — usado pelo cupom da impressora térmica
      * pra montar o bloco DANFE-NFC-e (chave, QR, protocolo, número/série).
      * Devolve {@code {temNota: false}} se pedido não tem NFC-e autorizada.

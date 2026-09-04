@@ -308,6 +308,8 @@ public class WmixvideoNfeGateway implements NfeGateway {
         ide.setFinalidade(NFFinalidade.NORMAL);
         // procEmi obrigatório — nosso caso é "aplicativo do contribuinte" (0).
         ide.setProgramaEmissor(com.fincatto.documentofiscal.nfe400.classes.NFProcessoEmissor.CONTRIBUINTE);
+        // verProc obrigatório — versão do software emissor (max 20 chars).
+        ide.setVersaoEmissor("MyDelivery 1.0");
         ide.setOperacaoConsumidorFinal(NFOperacaoConsumidorFinal.SIM);
         ide.setIndicadorPresencaComprador(NFIndicadorPresencaComprador.OPERACAO_PRESENCIAL);
         return ide;

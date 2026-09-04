@@ -415,8 +415,8 @@ public class FiscalController {
      */
     @PostMapping("/notas/rejeitadas/limpar")
     @PreAuthorize("hasRole('RESTAURANTE')")
-    @PermissaoRequerida(Permissao.VER_FISCAL)
     public ResponseEntity<Map<String, Object>> deletarRejeitadas(@AuthenticationPrincipal String email) {
+        log.info("[Fiscal][LimparRejeitadas] chamado por {}", email);
         Restaurante r = exigirAtivo(email);
         var todas = notaRepo.findByRestauranteIdOrderByCriadoEmDesc(r.getId());
         int removidas = 0;
@@ -426,6 +426,7 @@ public class FiscalController {
                 removidas++;
             }
         }
+        log.info("[Fiscal][LimparRejeitadas] removidas={}", removidas);
         return ResponseEntity.ok(Map.of("ok", true, "removidas", removidas));
     }
 

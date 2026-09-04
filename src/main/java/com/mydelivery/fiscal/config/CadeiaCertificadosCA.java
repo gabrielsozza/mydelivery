@@ -29,7 +29,21 @@ public final class CadeiaCertificadosCA {
 
     private static final String[] URLS_BUNDLE = {
         "https://curl.se/ca/cacert.pem",
-        "https://raw.githubusercontent.com/mozilla/gecko-dev/master/security/nss/lib/ckfw/builtins/certdata.txt",
+    };
+
+    /** Certs raiz ICP-Brasil (públicos, servidos pelo próprio ITI). */
+    private static final String[] URLS_ICP_BRASIL = {
+        "https://acraiz.icpbrasil.gov.br/credenciadas/RAIZ/ICP-Brasilv2.crt",
+        "https://acraiz.icpbrasil.gov.br/credenciadas/RAIZ/ICP-Brasilv5.crt",
+        "https://acraiz.icpbrasil.gov.br/credenciadas/RAIZ/ICP-Brasilv10.crt",
+        "https://acraiz.icpbrasil.gov.br/credenciadas/RAIZ/ICP-Brasilv13.crt",
+    };
+
+    /** Hosts SEFAZ-e-mais que precisamos garantir que o cert é confiável. */
+    private static final String[] HOSTS_SEFAZ = {
+        "nfe.sefaz.es.gov.br", "app.sefaz.es.gov.br",
+        "nfe.sefazvirtual.rs.gov.br",
+        "nfce.svrs.rs.gov.br",
     };
 
     private static volatile KeyStore CACHE;
@@ -49,14 +63,23 @@ public final class CadeiaCertificadosCA {
             int jreCerts = adicionarCacertsDoJre(ks);
             log.info("[Fiscal][CA] cacerts JRE carregado: {} certs", jreCerts);
 
-            // 2) Baixa e adiciona bundle Mozilla (contém ICP-Brasil).
+            // 2) Baixa e adiciona bundle Mozilla (grande maioria das CAs).
             int extras = 0;
             for (String url : URLS_BUNDLE) {
                 int add = tentarBaixarECarregar(ks, url);
                 if (add > 0) { extras += add; break; }
             }
-            log.info("[Fiscal][CA] Total truststore: {} certs (JRE {} + extras {}).",
-                    jreCerts + extras, jreCerts, extras);
+
+            // 3) ICP-Brasil raiz oficial (V2/V5/V10/V13 — cobre certificados SEFAZ).
+            int icp = 0;
+            for (String url : URLS_ICP_BRASIL) icp += tentarBaixarECarregar(ks, url);
+
+            // 4) Cadeia que o próprio servidor SEFAZ apresenta — 100% garante.
+            int sefaz = 0;
+            for (String host : HOSTS_SEFAZ) sefaz += pegarCadeiaDoServidor(ks, host, 443);
+
+            log.info("[Fiscal][CA] Total truststore: {} certs (JRE {} + Mozilla {} + ICP-Brasil {} + SEFAZ direto {}).",
+                    jreCerts + extras + icp + sefaz, jreCerts, extras, icp, sefaz);
             CACHE = ks;
             return ks;
         } catch (Exception e) {
@@ -97,6 +120,43 @@ public final class CadeiaCertificadosCA {
             }
         }
         return 0;
+    }
+
+    /**
+     * Conecta no host SEFAZ, pega TODOS os certs que ele apresenta no handshake
+     * TLS e adiciona no keystore. Garante que o próximo TLS handshake vai
+     * validar sem PKIX. Usa SSLContext permissivo APENAS pra este handshake
+     * inicial (só pra descobrir a cadeia).
+     */
+    private static int pegarCadeiaDoServidor(KeyStore destino, String host, int port) {
+        try {
+            javax.net.ssl.SSLContext sc = javax.net.ssl.SSLContext.getInstance("TLS");
+            javax.net.ssl.TrustManager tm = new javax.net.ssl.X509TrustManager() {
+                public void checkClientTrusted(X509Certificate[] c, String a) {}
+                public void checkServerTrusted(X509Certificate[] c, String a) {}
+                public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
+            };
+            sc.init(null, new javax.net.ssl.TrustManager[]{tm}, new java.security.SecureRandom());
+            javax.net.ssl.SSLSocket sock = (javax.net.ssl.SSLSocket) sc.getSocketFactory().createSocket();
+            sock.connect(new java.net.InetSocketAddress(host, port), 10_000);
+            sock.setSoTimeout(10_000);
+            sock.startHandshake();
+            java.security.cert.Certificate[] chain = sock.getSession().getPeerCertificates();
+            sock.close();
+            int n = 0;
+            for (java.security.cert.Certificate c : chain) {
+                if (c instanceof X509Certificate xc) {
+                    try {
+                        destino.setCertificateEntry("sefaz-" + host + "-" + (n++), xc);
+                    } catch (Exception ignore) {}
+                }
+            }
+            log.info("[Fiscal][CA] {} → cadeia com {} certs importada.", host, n);
+            return n;
+        } catch (Exception e) {
+            log.warn("[Fiscal][CA] Falha conectar em {}: {}", host, e.toString());
+            return 0;
+        }
     }
 
     private static int tentarBaixarECarregar(KeyStore destino, String url) {

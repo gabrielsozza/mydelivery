@@ -630,9 +630,10 @@ public class WmixvideoNfeGateway implements NfeGateway {
         // Formato final da URL: baseUrl?p=chave|versao|tpAmb|cIdToken|hash
         String versao = "2";
         int tpAmb = req.ambiente();
-        // NT 2015/002: hash é SHA-1 da CONCATENAÇÃO DIRETA (sem pipes) dos campos.
-        // Só o parâmetro 'p' final é separado por pipes.
-        String dadosHash = chave44 + versao + tpAmb + cscId + csc;
+        // NT 2015/002 v2 (formato oficial usado pela lib fincatto): campos
+        // separados por pipe, mas o CSC concatenado DIRETO ao cscId (sem pipe).
+        // sha1(chave|versao|tpAmb|cscId + csc)
+        String dadosHash = chave44 + "|" + versao + "|" + tpAmb + "|" + cscId + csc;
         String hash;
         try {
             java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-1");

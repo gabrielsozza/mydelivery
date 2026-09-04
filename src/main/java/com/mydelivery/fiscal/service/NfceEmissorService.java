@@ -88,12 +88,16 @@ public class NfceEmissorService {
         Restaurante r = pedido.getRestaurante();
         if (r == null) throw new IllegalStateException("Pedido sem restaurante");
 
-        // Idempotência: se pedido já tem nota AUTORIZADA, devolve.
+        // Idempotência: se pedido já tem nota AUTORIZADA ou em CONTINGENCIA_EPEC,
+        // devolve a existente. Evita duplicatas quando o dono clica 2x em Emitir
+        // ou o auto-emit dispara concorrente. Contingência conta porque a nota
+        // já foi criada (com chave e QR válidos), só falta retransmissão.
         var existentes = notaRepo.findByPedidoId(pedidoId);
         for (var n : existentes) {
-            if (n.getStatus() == NotaFiscalEmitida.Status.AUTORIZADA) {
-                log.info("[Fiscal][Emissor] Pedido {} já tinha nota autorizada {}, devolvendo",
-                        pedidoId, n.getChaveAcesso());
+            if (n.getStatus() == NotaFiscalEmitida.Status.AUTORIZADA
+                    || n.getStatus() == NotaFiscalEmitida.Status.CONTINGENCIA_EPEC) {
+                log.info("[Fiscal][Emissor] Pedido {} já tinha nota status={} chave={}, devolvendo",
+                        pedidoId, n.getStatus(), n.getChaveAcesso());
                 return n;
             }
         }

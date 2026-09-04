@@ -396,11 +396,40 @@ public class WmixvideoNfeGateway implements NfeGateway {
 
         NFNotaInfoItemImpostoICMS icms = new NFNotaInfoItemImpostoICMS();
         if (simples) {
-            // Padrão MyDelivery: CSOSN 102 (Tributada sem permissão de crédito).
-            NFNotaInfoItemImpostoICMSSN102 sn = new NFNotaInfoItemImpostoICMSSN102();
-            sn.setOrigem(origem);
-            sn.setSituacaoOperacaoSN(NFNotaSituacaoOperacionalSimplesNacional.CSOSN_102);
-            icms.setIcmssn102(sn);
+            // Escolhe a classe ICMS-SN CERTA pelo CSOSN do produto. Antes
+            // sempre mandava CSOSN 102 hardcoded — ignorava o cadastro do
+            // dono e a SEFAZ rejeitava com cStat 386 (CFOP 5405 + CSOSN 102
+            // é incompatível — 5405 exige CSOSN 500).
+            String csosnCfg = it.csosn() == null ? "102" : it.csosn().trim();
+            if ("500".equals(csosnCfg)) {
+                // CSOSN 500 — ICMS cobrado anteriormente por Substituição Tributária.
+                // Usado em bebidas (cerveja, refri) que o distribuidor já pagou.
+                var sn500 = new com.fincatto.documentofiscal.nfe400.classes.nota.NFNotaInfoItemImpostoICMSSN500();
+                sn500.setOrigem(origem);
+                sn500.setSituacaoOperacaoSN(NFNotaSituacaoOperacionalSimplesNacional.CSOSN_500);
+                icms.setIcmssn500(sn500);
+            } else if ("103".equals(csosnCfg)) {
+                var sn = new NFNotaInfoItemImpostoICMSSN102();
+                sn.setOrigem(origem);
+                sn.setSituacaoOperacaoSN(NFNotaSituacaoOperacionalSimplesNacional.CSOSN_103);
+                icms.setIcmssn102(sn);
+            } else if ("300".equals(csosnCfg)) {
+                var sn = new NFNotaInfoItemImpostoICMSSN102();
+                sn.setOrigem(origem);
+                sn.setSituacaoOperacaoSN(NFNotaSituacaoOperacionalSimplesNacional.CSOSN_300);
+                icms.setIcmssn102(sn);
+            } else if ("400".equals(csosnCfg)) {
+                var sn = new NFNotaInfoItemImpostoICMSSN102();
+                sn.setOrigem(origem);
+                sn.setSituacaoOperacaoSN(NFNotaSituacaoOperacionalSimplesNacional.CSOSN_400);
+                icms.setIcmssn102(sn);
+            } else {
+                // Default 102 — Tributada sem permissão de crédito (Simples Nacional).
+                NFNotaInfoItemImpostoICMSSN102 sn = new NFNotaInfoItemImpostoICMSSN102();
+                sn.setOrigem(origem);
+                sn.setSituacaoOperacaoSN(NFNotaSituacaoOperacionalSimplesNacional.CSOSN_102);
+                icms.setIcmssn102(sn);
+            }
         } else {
             // Regime normal: CST 00 (Tributada integralmente).
             NFNotaInfoItemImpostoICMS00 icms00 = new NFNotaInfoItemImpostoICMS00();

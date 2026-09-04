@@ -164,14 +164,22 @@ public class NfceEmissorService {
         // Como a chave nova depende do numero+cNF (aleatório), pular pro
         // próximo número e re-tentar até 5x resolve automaticamente.
         int retryDup = 0;
+        long numeroAtual = numero;
         while (!res.aprovada() && "539".equals(res.cStat()) && retryDup < 5) {
             retryDup++;
-            Long novoNumero = reservarProximoNumero(perfil.getCnpj(), serie, ambiente);
-            log.warn("[Fiscal][Emissor] cStat=539 chave duplicada — retry {} com novo numero={}", retryDup, novoNumero);
-            nota.setNumero(novoNumero);
+            // Salta em blocos de 100 pra escapar de faixas inteiras já usadas
+            // no ambiente SEFAZ (tentativas antigas com timeout etc).
+            numeroAtual += 100;
+            // Atualiza o contador no banco pro pulo persistir.
+            try {
+                var c = contadorRepo.findForUpdate(perfil.getCnpj(), serie, ambiente).orElse(null);
+                if (c != null) { c.setProximoNumero(numeroAtual + 1); contadorRepo.save(c); }
+            } catch (Exception ignore) {}
+            log.warn("[Fiscal][Emissor] cStat=539 chave duplicada — retry {} com novo numero={} (+100)", retryDup, numeroAtual);
+            nota.setNumero(numeroAtual);
             NfeGateway.RequisicaoEmissao reqRetry;
             try {
-                reqRetry = montarRequisicao(pedido, perfil, ambiente, serie, novoNumero, LocalDateTime.now(), pfx.pfx(), pfx.senha(), csc);
+                reqRetry = montarRequisicao(pedido, perfil, ambiente, serie, numeroAtual, LocalDateTime.now(), pfx.pfx(), pfx.senha(), csc);
                 res = gateway.emitir(reqRetry);
             } catch (Exception e) {
                 log.error("[Fiscal][Emissor] erro no retry {}: {}", retryDup, e.getMessage());

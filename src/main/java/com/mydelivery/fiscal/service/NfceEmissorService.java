@@ -283,7 +283,15 @@ public class NfceEmissorService {
      * Auto-emissão SEGURA — usada pelo PedidoService quando pedido vira ENTREGUE.
      * NUNCA lança exceção pro chamador (o pedido não pode falhar por causa da
      * nota). Se falhar, só loga + auditoria e a nota fica REJEITADA pra retry.
+     *
+     * <p>REQUIRES_NEW: usa transação SEPARADA da que marcou o pedido como
+     * ENTREGUE. Sem isso, um erro aqui (ex.: UniqueConstraint na chave de
+     * acesso, DataIntegrityViolation) marca a transação externa como
+     * rollback-only e o painel devolve "Conflito de dados" ao dono, mesmo
+     * com o try/catch abaixo — porque quem falha na hora do commit é a
+     * transação, não o método.
      */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.REQUIRES_NEW)
     public void emitirParaPedidoSeguro(Long pedidoId, String usuarioEmail, String ipOrigem) {
         try {
             // Só tenta se restaurante tem emissão ativa (senão nem chama o motor)
@@ -399,12 +407,26 @@ public class NfceEmissorService {
      * Nunca lança — se WhatsApp não estiver conectado / cliente sem telefone /
      * qualquer erro de rede, ignora silencioso.
      */
+    /**
+     * Dedupe in-memory dos envios de NFC-e por WhatsApp. Evita que o dono
+     * clicando 2x em "Entregue" (ou race condition de auto-emit concorrente)
+     * dispare 2 mensagens iguais pro cliente. Set-based, com TTL implícito
+     * pelo restart do processo — cobre 100% do caso comum de doubleclick.
+     */
+    private final java.util.Set<Long> _pedidosComWaEnviado =
+            java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<>());
+
     private void enviarWhatsAppCliente(Pedido pedido, String chave, String qrUrl) {
         try {
             if (whatsappService == null || whatsappInstanceRepo == null) return;
             if (pedido.getCliente() == null || pedido.getCliente().getTelefone() == null) return;
             String tel = pedido.getCliente().getTelefone().replaceAll("\\D", "");
             if (tel.length() < 10) return;
+            // Dedupe por pedido — só envia 1x mesmo em clique duplo / race.
+            if (!_pedidosComWaEnviado.add(pedido.getId())) {
+                log.info("[Fiscal][WA] Pedido {} já teve NFC-e enviada, pulando duplicata", pedido.getId());
+                return;
+            }
             var instOpt = whatsappInstanceRepo.findByRestauranteId(pedido.getRestaurante().getId());
             if (instOpt.isEmpty()) return;
             String pedNum = String.valueOf(pedido.getId());

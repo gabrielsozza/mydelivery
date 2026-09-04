@@ -52,12 +52,16 @@ public class PerfilFiscalService {
                         "Cadastre o perfil fiscal antes de gravar o CSC."));
         if (cscId == null || cscId.isBlank())
             throw new IllegalArgumentException("cscId obrigatório (ex: 000001)");
-        if (cscValor == null || cscValor.length() < 20)
+        // Trim defensivo: dono copia o token do portal SEFAZ com espaço/newline
+        // no fim, o hash SHA-1 fica diferente do que a SEFAZ calcula, QR sai
+        // como "QR Code Inválido" na consulta. Este trim é obrigatório.
+        String cscValorClean = cscValor == null ? null : cscValor.trim();
+        if (cscValorClean == null || cscValorClean.length() < 20)
             throw new IllegalArgumentException("csc valor inválido (mínimo 20 chars)");
         if (p.getCnpj() == null || p.getCnpj().isBlank())
             throw new IllegalStateException("CNPJ do perfil vazio — preencha primeiro.");
 
-        CofreCertificadoService.Cifrado cif = cofre.criptografar(cscValor, p.getCnpj());
+        CofreCertificadoService.Cifrado cif = cofre.criptografar(cscValorClean, p.getCnpj());
         p.setCscId(cscId.trim());
         p.setCscCiphertext(cif.ciphertext());
         p.setCscIv(cif.iv());
@@ -75,8 +79,11 @@ public class PerfilFiscalService {
                 .orElseThrow(() -> new IllegalStateException("Perfil fiscal ausente"));
         if (p.getCscCiphertext() == null)
             throw new IllegalStateException("CSC não configurado");
-        return cofre.descriptografarString(
+        String csc = cofre.descriptografarString(
                 p.getCscCiphertext(), p.getCscIv(), p.getCscTag(), p.getCnpj());
+        // Trim defensivo tb no read — pra CSCs que já foram gravados antes
+        // do fix acima (v/ trim no salvarCsc). Zero custo, evita "QR inválido".
+        return csc == null ? null : csc.trim();
     }
 
     // ═════ Config fiscal por PRODUTO ═════

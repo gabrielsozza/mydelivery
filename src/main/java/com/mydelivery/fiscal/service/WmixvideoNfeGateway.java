@@ -518,11 +518,10 @@ public class WmixvideoNfeGateway implements NfeGateway {
     private String montarQrCodeUrl(RequisicaoEmissao req, String chave44) {
         DFUnidadeFederativa uf = parseUf(req.uf());
         String urlBase = req.ambiente() == 1 ? uf.getQrCodeProducao() : uf.getQrCodeHomologacao();
-        int cscId = safeInt(req.cscId(), 1);
-        // CSC ID = 0 é inválido pra SEFAZ (o "Token ID" oficial é 1..999). Se o
-        // dono deixou o campo vazio ou preencheu 0, forçamos 1 pra não gerar QR
-        // que a SEFAZ vai rejeitar como "QR Code Inválido".
-        if (cscId < 1) cscId = 1;
+        // ATENÇÃO: alguns estados (ex.: Espírito Santo) usam CSC ID = 0 no
+        // credenciamento oficial. NÃO forçar mínimo 1 — respeita exatamente
+        // o que a SEFAZ da UF do contribuinte pediu.
+        int cscId = safeInt(req.cscId(), 0);
         String csc = req.cscValor() == null ? "" : req.cscValor();
         // NFC-e homologação/emissão normal: hash é SHA-1 da concat "chave|versao|tpAmb|cIdToken|CSC"
         // Formato final da URL: baseUrl?p=chave|versao|tpAmb|cIdToken|hash

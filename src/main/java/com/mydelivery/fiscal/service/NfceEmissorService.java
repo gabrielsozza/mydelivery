@@ -274,6 +274,7 @@ public class NfceEmissorService {
     }
 
     /** Diagnóstico: lista os itens do pedido com o CFOP/CSOSN gravados em cada. */
+    @Transactional(readOnly = true)
     public Map<String, Object> diagnosticoItensPedido(Long pedidoId) {
         Map<String, Object> out = new java.util.LinkedHashMap<>();
         Pedido p = pedidoRepo.findById(pedidoId).orElse(null);

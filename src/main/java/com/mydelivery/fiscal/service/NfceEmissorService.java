@@ -645,6 +645,9 @@ public class NfceEmissorService {
         var todas = notaRepo.findByRestauranteIdOrderByCriadoEmDesc(restauranteId);
         var noPeriodo = new ArrayList<NotaFiscalEmitida>();
         for (var n : todas) {
+            // Ambiente 2 = homologação (teste). Não deve entrar no relatório
+            // que vai pro contador — só notas de produção contam pra fisco.
+            if (n.getAmbiente() != null && n.getAmbiente() == 2) continue;
             var ref = n.getEmitidaEm() != null ? n.getEmitidaEm() : n.getCriadoEm();
             if (ref != null && !ref.isBefore(di) && !ref.isAfter(df)) {
                 noPeriodo.add(n);

@@ -167,7 +167,7 @@ public class NfceEmissorService {
         long numeroAtual = numero;
         // Avança 1 por vez, até 20x — mantém a numeração fiscal contígua
         // (contadora não estranha) e cobre até 20 chaves duplicadas em fila.
-        while (!res.aprovada() && "539".equals(res.cStat()) && retryDup < 20) {
+        while (!res.aprovada() && "539".equals(res.cStat()) && retryDup < 3) {
             retryDup++;
             numeroAtual++;
             try {

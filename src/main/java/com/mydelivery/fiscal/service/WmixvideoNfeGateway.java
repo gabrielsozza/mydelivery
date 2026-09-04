@@ -645,10 +645,11 @@ public class WmixvideoNfeGateway implements NfeGateway {
             ksPfx.load(new ByteArrayInputStream(pfx), (senhaPfx == null ? "" : senhaPfx).toCharArray());
         }
         final KeyStore ksFinal = ksPfx;
-        // ES usa CSC ID = 0 oficialmente. Passa o VALOR REAL pra config
-        // (nossa versão da lib aceita 0). Se rejeitar futuramente, cair pro
-        // fallback 1 comentado abaixo.
-        final Integer cscIdInt = safeInt(cscId, 0);
+        // Lib fincatto rejeita cscId=0 ("IdCSC nao informado"). Passamos 1
+        // pra ela (só serve pra assinar XML, o QR do cupom impresso é o
+        // MEU montarQrCodeUrl que usa o cscId real=0 do dono).
+        int cscIdRaw = safeInt(cscId, 1);
+        final Integer cscIdInt = cscIdRaw < 1 ? 1 : cscIdRaw;
 
         return new NFeConfig() {
             @Override public DFAmbiente getAmbiente() { return amb; }

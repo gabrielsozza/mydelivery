@@ -117,6 +117,11 @@ public class WmixvideoNfeGateway implements NfeGateway {
             lote.setVersao("4.00");
             lote.setNotas(List.of(nota));
 
+            try {
+                log.info("[Fiscal][Debug] Chave que a lib vai enviar (getIdentificador): {}",
+                        nota.getInfo().getIdentificador());
+            } catch (Exception ignored) {}
+
             WSFacade ws = new WSFacade(cfg);
             NFLoteEnvioRetornoDados dados = ws.enviaLote(lote);
             NFLoteEnvioRetorno ret = dados.getRetorno();

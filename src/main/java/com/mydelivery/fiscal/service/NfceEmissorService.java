@@ -158,6 +158,27 @@ public class NfceEmissorService {
                     null, null, null, null);
         }
 
+        // ── 6a. RETRY AUTOMÁTICO PRA CHAVE DUPLICADA (cStat 539) ──
+        // A chave duplicada aparece quando o número/cNF colidiu com uma
+        // emissão anterior no ambiente SEFAZ (ex: retry após timeout).
+        // Como a chave nova depende do numero+cNF (aleatório), pular pro
+        // próximo número e re-tentar até 5x resolve automaticamente.
+        int retryDup = 0;
+        while (!res.aprovada() && "539".equals(res.cStat()) && retryDup < 5) {
+            retryDup++;
+            Long novoNumero = reservarProximoNumero(perfil.getCnpj(), serie, ambiente);
+            log.warn("[Fiscal][Emissor] cStat=539 chave duplicada — retry {} com novo numero={}", retryDup, novoNumero);
+            nota.setNumero(novoNumero);
+            NfeGateway.RequisicaoEmissao reqRetry;
+            try {
+                reqRetry = montarRequisicao(pedido, perfil, ambiente, serie, novoNumero, LocalDateTime.now(), pfx.pfx(), pfx.senha(), csc);
+                res = gateway.emitir(reqRetry);
+            } catch (Exception e) {
+                log.error("[Fiscal][Emissor] erro no retry {}: {}", retryDup, e.getMessage());
+                break;
+            }
+        }
+
         // ── 6b. CONTINGÊNCIA DESABILITADA ──
         // O gateway atual gera XML "mínimo" na contingência (sem itens), então
         // a retransmissão sempre falha ("Identificador deve possuir 44 chars",

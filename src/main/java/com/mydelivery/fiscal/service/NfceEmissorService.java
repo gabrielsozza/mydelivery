@@ -670,6 +670,56 @@ public class NfceEmissorService {
 
     private static String nvl(String a, String b) { return (a == null || a.isBlank()) ? b : a; }
 
+    /** Formata valor decimal pt-BR (troca . por ,). Retorna "0,00" pra vazio/nulo. */
+    private static String brVal(String v) {
+        if (v == null || v.isBlank()) return "0,00";
+        try { return new BigDecimal(v).setScale(2, java.math.RoundingMode.HALF_UP)
+                .toPlainString().replace('.', ','); }
+        catch (Exception e) { return v.replace('.', ','); }
+    }
+
+    /**
+     * Extrai a lista de itens fiscais de um XML de NFC-e autorizado.
+     * Retorna cada item como um Map com: cProd, xProd, NCM, CFOP, uCom, qCom,
+     * vUnCom, vProd, CST_ICMS (CST ou CSOSN), CST_PIS, CST_COFINS.
+     * Fallback silencioso — retorna lista vazia se XML mal-formado.
+     */
+    private List<Map<String, String>> extrairItensDoXml(String xml) {
+        List<Map<String, String>> out = new ArrayList<>();
+        try {
+            var f = javax.xml.parsers.DocumentBuilderFactory.newInstance();
+            f.setNamespaceAware(false);
+            var doc = f.newDocumentBuilder().parse(new java.io.ByteArrayInputStream(
+                    xml.getBytes(StandardCharsets.UTF_8)));
+            var xp = javax.xml.xpath.XPathFactory.newInstance().newXPath();
+            var nodes = (org.w3c.dom.NodeList) xp.evaluate("//det", doc,
+                    javax.xml.xpath.XPathConstants.NODESET);
+            for (int i = 0; i < nodes.getLength(); i++) {
+                var node = nodes.item(i);
+                Map<String, String> m = new LinkedHashMap<>();
+                m.put("cProd",    xp.evaluate("prod/cProd", node));
+                m.put("xProd",    xp.evaluate("prod/xProd", node));
+                m.put("NCM",      xp.evaluate("prod/NCM", node));
+                m.put("CFOP",     xp.evaluate("prod/CFOP", node));
+                m.put("uCom",     xp.evaluate("prod/uCom", node));
+                m.put("qCom",     xp.evaluate("prod/qCom", node));
+                m.put("vUnCom",   xp.evaluate("prod/vUnCom", node));
+                m.put("vProd",    xp.evaluate("prod/vProd", node));
+                // ICMS: pega CSOSN (Simples) ou CST (regime normal), qualquer
+                // que exista dentro de imposto/ICMS/*
+                String csosn = xp.evaluate("imposto/ICMS/*/CSOSN", node);
+                String cst   = xp.evaluate("imposto/ICMS/*/CST", node);
+                m.put("CST_ICMS", (csosn != null && !csosn.isBlank()) ? csosn : cst);
+                m.put("CST_PIS",    xp.evaluate("imposto/PIS/*/CST", node));
+                m.put("CST_COFINS", xp.evaluate("imposto/COFINS/*/CST", node));
+                out.add(m);
+            }
+        } catch (Exception e) {
+            log.warn("[Fiscal][Rel] extrair itens XML falhou: {}", e.getMessage());
+        }
+        return out;
+    }
+
     /** Pra a UI/admin: lista notas do restaurante em ordem cronológica desc. */
     public List<Map<String, Object>> listarNotas(Long restauranteId) {
         var lista = notaRepo.findByRestauranteIdOrderByCriadoEmDesc(restauranteId);
@@ -774,6 +824,69 @@ public class NfceEmissorService {
                 }
             }
 
+            // ══ ITENS DETALHADOS (linha por item) + RESUMO POR CFOP/CST ══
+            // Formato que a contadora ama: lista cada produto vendido com NCM,
+            // CFOP, CSOSN, CST_PIS, CST_COFINS, quantidade, valor. E abaixo
+            // agrupa por (CFOP+CSOSN) com totais. Padrão dos softwares fiscais
+            // pagos (SPED-Fiscal ready).
+            StringBuilder csvItens = new StringBuilder();
+            csvItens.append("Numero;Chave;Data;CodigoItem;Descricao;NCM;UND;CFOP;CST_ICMS;CST_PIS;CST_COFINS;QTD;VALOR_UNIT;VALOR_TOTAL\n");
+            // Agrupador: chave "cfop|cstIcms|cstPis|cstCofins" → {qtd, valor}
+            var grupos = new java.util.LinkedHashMap<String, BigDecimal[]>();
+            for (var n : noPeriodo) {
+                if (n.getStatus() != NotaFiscalEmitida.Status.AUTORIZADA) continue;
+                try {
+                    String xml = storage.lerXml(n.getCnpj(), n.getChaveAcesso());
+                    if (xml == null || xml.isBlank()) continue;
+                    var itens = extrairItensDoXml(xml);
+                    var refN = n.getEmitidaEm() != null ? n.getEmitidaEm() : n.getCriadoEm();
+                    for (var it : itens) {
+                        csvItens.append(nvl(n.getNumero())).append(';')
+                                .append(nvl(n.getChaveAcesso())).append(';')
+                                .append(refN == null ? "" : refN.format(FMT)).append(';')
+                                .append(nvl(it.get("cProd"))).append(';')
+                                .append(sanitizaCsv(it.get("xProd"))).append(';')
+                                .append(nvl(it.get("NCM"))).append(';')
+                                .append(nvl(it.get("uCom"))).append(';')
+                                .append(nvl(it.get("CFOP"))).append(';')
+                                .append(nvl(it.get("CST_ICMS"))).append(';')
+                                .append(nvl(it.get("CST_PIS"))).append(';')
+                                .append(nvl(it.get("CST_COFINS"))).append(';')
+                                .append(brVal(it.get("qCom"))).append(';')
+                                .append(brVal(it.get("vUnCom"))).append(';')
+                                .append(brVal(it.get("vProd"))).append('\n');
+                        String chaveGrupo = nvl(it.get("CFOP")) + "|" + nvl(it.get("CST_ICMS"))
+                                + "|" + nvl(it.get("CST_PIS")) + "|" + nvl(it.get("CST_COFINS"));
+                        var atual = grupos.computeIfAbsent(chaveGrupo, k -> new BigDecimal[]{BigDecimal.ZERO, BigDecimal.ZERO});
+                        try { atual[0] = atual[0].add(new BigDecimal(nvl(it.get("qCom"), "0"))); } catch (Exception ig) {}
+                        try { atual[1] = atual[1].add(new BigDecimal(nvl(it.get("vProd"), "0"))); } catch (Exception ig) {}
+                    }
+                } catch (Exception e) {
+                    log.warn("[Fiscal][Rel] parse itens XML {} falhou: {}", n.getChaveAcesso(), e.toString());
+                }
+            }
+            StringBuilder csvGrupos = new StringBuilder();
+            csvGrupos.append("CFOP;CST/CSOSN;CST_PIS;CST_COFINS;QTD_TOTAL;VALOR_TOTAL\n");
+            BigDecimal totalGeralQtd = BigDecimal.ZERO, totalGeralVal = BigDecimal.ZERO;
+            for (var e : grupos.entrySet()) {
+                String[] k = e.getKey().split("\\|", -1);
+                csvGrupos.append(k[0]).append(';').append(k[1]).append(';')
+                        .append(k[2]).append(';').append(k[3]).append(';')
+                        .append(brVal(e.getValue()[0].toPlainString())).append(';')
+                        .append(brVal(e.getValue()[1].toPlainString())).append('\n');
+                totalGeralQtd = totalGeralQtd.add(e.getValue()[0]);
+                totalGeralVal = totalGeralVal.add(e.getValue()[1]);
+            }
+            csvGrupos.append(";;;TOTAL GERAL;")
+                    .append(brVal(totalGeralQtd.toPlainString())).append(';')
+                    .append(brVal(totalGeralVal.toPlainString())).append('\n');
+            zip.putNextEntry(new ZipEntry("saidas/itens_detalhados.csv"));
+            zip.write(csvItens.toString().getBytes(StandardCharsets.UTF_8));
+            zip.closeEntry();
+            zip.putNextEntry(new ZipEntry("saidas/resumo_cfop_cst.csv"));
+            zip.write(csvGrupos.toString().getBytes(StandardCharsets.UTF_8));
+            zip.closeEntry();
+
             // ══ NF-e de ENTRADA (fornecedor — upload manual) ══════════════
             var entradas = notaEntradaRepo.findByRestauranteIdAndDataEmissaoBetween(restauranteId, di, df);
             BigDecimal totalEntradas = BigDecimal.ZERO;
@@ -813,10 +926,12 @@ public class NfceEmissorService {
                 "  Qtd notas: " + entradas.size() + "\n" +
                 "  Valor total: R$ " + totalEntradas.toPlainString().replace('.', ',') + "\n\n" +
                 "CONTEÚDO DO ZIP\n" +
-                "  saidas/resumo.csv    — lista das NFC-e emitidas (Excel/LibreOffice)\n" +
-                "  saidas/xmls/*.xml    — XMLs autorizados prontos pra importar (SPED/EFD)\n" +
-                "  entradas/resumo.csv  — lista das NF-e recebidas de fornecedor\n" +
-                "  entradas/*.xml       — XMLs de entrada (upload manual do dono)\n\n" +
+                "  saidas/resumo.csv              — 1 linha por NFC-e emitida (Excel/LibreOffice)\n" +
+                "  saidas/itens_detalhados.csv    — 1 linha por ITEM (produto) de cada nota — com NCM, CFOP, CSOSN, CST PIS/COFINS, QTD, VALOR\n" +
+                "  saidas/resumo_cfop_cst.csv     — totais AGRUPADOS por (CFOP + CST/CSOSN + CST PIS + CST COFINS) — formato que a contabilidade usa\n" +
+                "  saidas/xmls/*.xml              — XMLs autorizados prontos pra importar (SPED/EFD)\n" +
+                "  entradas/resumo.csv            — lista das NF-e recebidas de fornecedor\n" +
+                "  entradas/*.xml                 — XMLs de entrada (upload manual do dono)\n\n" +
                 "Gerado em " + LocalDateTime.now().format(FMT) + "\n";
             zip.putNextEntry(new ZipEntry("LEIA-ME.txt"));
             zip.write(readme.getBytes(StandardCharsets.UTF_8));

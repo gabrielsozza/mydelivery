@@ -88,17 +88,24 @@ public class NfceEmissorService {
         Restaurante r = pedido.getRestaurante();
         if (r == null) throw new IllegalStateException("Pedido sem restaurante");
 
-        // Idempotência: se pedido já tem nota AUTORIZADA ou em CONTINGENCIA_EPEC,
-        // devolve a existente. Evita duplicatas quando o dono clica 2x em Emitir
-        // ou o auto-emit dispara concorrente. Contingência conta porque a nota
-        // já foi criada (com chave e QR válidos), só falta retransmissão.
+        // Idempotência: se pedido já tem nota AUTORIZADA, devolve. Notas em
+        // CONTINGENCIA_EPEC "presas" (contingência não retransmite bem no
+        // gateway atual) viram REJEITADA aqui pra abrir espaço pra uma emissão
+        // real nova.
         var existentes = notaRepo.findByPedidoId(pedidoId);
         for (var n : existentes) {
-            if (n.getStatus() == NotaFiscalEmitida.Status.AUTORIZADA
-                    || n.getStatus() == NotaFiscalEmitida.Status.CONTINGENCIA_EPEC) {
-                log.info("[Fiscal][Emissor] Pedido {} já tinha nota status={} chave={}, devolvendo",
-                        pedidoId, n.getStatus(), n.getChaveAcesso());
+            if (n.getStatus() == NotaFiscalEmitida.Status.AUTORIZADA) {
+                log.info("[Fiscal][Emissor] Pedido {} já tinha nota autorizada {}, devolvendo",
+                        pedidoId, n.getChaveAcesso());
                 return n;
+            }
+            if (n.getStatus() == NotaFiscalEmitida.Status.CONTINGENCIA_EPEC) {
+                log.warn("[Fiscal][Emissor] Pedido {} tinha nota em CONTINGENCIA_EPEC (chave={}); marcando REJEITADA pra permitir nova emissão",
+                        pedidoId, n.getChaveAcesso());
+                n.setStatus(NotaFiscalEmitida.Status.REJEITADA);
+                n.setSefazMotivo("Descartada — contingência não retransmitiu, reemitida");
+                n.setProximaTentativaEm(null);
+                notaRepo.save(n);
             }
         }
 
@@ -151,39 +158,13 @@ public class NfceEmissorService {
                     null, null, null, null);
         }
 
-        // ── 6b. FALLBACK PRA CONTINGÊNCIA ──
-        // Se SEFAZ retornou erro técnico (rede/timeout/serviço fora), tenta
-        // emitir em contingência offline (tpEmis=9). Cupom sai NA HORA com QR
-        // válido e o job de retry retransmite depois.
-        if (!res.aprovada() && ehErroTransitorio(res.cStat())) {
-            log.warn("[Fiscal][Emissor] SEFAZ com erro transitório (cStat={}), caindo em CONTINGÊNCIA", res.cStat());
-            try {
-                NfeGateway.ResultadoEmissao cont = gateway.emitirContingencia(req);
-                if (cont.aprovada()) {
-                    nota.setStatus(NotaFiscalEmitida.Status.CONTINGENCIA_EPEC);
-                    nota.setChaveAcesso(cont.chaveAcesso());
-                    nota.setSefazCstat(cont.cStat());
-                    nota.setSefazMotivo(cont.motivo());
-                    nota.setQrcodeUrlConsulta(cont.qrCodeUrl());
-                    if (cont.xmlAssinado() != null) {
-                        String urlXml = storage.gravarXml(perfil.getCnpj(), cont.chaveAcesso(), cont.xmlAssinado());
-                        nota.setXmlUrl(urlXml);
-                    }
-                    nota.setEmitidaEm(LocalDateTime.now());
-                    nota.setProximaTentativaEm(LocalDateTime.now().plusMinutes(5));  // retry em 5 min
-                    auditoria.registrar(r.getId(), perfil.getCnpj(), usuarioEmail,
-                            "NFCE_CONTINGENCIA", "OK", ipOrigem,
-                            Map.of("pedidoId", pedidoId, "chave", cont.chaveAcesso(),
-                                    "motivoOriginal", res.motivo()));
-                    enviarWhatsAppCliente(pedido, cont.chaveAcesso(), cont.qrCodeUrl());
-                    return notaRepo.save(nota);
-                }
-                // Se contingência TAMBÉM falhou, cai no fluxo normal de rejeição abaixo.
-                log.error("[Fiscal][Emissor] Contingência FALHOU também: {}", cont.motivo());
-            } catch (Exception ce) {
-                log.error("[Fiscal][Emissor] Exception na contingência", ce);
-            }
-        }
+        // ── 6b. CONTINGÊNCIA DESABILITADA ──
+        // O gateway atual gera XML "mínimo" na contingência (sem itens), então
+        // a retransmissão sempre falha ("Identificador deve possuir 44 chars",
+        // "nota sem itens", etc.) e a nota fica presa em CONTINGENCIA_EPEC.
+        // Melhor devolver o erro real da SEFAZ pro dono e ele tenta de novo
+        // quando a rede voltar. Reabilitar quando montar o XML completo
+        // assinado offline.
 
         // ── 7. Atualiza status ──
         nota.setSefazCstat(res.cStat());

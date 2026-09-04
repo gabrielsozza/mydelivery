@@ -192,7 +192,7 @@ class FluxoFiscalE2ETest {
     private RequisicaoEmissao requisicaoEmissaoValida(String senha) throws Exception {
         byte[] pfx = carregarPfxDeTeste();
         var emit = new Emitente(CNPJ, "LOJA TESTE LTDA", "Loja Teste E2E",
-                "ISENTO", "ES", "3205200",
+                "ISENTO", "ES", "3205200", "Vitoria",
                 "Rua Teste", "100", "Centro", "29100000", 1);
         var itens = List.of(
             new ItemNota(1, "PROD1", "Hamburguer Teste E2E",

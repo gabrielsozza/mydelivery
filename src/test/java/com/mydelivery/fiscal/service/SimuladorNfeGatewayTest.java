@@ -30,7 +30,7 @@ class SimuladorNfeGatewayTest {
 
     private RequisicaoEmissao reqValida() {
         var emit = new Emitente("12345678000199", "LOJA TESTE LTDA", "Loja Teste",
-                "ISENTO", "ES", "3205200",
+                "ISENTO", "ES", "3205200", "Vitoria",
                 "Rua X", "100", "Centro", "29100000", 1);
         var itens = List.of(new ItemNota(1, "PROD1", "Hamburger",
                 "21069090", "5102", null, "102", 0, "UN",

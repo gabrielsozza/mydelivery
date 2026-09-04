@@ -626,7 +626,11 @@ public class WmixvideoNfeGateway implements NfeGateway {
         }
         String p = chave44 + "|" + versao + "|" + tpAmb + "|" + cscId + "|" + hash;
         String sep = urlBase != null && urlBase.contains("?") ? "&" : "?";
-        return (urlBase == null ? "" : urlBase) + sep + "p=" + p;
+        String url = (urlBase == null ? "" : urlBase) + sep + "p=" + p;
+        log.info("[Fiscal][QR] chave={} versao={} tpAmb={} cscId={} cscLen={} hash={} url={}",
+                chave44, versao, tpAmb, cscId,
+                csc == null ? 0 : csc.length(), hash, url);
+        return url;
     }
 
     // =================== CONFIG DA LIB ===================
@@ -641,13 +645,10 @@ public class WmixvideoNfeGateway implements NfeGateway {
             ksPfx.load(new ByteArrayInputStream(pfx), (senhaPfx == null ? "" : senhaPfx).toCharArray());
         }
         final KeyStore ksFinal = ksPfx;
-        // A lib fincatto valida CSC ID >= 1 (rejeita "IdCSC nao informado"
-        // quando é 0/null). Alguns estados (ex.: ES) usam CSC ID = 0
-        // oficialmente — nesse caso passamos 1 pra satisfazer a lib (que
-        // não gera QR quando este método sobrescreve montarQrCodeUrl com
-        // o valor real do dono).
-        int cscIdRaw = safeInt(cscId, 1);
-        final Integer cscIdInt = cscIdRaw < 1 ? 1 : cscIdRaw;
+        // ES usa CSC ID = 0 oficialmente. Passa o VALOR REAL pra config
+        // (nossa versão da lib aceita 0). Se rejeitar futuramente, cair pro
+        // fallback 1 comentado abaixo.
+        final Integer cscIdInt = safeInt(cscId, 0);
 
         return new NFeConfig() {
             @Override public DFAmbiente getAmbiente() { return amb; }

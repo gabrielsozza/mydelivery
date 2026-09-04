@@ -297,7 +297,7 @@ public class WmixvideoNfeGateway implements NfeGateway {
         ide.setDataHoraEmissao(ZonedDateTime.of(req.emitidaEm(), ZONE_SP));
         ide.setTipo(NFTipo.SAIDA);
         ide.setIdentificadorLocalDestinoOperacao(NFIdentificadorLocalDestinoOperacao.OPERACAO_INTERNA);
-        ide.setCodigoMunicipio(req.emitente().municipioIbge());
+        ide.setCodigoMunicipio(normalizarIbge(req.emitente().municipioIbge(), req.uf()));
         ide.setTipoImpressao(NFTipoImpressao.DANFE_NFCE);
         ide.setTipoEmissao(tpEmis);
         // DV é o último dígito da chave44
@@ -323,7 +323,7 @@ public class WmixvideoNfeGateway implements NfeGateway {
         end.setLogradouro(e.logradouro());
         end.setNumero(e.numero());
         end.setBairro(e.bairro());
-        end.setCodigoMunicipio(e.municipioIbge());
+        end.setCodigoMunicipio(normalizarIbge(e.municipioIbge(), e.uf()));
         end.setDescricaoMunicipio("");   // preenchido via cadastro no futuro
         end.setUf(parseUf(e.uf()));
         end.setCep(soDigitos(e.cep()));
@@ -622,5 +622,21 @@ public class WmixvideoNfeGateway implements NfeGateway {
 
     private static int safeInt(String s, int fallback) {
         try { return Integer.parseInt(s.trim()); } catch (Exception e) { return fallback; }
+    }
+
+    /**
+     * Normaliza código IBGE do município pra 7 dígitos exatos (SEFAZ rejeita
+     * qualquer outra quantidade). Alguns dono cadastram só os 5 dígitos do
+     * município — completamos com o código da UF (2 dígitos).
+     */
+    private static String normalizarIbge(String ibge, String uf) {
+        String digits = ibge == null ? "" : ibge.replaceAll("\\D", "");
+        if (digits.length() == 7) return digits;
+        if (digits.length() == 5) {
+            DFUnidadeFederativa u = parseUf(uf);
+            if (u != null) return u.getCodigoIbge() + digits;
+        }
+        // Formato desconhecido — devolve como veio pra SEFAZ dar mensagem clara.
+        return digits;
     }
 }

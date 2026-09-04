@@ -413,7 +413,7 @@ public class FiscalController {
      * pra limpar visualmente a listagem quando o dono estava depurando o
      * fluxo. NÃO afeta AUTORIZADAS ou CANCELADAS.
      */
-    @DeleteMapping("/notas/rejeitadas")
+    @PostMapping("/notas/rejeitadas/limpar")
     @PreAuthorize("hasRole('RESTAURANTE')")
     @PermissaoRequerida(Permissao.VER_FISCAL)
     public ResponseEntity<Map<String, Object>> deletarRejeitadas(@AuthenticationPrincipal String email) {

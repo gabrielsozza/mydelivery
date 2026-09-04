@@ -543,6 +543,14 @@ public class WmixvideoNfeGateway implements NfeGateway {
             f.setMeioPagamento(meio);
             f.setValorPagamento(scale2(p.valor()));
             f.setIndicadorFormaPagamento(NFIndicadorFormaPagamento.A_VISTA);
+            // Cartão de crédito/débito EXIGE tag <card> com dados do adquirente
+            // (cStat 391 se faltar). Sem integração TEF usamos SEPARADO + OUTROS.
+            if ("03".equals(p.tipo()) || "04".equals(p.tipo())) {
+                var card = new com.fincatto.documentofiscal.nfe400.classes.nota.NFNotaInfoCartao();
+                card.setTipoIntegracao(com.fincatto.documentofiscal.nfe400.classes.nota.NFTipoIntegracaoPagamento.SEPARADO);
+                card.setOperadoraCartao(com.fincatto.documentofiscal.nfe400.classes.nota.NFOperadoraCartao.OUTROS);
+                f.setCartao(card);
+            }
             formas.add(f);
         }
         pag.setDetalhamentoFormasPagamento(formas);

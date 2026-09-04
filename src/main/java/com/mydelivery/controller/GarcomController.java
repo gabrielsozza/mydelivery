@@ -512,6 +512,29 @@ public class GarcomController {
         }
     }
 
+    /**
+     * Redefine o PIN de um garçom. PIN antigo é hash BCrypt — não dá pra
+     * recuperar, só substituir. Dono usa quando garçom (ou ele) esqueceu.
+     * Body: {@code { pin: "1234" }} (4-8 dígitos numéricos).
+     */
+    @PutMapping("/api/restaurante/garcons/{id}/pin")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Map<String, Object>> trocarPin(
+            @AuthenticationPrincipal String email,
+            @PathVariable Long id,
+            @RequestBody Map<String, String> body) {
+        Restaurante r = restauranteRepo.findByUsuarioEmail(email).orElseThrow();
+        try {
+            garcomService.trocarPin(r.getId(), id, body == null ? null : body.get("pin"));
+            return ResponseEntity.ok(Map.of("ok", true));
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+        } catch (org.springframework.dao.DataIntegrityViolationException e) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Esse PIN já está em uso neste restaurante. Escolha outro.");
+        }
+    }
+
     @DeleteMapping("/api/restaurante/garcons/{id}")
     @PreAuthorize("hasRole('RESTAURANTE')")
     public ResponseEntity<Void> desativarGarcom(

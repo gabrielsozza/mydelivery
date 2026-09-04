@@ -83,6 +83,21 @@ public class GarcomService {
         return garcomRepo.save(g);
     }
 
+    /** Troca o PIN de um garçom existente. Valida formato igual ao criarGarcom. */
+    @Transactional
+    public void trocarPin(Long restauranteId, Long garcomId, String pin) {
+        if (pin == null || pin.length() < 4 || pin.length() > 8 || !pin.matches("\\d+")) {
+            throw new IllegalArgumentException("PIN deve ter 4 a 8 dígitos numéricos");
+        }
+        garcomRepo.findById(garcomId).ifPresent(g -> {
+            if (!g.getRestauranteId().equals(restauranteId)) {
+                throw new SecurityException("Garçom não pertence a esse restaurante");
+            }
+            g.setPinHash(encoder.encode(pin));
+            garcomRepo.save(g);
+        });
+    }
+
     @Transactional
     public void desativarGarcom(Long restauranteId, Long garcomId) {
         garcomRepo.findById(garcomId).ifPresent(g -> {

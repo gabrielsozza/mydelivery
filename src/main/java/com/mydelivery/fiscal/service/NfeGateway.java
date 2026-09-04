@@ -21,6 +21,7 @@ public interface NfeGateway {
             String inscricaoEstadual,
             String uf,
             String municipioIbge,
+            String municipioNome,
             String logradouro,
             String numero,
             String bairro,

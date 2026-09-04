@@ -409,6 +409,27 @@ public class FiscalController {
     }
 
     /**
+     * Deleta permanentemente todas as notas REJEITADAS do restaurante. Serve
+     * pra limpar visualmente a listagem quando o dono estava depurando o
+     * fluxo. NÃO afeta AUTORIZADAS ou CANCELADAS.
+     */
+    @DeleteMapping("/notas/rejeitadas")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
+    public ResponseEntity<Map<String, Object>> deletarRejeitadas(@AuthenticationPrincipal String email) {
+        Restaurante r = exigirAtivo(email);
+        var todas = notaRepo.findByRestauranteIdOrderByCriadoEmDesc(r.getId());
+        int removidas = 0;
+        for (var n : todas) {
+            if (n.getStatus() == com.mydelivery.fiscal.model.NotaFiscalEmitida.Status.REJEITADA) {
+                notaRepo.delete(n);
+                removidas++;
+            }
+        }
+        return ResponseEntity.ok(Map.of("ok", true, "removidas", removidas));
+    }
+
+    /**
      * Descarta uma nota em CONTINGENCIA_EPEC (marca como REJEITADA). Útil pra
      * limpar notas presas quando o gateway de contingência quebrou e nunca vão
      * ser retransmitidas. Só funciona em CONTINGENCIA_EPEC — não afeta notas

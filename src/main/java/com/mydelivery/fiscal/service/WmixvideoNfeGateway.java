@@ -324,7 +324,13 @@ public class WmixvideoNfeGateway implements NfeGateway {
         end.setNumero(e.numero());
         end.setBairro(e.bairro());
         end.setCodigoMunicipio(normalizarIbge(e.municipioIbge(), e.uf()));
-        end.setDescricaoMunicipio("");   // preenchido via cadastro no futuro
+        // Descrição do município — SEFAZ exige entre 1-60 chars. Se o record
+        // não trouxe (cadastro sem cidade), usa "MUNICIPIO" como placeholder
+        // pra não travar a emissão.
+        String cidade = e.municipioNome();
+        if (cidade == null || cidade.isBlank()) cidade = "MUNICIPIO";
+        if (cidade.length() > 60) cidade = cidade.substring(0, 60);
+        end.setDescricaoMunicipio(cidade);
         end.setUf(parseUf(e.uf()));
         end.setCep(soDigitos(e.cep()));
         end.setCodigoPais("1058");

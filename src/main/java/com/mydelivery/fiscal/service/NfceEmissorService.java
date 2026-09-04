@@ -167,9 +167,11 @@ public class NfceEmissorService {
         long numeroAtual = numero;
         // Avança 1 por vez, até 20x — mantém a numeração fiscal contígua
         // (contadora não estranha) e cobre até 20 chaves duplicadas em fila.
-        while (!res.aprovada() && "539".equals(res.cStat()) && retryDup < 3) {
+        // Se a chave duplicada persiste, avança 50 números por vez pra escapar
+        // da faixa ocupada por notas antigas do mesmo CNPJ em outros sistemas.
+        while (!res.aprovada() && "539".equals(res.cStat()) && retryDup < 10) {
             retryDup++;
-            numeroAtual++;
+            numeroAtual += 50;
             try {
                 var c = contadorRepo.findForUpdate(perfil.getCnpj(), serie, ambiente).orElse(null);
                 if (c != null) { c.setProximoNumero(numeroAtual + 1); contadorRepo.save(c); }

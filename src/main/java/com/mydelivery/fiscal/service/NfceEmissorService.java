@@ -165,18 +165,16 @@ public class NfceEmissorService {
         // próximo número e re-tentar até 5x resolve automaticamente.
         int retryDup = 0;
         long numeroAtual = numero;
-        while (!res.aprovada() && "539".equals(res.cStat()) && retryDup < 5) {
+        // Avança 1 por vez, até 20x — mantém a numeração fiscal contígua
+        // (contadora não estranha) e cobre até 20 chaves duplicadas em fila.
+        while (!res.aprovada() && "539".equals(res.cStat()) && retryDup < 20) {
             retryDup++;
-            // Salta em blocos de 100 pra escapar de faixas inteiras já usadas
-            // no ambiente SEFAZ (tentativas antigas com timeout etc).
-            numeroAtual += 100;
-            // Atualiza o contador no banco pro pulo persistir.
+            numeroAtual++;
             try {
                 var c = contadorRepo.findForUpdate(perfil.getCnpj(), serie, ambiente).orElse(null);
                 if (c != null) { c.setProximoNumero(numeroAtual + 1); contadorRepo.save(c); }
             } catch (Exception ignore) {}
-            log.warn("[Fiscal][Emissor] cStat=539 chave duplicada — retry {} com novo numero={} (+100)", retryDup, numeroAtual);
-            nota.setNumero(numeroAtual);
+            log.warn("[Fiscal][Emissor] cStat=539 — retry {} numero={}", retryDup, numeroAtual);
             NfeGateway.RequisicaoEmissao reqRetry;
             try {
                 reqRetry = montarRequisicao(pedido, perfil, ambiente, serie, numeroAtual, LocalDateTime.now(), pfx.pfx(), pfx.senha(), csc);
@@ -186,6 +184,7 @@ public class NfceEmissorService {
                 break;
             }
         }
+        nota.setNumero(numeroAtual);
 
         // ── 6b. CONTINGÊNCIA DESABILITADA ──
         // O gateway atual gera XML "mínimo" na contingência (sem itens), então

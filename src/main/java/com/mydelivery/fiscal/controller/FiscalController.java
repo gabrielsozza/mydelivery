@@ -338,8 +338,13 @@ public class FiscalController {
             return ResponseEntity.badRequest().body(Map.of("ok", false, "erro", e.getMessage()));
         } catch (Exception e) {
             log.error("[Fiscal] Falha inesperada ao emitir NFC-e", e);
+            // Devolve a raiz da exception pro dono ver o motivo real (sem
+            // mandar ele pra 'aba Auditoria' que não existe no painel).
+            String raiz = e.getMessage();
+            Throwable cur = e.getCause();
+            while (cur != null && cur.getMessage() != null) { raiz = cur.getMessage(); cur = cur.getCause(); }
             return ResponseEntity.internalServerError().body(Map.of("ok", false,
-                    "erro", "Erro interno na emissão. Consulte a aba Auditoria."));
+                    "erro", "Erro na emissão: " + (raiz == null ? e.getClass().getSimpleName() : raiz)));
         }
     }
 
@@ -457,8 +462,11 @@ public class FiscalController {
             return ResponseEntity.badRequest().body(Map.of("ok", false, "erro", e.getMessage()));
         } catch (Exception e) {
             log.error("[Fiscal] Falha no cancelamento", e);
+            String raiz = e.getMessage();
+            Throwable cur = e.getCause();
+            while (cur != null && cur.getMessage() != null) { raiz = cur.getMessage(); cur = cur.getCause(); }
             return ResponseEntity.internalServerError().body(Map.of("ok", false,
-                    "erro", "Erro interno. Consulte a Auditoria."));
+                    "erro", "Erro no cancelamento: " + (raiz == null ? e.getClass().getSimpleName() : raiz)));
         }
     }
 

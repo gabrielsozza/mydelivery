@@ -570,6 +570,8 @@ public class WmixvideoNfeGateway implements NfeGateway {
         String tp     = tpEmis == null ? "1" : tpEmis.getCodigo();
         String cNF    = pad(String.valueOf(1 + RNG.nextInt(99_999_998)), 8);
         String base43 = uf + aamm + cnpj + modelo + serie + nnf + tp + cNF;
+        log.info("[Fiscal][Debug] Campos chave44: uf={} aamm={} cnpj={} modelo={} serie={} nnf={} tp={} cnf={} | base43='{}' len={}",
+                uf, aamm, cnpj, modelo, serie, nnf, tp, cNF, base43, base43.length());
         return base43 + dvMod11(base43);
     }
 

@@ -60,6 +60,11 @@ public class FiscalController {
     private final NfeEntradaService nfeEntradaService;
     private final NotaFiscalEntradaRepository nfeEntradaRepo;
     private final NfceStorageService storage;
+    private final com.mydelivery.fiscal.repository.NotaFiscalEmitidaRepository notaRepo;
+    private final com.mydelivery.fiscal.service.NfeGateway gateway;
+
+    @org.springframework.beans.factory.annotation.Value("${mydelivery.fiscal.gateway:simulador}")
+    private String gatewayNome;
 
     // ── STATUS geral do módulo (pra o front decidir se mostra a aba) ──────
     @GetMapping("/status")
@@ -338,6 +343,29 @@ public class FiscalController {
         }
     }
 
+    /**
+     * Diagnóstico: qual gateway NFC-e está ativo neste boot. Usado pra confirmar
+     * que o FISCAL_GATEWAY=real do Railway pegou. Se a env vier com whitespace
+     * ou não estiver setada, aqui aparece 'simulador' e a nota sai com QR fake.
+     */
+    @GetMapping("/gateway/info")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
+    public ResponseEntity<Map<String, Object>> gatewayInfo(@AuthenticationPrincipal String email) {
+        exigirAtivo(email);
+        String prop = gatewayNome == null ? "" : gatewayNome.trim();
+        String classe = gateway == null ? "null" : gateway.getClass().getSimpleName();
+        boolean real = "WmixvideoNfeGateway".equals(classe);
+        return ResponseEntity.ok(Map.of(
+                "propertyValue", gatewayNome == null ? "" : gatewayNome,
+                "propertyTrimmed", prop,
+                "gatewayClasse", classe,
+                "modoReal", real,
+                "aviso", real ? "Gateway REAL — notas emitidas vão pra SEFAZ."
+                              : "Gateway SIMULADOR — QR fake. Ative FISCAL_GATEWAY=real (sem espaços) no Railway."
+        ));
+    }
+
     /** Lista as notas emitidas pelo restaurante (mais recentes primeiro). */
     @GetMapping("/notas")
     @PreAuthorize("hasRole('RESTAURANTE')")
@@ -345,6 +373,34 @@ public class FiscalController {
     public ResponseEntity<List<Map<String, Object>>> listarNotas(@AuthenticationPrincipal String email) {
         Restaurante r = exigirAtivo(email);
         return ResponseEntity.ok(emissor.listarNotas(r.getId()));
+    }
+
+    /**
+     * Baixa o XML da NFC-e autorizada. O {@code xmlUrl} salvo na nota é um
+     * caminho interno do storage (ex.: {@code r2://…}) e não é acessível pelo
+     * navegador — este endpoint lê do storage e devolve como {@code text/xml}.
+     */
+    @GetMapping("/notas/{id}/xml")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
+    public ResponseEntity<byte[]> baixarXml(@AuthenticationPrincipal String email, @PathVariable Long id) {
+        Restaurante r = exigirAtivo(email);
+        var nota = notaRepo.findById(id).orElse(null);
+        if (nota == null || nota.getRestaurante() == null
+                || !nota.getRestaurante().getId().equals(r.getId())
+                || nota.getChaveAcesso() == null) {
+            return ResponseEntity.notFound().build();
+        }
+        var perfil = perfilRepo.findByRestauranteId(r.getId()).orElse(null);
+        if (perfil == null || perfil.getCnpj() == null) return ResponseEntity.notFound().build();
+        String xml = storage.lerXml(perfil.getCnpj(), nota.getChaveAcesso());
+        if (xml == null || xml.isBlank()) return ResponseEntity.notFound().build();
+        byte[] body = xml.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        return ResponseEntity.ok()
+                .contentType(org.springframework.http.MediaType.APPLICATION_XML)
+                .header(org.springframework.http.HttpHeaders.CONTENT_DISPOSITION,
+                        "attachment; filename=\"NFCe-" + nota.getChaveAcesso() + ".xml\"")
+                .body(body);
     }
 
     /**

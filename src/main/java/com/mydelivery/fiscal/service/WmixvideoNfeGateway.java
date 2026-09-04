@@ -494,6 +494,16 @@ public class WmixvideoNfeGateway implements NfeGateway {
     private NFNotaInfoTotal montarTotal(RequisicaoEmissao req) {
         NFNotaInfoTotal total = new NFNotaInfoTotal();
         NFNotaInfoICMSTotal ic = new NFNotaInfoICMSTotal();
+        // Total dos PRODUTOS = SOMA (qtd × preço unit) dos itens — NUNCA o
+        // valorTotal do pedido, que inclui taxa de entrega. SEFAZ compara
+        // vProd com o somatório dos itens (cStat 564 se divergir).
+        BigDecimal vProd = BigDecimal.ZERO;
+        for (ItemNota it : req.itens()) {
+            vProd = vProd.add(it.quantidade().multiply(it.valorUnitario()));
+        }
+        vProd = scale2(vProd);
+        // vNF = vProd (taxa de entrega vira serviço, não entra em NFC-e).
+        // Se algum dia integrarmos frete no XML, aí soma aqui.
         ic.setBaseCalculoICMS(BigDecimal.ZERO);
         ic.setValorTotalICMS(BigDecimal.ZERO);
         ic.setValorICMSDesonerado(BigDecimal.ZERO);
@@ -502,7 +512,7 @@ public class WmixvideoNfeGateway implements NfeGateway {
         ic.setValorTotalICMSST(BigDecimal.ZERO);
         ic.setValorTotalFundoCombatePobrezaST(BigDecimal.ZERO);
         ic.setValorTotalFundoCombatePobrezaSTRetido(BigDecimal.ZERO);
-        ic.setValorTotalDosProdutosServicos(scale2(req.valorTotal()));
+        ic.setValorTotalDosProdutosServicos(vProd);
         ic.setValorTotalFrete(BigDecimal.ZERO);
         ic.setValorTotalSeguro(BigDecimal.ZERO);
         ic.setValorTotalDesconto(BigDecimal.ZERO);
@@ -512,7 +522,7 @@ public class WmixvideoNfeGateway implements NfeGateway {
         ic.setValorPIS(BigDecimal.ZERO);
         ic.setValorCOFINS(BigDecimal.ZERO);
         ic.setOutrasDespesasAcessorias(BigDecimal.ZERO);
-        ic.setValorTotalNFe(scale2(req.valorTotal()));
+        ic.setValorTotalNFe(vProd);
         total.setIcmsTotal(ic);
         return total;
     }

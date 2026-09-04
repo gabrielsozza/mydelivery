@@ -430,8 +430,14 @@ public class NfceEmissorService {
         }
         if (itens.isEmpty()) throw new IllegalStateException("Pedido sem itens válidos.");
 
-        // Pagamento (NFC-e obrigatório 1+ pagamentos)
-        BigDecimal valorTotal = p.getTotal() != null ? p.getTotal() : BigDecimal.ZERO;
+        // NFC-e: pagamento e total DEVEM ser o somatório dos itens (sem taxa
+        // de entrega, que é serviço e não entra em nota de mercadoria).
+        // Se usar p.getTotal() (que inclui taxa), a SEFAZ rejeita com cStat 564.
+        BigDecimal valorItens = BigDecimal.ZERO;
+        for (NfeGateway.ItemNota it : itens) {
+            valorItens = valorItens.add(it.quantidade().multiply(it.valorUnitario()));
+        }
+        BigDecimal valorTotal = valorItens.setScale(2, java.math.RoundingMode.HALF_UP);
         List<NfeGateway.Pagamento> pagamentos = new ArrayList<>();
         pagamentos.add(new NfeGateway.Pagamento(
                 mapearFormaPagamento(p.getFormaPagamento() == null ? null : p.getFormaPagamento().name()),

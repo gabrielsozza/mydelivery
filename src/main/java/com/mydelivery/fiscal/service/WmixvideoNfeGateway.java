@@ -269,6 +269,7 @@ public class WmixvideoNfeGateway implements NfeGateway {
         info.setVersao(new BigDecimal("4.00"));
 
         String chave44 = gerarChave44(req, tpEmis);
+        log.info("[Fiscal][Debug] Chave gerada por mim (deveria ir com modelo=65): {}", chave44);
         // setIdentificador exige EXATAMENTE 44 dígitos (a lib valida). Sem
         // prefixo "NFe" (o XML final gera o Id="NFe<chave>" internamente).
         info.setIdentificador(chave44);

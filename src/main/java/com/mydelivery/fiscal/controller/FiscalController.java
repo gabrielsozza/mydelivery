@@ -409,6 +409,34 @@ public class FiscalController {
     }
 
     /**
+     * Descarta uma nota em CONTINGENCIA_EPEC (marca como REJEITADA). Útil pra
+     * limpar notas presas quando o gateway de contingência quebrou e nunca vão
+     * ser retransmitidas. Só funciona em CONTINGENCIA_EPEC — não afeta notas
+     * autorizadas.
+     */
+    @PostMapping("/notas/{id}/descartar")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
+    public ResponseEntity<Map<String, Object>> descartarNota(
+            @AuthenticationPrincipal String email, @PathVariable Long id) {
+        Restaurante r = exigirAtivo(email);
+        var nota = notaRepo.findById(id).orElse(null);
+        if (nota == null || nota.getRestaurante() == null
+                || !nota.getRestaurante().getId().equals(r.getId())) {
+            return ResponseEntity.notFound().build();
+        }
+        if (nota.getStatus() != com.mydelivery.fiscal.model.NotaFiscalEmitida.Status.CONTINGENCIA_EPEC) {
+            return ResponseEntity.badRequest().body(Map.of("ok", false,
+                    "erro", "Só notas em CONTINGENCIA_EPEC podem ser descartadas (estado atual: " + nota.getStatus() + ")"));
+        }
+        nota.setStatus(com.mydelivery.fiscal.model.NotaFiscalEmitida.Status.REJEITADA);
+        nota.setSefazMotivo("Descartada manualmente pelo dono — contingência não retransmitida");
+        nota.setProximaTentativaEm(null);
+        notaRepo.save(nota);
+        return ResponseEntity.ok(Map.of("ok", true, "status", nota.getStatus().name()));
+    }
+
+    /**
      * Diagnóstico do QR: retorna todos os campos usados no cálculo do hash
      * SHA-1 pra dono conferir com o portal SEFAZ. Ajuda a identificar quando
      * o CSC ou o cscId no perfil está diferente do cadastrado na SEFAZ.

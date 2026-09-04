@@ -76,11 +76,26 @@ public class NotaFiscalEmitida {
     @Builder.Default
     private Status status = Status.PENDENTE;
 
-    @Column(name = "sefaz_cstat", length = 10)
+    @Column(name = "sefaz_cstat", length = 40)
     private String sefazCstat;
 
     @Column(name = "sefaz_motivo", length = 500)
     private String sefazMotivo;
+
+    // Trunca antes de gravar — a coluna do MySQL Railway tem length fixa e
+    // o Hibernate ddl-auto pode não ter aumentado a mais nova em cima da
+    // antiga (Railway MySQL não aceita ALTER MODIFY IF NOT EXISTS). Sem isso,
+    // um cStat/motivo maior que o campo lança "Data too long for column".
+    public void setSefazCstat(String v) {
+        // Trunca em 10 pra caber mesmo se o Hibernate ddl-auto não tiver
+        // expandido a coluna original (length=10) pro novo tamanho 40. Perde
+        // um pouco de contexto (cSTat "ERRO_MONTAGEM" → "ERRO_MONTA") mas o
+        // motivo completo fica em sefazMotivo (500 chars).
+        this.sefazCstat = v == null ? null : (v.length() > 10 ? v.substring(0, 10) : v);
+    }
+    public void setSefazMotivo(String v) {
+        this.sefazMotivo = v == null ? null : (v.length() > 500 ? v.substring(0, 500) : v);
+    }
 
     @Column(length = 40)
     private String protocolo;

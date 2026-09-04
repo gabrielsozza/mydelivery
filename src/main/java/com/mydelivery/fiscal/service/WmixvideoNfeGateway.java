@@ -594,7 +594,13 @@ public class WmixvideoNfeGateway implements NfeGateway {
             ksPfx.load(new ByteArrayInputStream(pfx), (senhaPfx == null ? "" : senhaPfx).toCharArray());
         }
         final KeyStore ksFinal = ksPfx;
-        final Integer cscIdInt = safeInt(cscId, 1);
+        // A lib fincatto valida CSC ID >= 1 (rejeita "IdCSC nao informado"
+        // quando é 0/null). Alguns estados (ex.: ES) usam CSC ID = 0
+        // oficialmente — nesse caso passamos 1 pra satisfazer a lib (que
+        // não gera QR quando este método sobrescreve montarQrCodeUrl com
+        // o valor real do dono).
+        int cscIdRaw = safeInt(cscId, 1);
+        final Integer cscIdInt = cscIdRaw < 1 ? 1 : cscIdRaw;
 
         return new NFeConfig() {
             @Override public DFAmbiente getAmbiente() { return amb; }

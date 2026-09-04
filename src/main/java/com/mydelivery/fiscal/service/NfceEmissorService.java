@@ -316,7 +316,20 @@ public class NfceEmissorService {
             c = ContadorNumeroNfce.builder().cnpj(cnpj).serie(serie).ambiente(ambiente)
                     .proximoNumero(1L).build();
         }
+        // Auto-avança pra próximo número LIVRE — pega o caso em que o contador
+        // ficou dessincronizado (nota #3 já existe mas contador diz próximo=3,
+        // gera "Duplicate entry" no unique uq_nota_numero). Sondando até 1000
+        // números pra frente, para evitar loop infinito.
         Long n = c.getProximoNumero();
+        int tentativas = 0;
+        while (tentativas < 1000 && notaRepo.existsByCnpjAndSerieAndAmbienteAndModeloAndNumero(
+                cnpj, serie, ambiente, 65, n)) {
+            n++; tentativas++;
+        }
+        if (tentativas > 0) {
+            log.warn("[Fiscal][Contador] Avancou {} numero(s) pra pular ja emitidos (cnpj={}, serie={}, amb={}, agora={})",
+                    tentativas, cnpj, serie, ambiente, n);
+        }
         c.setProximoNumero(n + 1);
         contadorRepo.save(c);
         return n;

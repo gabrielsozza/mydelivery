@@ -23,4 +23,8 @@ public interface NotaFiscalEmitidaRepository
 
     /** Notas em contingência que precisam retransmitir. */
     List<NotaFiscalEmitida> findByStatus(NotaFiscalEmitida.Status status);
+
+    /** Sonda usada pelo reservarProximoNumero pra pular numeros ja emitidos. */
+    boolean existsByCnpjAndSerieAndAmbienteAndModeloAndNumero(
+            String cnpj, Integer serie, Integer ambiente, Integer modelo, Long numero);
 }

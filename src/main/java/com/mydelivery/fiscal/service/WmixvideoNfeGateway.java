@@ -137,6 +137,15 @@ public class WmixvideoNfeGateway implements NfeGateway {
             String qr  = aprovada && chave != null
                     ? montarQrCodeUrl(req, chave)
                     : null;
+            // Reescreve o QR dentro do XML pra usar o cscId REAL do dono
+            // (0 no ES). A lib fincatto sempre gera o QR interno com o cscId
+            // do config (forcado 1 pelo workaround), mas o QR no cupom PRECISA
+            // usar o cscId cadastrado na SEFAZ. Sem isso a consulta na SEFAZ
+            // retorna "QR Code Invalido".
+            if (aprovada && xml != null && qr != null) {
+                xml = xml.replaceAll("<qrCode>[^<]*</qrCode>",
+                        "<qrCode><![CDATA[" + qr + "]]></qrCode>");
+            }
 
             log.info("[Fiscal][Wmix] emit cnpj={} n={} → cStat={} motivo={} proto={}",
                     req.emitente().cnpj(), req.numero(), cStat, truncar(motivo, 80), nProt);

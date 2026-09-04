@@ -413,6 +413,29 @@ public class FiscalController {
      * pra limpar visualmente a listagem quando o dono estava depurando o
      * fluxo. NÃO afeta AUTORIZADAS ou CANCELADAS.
      */
+    /**
+     * Diagnóstico + fix: força re-propagação de TODAS as categorias pra seus
+     * produtos vinculados. Resolve caso onde o dono editou categoria antes do
+     * fix de propagação automática — os produtos ficaram com valores antigos.
+     */
+    @PostMapping("/categorias/repropagar")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Map<String, Object>> repropagarCategorias(@AuthenticationPrincipal String email) {
+        Restaurante r = exigirAtivo(email);
+        int cats = categoriaService.repropagarTodas(r);
+        return ResponseEntity.ok(Map.of("ok", true, "categoriasRepropagadas", cats));
+    }
+
+    /** Diagnóstico do PerfilFiscalProduto de um produto — mostra o CFOP/CSOSN gravados. */
+    @GetMapping("/produto/{produtoId}/perfil-fiscal")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Map<String, Object>> diagPerfilProduto(
+            @AuthenticationPrincipal String email, @PathVariable Long produtoId) {
+        exigirAtivo(email);
+        var perfil = categoriaService.diagnosticoPerfilProduto(produtoId);
+        return ResponseEntity.ok(perfil);
+    }
+
     @PostMapping("/notas/rejeitadas/limpar")
     @PreAuthorize("hasRole('RESTAURANTE')")
     public ResponseEntity<Map<String, Object>> deletarRejeitadas(@AuthenticationPrincipal String email) {

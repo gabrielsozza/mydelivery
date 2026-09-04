@@ -151,6 +151,43 @@ public class CategoriaTributariaService {
         return catRepo.save(c);
     }
 
+    /** Reaplica todas as categorias do restaurante nos produtos vinculados. */
+    @Transactional
+    public int repropagarTodas(Restaurante r) {
+        var todas = catRepo.findByRestauranteIdOrderByNomeAsc(r.getId());
+        int n = 0;
+        for (var c : todas) {
+            if (c.getProdutos() == null || c.getProdutos().isEmpty()) continue;
+            for (var p : c.getProdutos()) {
+                try { propagarParaPerfil(p, c); } catch (Exception ignore) {}
+            }
+            n++;
+            log.info("[Fiscal][Cat] Re-propagou categoria '{}' → {} produto(s)", c.getNome(), c.getProdutos().size());
+        }
+        return n;
+    }
+
+    /** Diagnóstico do perfil fiscal de um produto — mostra o que está GRAVADO no banco. */
+    public Map<String, Object> diagnosticoPerfilProduto(Long produtoId) {
+        Map<String, Object> out = new java.util.LinkedHashMap<>();
+        var pOpt = produtoRepo.findById(produtoId);
+        if (pOpt.isEmpty()) { out.put("erro", "produto nao encontrado"); return out; }
+        out.put("produtoId", produtoId);
+        out.put("produtoNome", pOpt.get().getNome());
+        var perfilOpt = perfilProdutoRepo.findByProdutoId(produtoId);
+        if (perfilOpt.isEmpty()) { out.put("perfilFiscal", "NAO CONFIGURADO"); return out; }
+        var pf = perfilOpt.get();
+        out.put("ncm", pf.getNcm());
+        out.put("cfop", pf.getCfop());
+        out.put("cst", pf.getCst());
+        out.put("csosn", pf.getCsosn());
+        out.put("origem", pf.getOrigem());
+        out.put("aliquotaIcms", pf.getAliquotaIcms());
+        out.put("aliquotaPis", pf.getAliquotaPis());
+        out.put("aliquotaCofins", pf.getAliquotaCofins());
+        return out;
+    }
+
     private void propagarParaPerfil(Produto p, CategoriaTributaria c) {
         var perfil = perfilProdutoRepo.findByProdutoId(p.getId())
                 .orElseGet(() -> PerfilFiscalProduto.builder().produto(p).build());

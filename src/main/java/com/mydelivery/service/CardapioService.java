@@ -508,6 +508,36 @@ public class CardapioService {
     }
 
     private ProdutoResponse toProdutoResponse(Produto p) {
+        // Grupos de complementos — carregados junto pra front do cliente e do
+        // garçom abrir modal de personalização sem 2ª chamada. Vazio quando o
+        // produto não tem grupos.
+        var gruposDto = new java.util.ArrayList<ProdutoResponse.GrupoComplementoResponse>();
+        try {
+            var grupos = complementoGrupoRepository.findByProdutoIdOrderByIdAsc(p.getId());
+            for (var g : grupos) {
+                var itens = g.getItens() == null ? java.util.List.<ProdutoResponse.ItemComplementoResponse>of()
+                        : g.getItens().stream()
+                            .filter(it -> it.getAtivo() == null || Boolean.TRUE.equals(it.getAtivo()))
+                            .map(it -> ProdutoResponse.ItemComplementoResponse.builder()
+                                    .id(it.getId())
+                                    .nome(it.getNome())
+                                    .descricao(it.getDescricao())
+                                    .precoAdicional(it.getPrecoAdicional())
+                                    .maxSelecoes(it.getMaxSelecoes())
+                                    .build())
+                            .toList();
+                gruposDto.add(ProdutoResponse.GrupoComplementoResponse.builder()
+                        .id(g.getId())
+                        .nome(g.getNome())
+                        .obrigatorio(g.getObrigatorio())
+                        .minEscolhas(g.getMinEscolhas())
+                        .maxEscolhas(g.getMaxEscolhas())
+                        .modoPreco(g.getModoPreco() == null ? "SOMA" : g.getModoPreco().name())
+                        .permitirNenhuma(g.getPermitirNenhuma())
+                        .itens(itens)
+                        .build());
+            }
+        } catch (Exception ignore) {}
         return ProdutoResponse.builder()
                 .id(p.getId())
                 .nome(p.getNome())
@@ -526,6 +556,7 @@ public class CardapioService {
                 .unidadePreco(p.getUnidadePreco())
                 .precoAPartirDe(Boolean.TRUE.equals(p.getPrecoAPartirDe()))
                 .diasSemanaAtivos(p.getDiasSemanaAtivos())
+                .gruposComplemento(gruposDto)
                 .build();
     }
 

@@ -40,4 +40,38 @@ public class ProdutoResponse {
     private Boolean precoAPartirDe;
     /** CSV de dias da semana ativos ("SEG,QUA,SAB") ou null pra sempre ativo. */
     private String diasSemanaAtivos;
+
+    /** Grupos de complementos (sabores, adicionais, variações). Cada grupo tem
+     *  min/máx escolhas + lista de itens com preço próprio. Usado pelo garçom
+     *  e pelo cliente pra abrir modal de personalização quando o produto tem
+     *  variações. Vazio (ou null) = produto simples, adiciona direto. */
+    private java.util.List<GrupoComplementoResponse> gruposComplemento;
+
+    @Data
+    @Builder
+    @AllArgsConstructor
+    @NoArgsConstructor
+    public static class GrupoComplementoResponse {
+        private Long id;
+        private String nome;
+        private Boolean obrigatorio;
+        private Integer minEscolhas;
+        private Integer maxEscolhas;
+        /** SOMA (preço soma ao produto) ou MAIOR (preço do produto vira o mais caro). */
+        private String modoPreco;
+        private Boolean permitirNenhuma;
+        private java.util.List<ItemComplementoResponse> itens;
+    }
+
+    @Data
+    @Builder
+    @AllArgsConstructor
+    @NoArgsConstructor
+    public static class ItemComplementoResponse {
+        private Long id;
+        private String nome;
+        private String descricao;
+        private BigDecimal precoAdicional;
+        private Integer maxSelecoes;
+    }
 }

@@ -670,7 +670,12 @@ public class NfceEmissorService {
         if (forma == null) return "99";
         String f = forma.toUpperCase();
         if (f.contains("DINHEIRO"))          return "01";
-        if (f.contains("PIX"))               return "17";
+        // PIX ESTATICO (código 20) = QR Code fixo do lojista (cliente lê e
+        // paga valor exato) — que é o fluxo real de restaurante que emite
+        // nota DEPOIS do pagamento. PIX Dinâmico (17) requer dados extras
+        // (arranjo de pagamento) e SEFAZ rejeita com cStat 391 quando falta.
+        // Nota do Fisco 2020/006 diferencia os dois — usar 20 é o correto.
+        if (f.contains("PIX"))               return "20";
         if (f.contains("CREDITO") || f.contains("CRÉDITO")) return "03";
         if (f.contains("DEBITO") || f.contains("DÉBITO"))   return "04";
         // Maquininha genérica (Stone, Pagseguro, etc) — sem saber se cliente

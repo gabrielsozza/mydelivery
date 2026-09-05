@@ -458,8 +458,10 @@ public class FiscalController {
         Restaurante r = exigirAtivo(email);
         Long prodId = body == null ? null : Long.valueOf(String.valueOf(body.get("produtoId")));
         Long catId  = body == null ? null : Long.valueOf(String.valueOf(body.get("categoriaId")));
-        boolean ok = categoriaService.vincularPorProdutoId(r, catId, prodId);
-        return ResponseEntity.ok(Map.of("ok", ok));
+        Map<String, Object> res = categoriaService.vincularPorProdutoId(r, catId, prodId);
+        boolean ok = Boolean.TRUE.equals(res.get("ok"));
+        if (!ok) return ResponseEntity.badRequest().body(res);
+        return ResponseEntity.ok(res);
     }
 
     /** Diagnóstico do pedido — mostra CFOP/CSOSN gravados pra CADA item. */

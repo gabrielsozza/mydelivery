@@ -157,21 +157,48 @@ public class CategoriaTributariaService {
      * de erro do backend e chama aqui — garantido, sem depender de match
      * por nome (o item do pedido guarda snapshot que pode divergir do
      * nome atual do produto).
+     *
+     * IMPORTANTE: MESMO se o produto pertencer a OUTRO restaurante (dado
+     * historico corrompido — cardapio importado, restaurante duplicado),
+     * o UPSERT do PerfilFiscalProduto e feito. Justificativa: se o pedido
+     * do restaurante referencia produto_id=X, a emissao precisa saber
+     * NCM/CFOP pra X — sem isso, pedido nunca emite. A categoria em si
+     * pertence ao restaurante (validado), so o produto pode ser fantasma.
+     * Retorna Map com {ok, motivo?, aviso?} pro caller diagnosticar.
      */
     @Transactional
-    public boolean vincularPorProdutoId(Restaurante r, Long catId, Long produtoId) {
+    public Map<String, Object> vincularPorProdutoId(Restaurante r, Long catId, Long produtoId) {
+        Map<String, Object> out = new java.util.LinkedHashMap<>();
         var c = catRepo.findById(catId).orElseThrow();
-        if (!c.getRestaurante().getId().equals(r.getId())) throw new IllegalArgumentException("Nao pertence");
-        var p = produtoRepo.findById(produtoId).orElse(null);
-        if (p == null || p.getRestaurante() == null || !p.getRestaurante().getId().equals(r.getId())) return false;
-        Set<Produto> conjunto = c.getProdutos() == null ? new HashSet<>() : new HashSet<>(c.getProdutos());
-        boolean novo = conjunto.add(p);
-        c.setProdutos(conjunto);
-        catRepo.save(c);
+        if (!c.getRestaurante().getId().equals(r.getId())) throw new IllegalArgumentException("Categoria nao pertence");
+        var pOpt = produtoRepo.findById(produtoId);
+        if (pOpt.isEmpty()) {
+            log.warn("[Fiscal][Cat] vincularPorProdutoId: produto {} nao existe no banco", produtoId);
+            out.put("ok", false);
+            out.put("motivo", "Produto " + produtoId + " nao existe no banco");
+            return out;
+        }
+        var p = pOpt.get();
+        boolean mesmoRestaurante = p.getRestaurante() != null
+                && p.getRestaurante().getId().equals(r.getId());
+        if (mesmoRestaurante) {
+            Set<Produto> conjunto = c.getProdutos() == null ? new HashSet<>() : new HashSet<>(c.getProdutos());
+            boolean novo = conjunto.add(p);
+            c.setProdutos(conjunto);
+            catRepo.save(c);
+            log.info("[Fiscal][Cat] vincularPorProdutoId produto={} → categoria '{}' (novo={})",
+                    produtoId, c.getNome(), novo);
+        } else {
+            // Produto fantasma / de outro restaurante — nao vincula na
+            // categoria (senao mistura donos), mas propaga o perfil fiscal
+            // mesmo assim pra desbloquear emissao. Log de aviso.
+            log.warn("[Fiscal][Cat] Perfil de produto ORFAO {} (rest={}) sendo propagado por categoria do rest={}",
+                    produtoId, p.getRestaurante() == null ? "null" : p.getRestaurante().getId(), r.getId());
+            out.put("aviso", "Produto pertence a outro restaurante — perfil fiscal atualizado mesmo assim pra desbloquear emissao");
+        }
         propagarParaPerfil(p, c);
-        log.info("[Fiscal][Cat] vincularPorProdutoId produto={} → categoria '{}' (novo={})",
-                produtoId, c.getNome(), novo);
-        return true;
+        out.put("ok", true);
+        return out;
     }
 
     /**

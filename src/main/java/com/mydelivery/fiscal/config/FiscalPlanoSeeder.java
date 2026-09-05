@@ -57,31 +57,43 @@ public class FiscalPlanoSeeder {
 
     @Transactional
     void semearPlanos(PlanoCatalogoRepository repo) {
-        criarSeFaltar(repo,
+        // FISCAL_MENSAL agora sem teto de notas (nome e features atualizados
+        // via upsert — cliente decidiu remover limite de 300 pra simplificar
+        // o pitch). Upsert em vez de criarSeFaltar pra propagar mudanca em
+        // ambientes onde o registro ja existia.
+        upsert(repo,
                 "FISCAL_MENSAL",
-                "Fiscal (NFC-e) — 300 notas",
-                "Emissão automática de NFC-e para até 300 pedidos/mês. Inclui certificado A1, contingência offline, envio pro cliente por WhatsApp.",
+                "Fiscal (NFC-e) — Ilimitado",
+                "Emissão automática de NFC-e sem limite de notas. Inclui certificado A1, contingência offline, envio pro cliente por WhatsApp.",
                 new BigDecimal("99.90"),
-                "[\"Até 300 NFC-e por mês\","
+                "[\"NFC-e ilimitadas por mês\","
                         + "\"Emissão automática ao entregar\","
                         + "\"Impressão automática no cupom\","
                         + "\"Envio da nota pro cliente por WhatsApp\","
                         + "\"Contingência offline (funciona mesmo com SEFAZ fora do ar)\","
                         + "\"Relatório mensal pronto pro contador\"]",
                 100);
-        criarSeFaltar(repo,
-                "FISCAL_ILIMITADO",
-                "Fiscal (NFC-e) — Ilimitado",
-                "Emissão automática de NFC-e sem limite mensal. Ideal pra volumes altos e redes.",
-                new BigDecimal("129.90"),
-                "[\"NFC-e ilimitadas\","
-                        + "\"Emissão automática ao entregar\","
-                        + "\"Impressão automática no cupom\","
-                        + "\"Envio da nota pro cliente por WhatsApp\","
-                        + "\"Contingência offline\","
-                        + "\"Multi-CNPJ (várias lojas no mesmo painel)\","
-                        + "\"Relatório mensal pronto pro contador\"]",
-                101);
+    }
+
+    private void upsert(PlanoCatalogoRepository repo, String codigo, String nome,
+                        String descricao, BigDecimal valor, String featuresJson, int ordem) {
+        var existente = repo.findByCodigoIgnoreCase(codigo).orElse(null);
+        if (existente != null) {
+            existente.setNome(nome);
+            existente.setDescricao(descricao);
+            existente.setValor(valor);
+            existente.setFeaturesJson(featuresJson);
+            existente.setOrdem(ordem);
+            existente.setRecomendado("FISCAL_MENSAL".equals(codigo));
+            existente.setAceitaCartao(true);
+            existente.setAceitaPix(true);
+            existente.setOnboardingTipo("FISCAL");
+            existente.setAtivo(true);
+            repo.save(existente);
+            log.info("[Fiscal][Seed] Plano atualizado: {} → {}", codigo, nome);
+            return;
+        }
+        criarSeFaltar(repo, codigo, nome, descricao, valor, featuresJson, ordem);
     }
 
     private void criarSeFaltar(PlanoCatalogoRepository repo, String codigo, String nome,

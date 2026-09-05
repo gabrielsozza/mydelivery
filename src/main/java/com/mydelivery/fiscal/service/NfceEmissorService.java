@@ -478,6 +478,8 @@ public class NfceEmissorService {
         String tPag = mapearFormaPagamento(formaNome);
         // xPag preenchido só faz sentido em 99 (SEFAZ exige e rejeita se null).
         String xPag = "99".equals(tPag) ? descricaoFormaPagamento(formaNome) : null;
+        log.info("[Fiscal][Pagamento] pedido={} formaPagamento={} → tPag={} xPag={} valor={}",
+                p.getId(), formaNome, tPag, xPag, valorTotal);
         pagamentos.add(new NfeGateway.Pagamento(tPag, valorTotal, xPag));
 
         return new NfeGateway.RequisicaoEmissao(

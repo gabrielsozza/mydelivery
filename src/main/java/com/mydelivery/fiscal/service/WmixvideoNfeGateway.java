@@ -558,6 +558,8 @@ public class WmixvideoNfeGateway implements NfeGateway {
             f.setMeioPagamento(meio);
             f.setValorPagamento(scale2(p.valor()));
             f.setIndicadorFormaPagamento(NFIndicadorFormaPagamento.A_VISTA);
+            log.info("[Fiscal][Gateway] Adicionando detPag tPag={} meio={} valor={} desc={}",
+                    p.tipo(), meio, p.valor(), p.descricao());
             // xPag obrigatorio quando tPag=99 (SEFAZ cStat 441). Trim 2..60
             // chars — abaixo disso a lib pode reclamar; acima estoura no XSD.
             if ("99".equals(p.tipo())) {

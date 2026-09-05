@@ -558,6 +558,15 @@ public class WmixvideoNfeGateway implements NfeGateway {
             f.setMeioPagamento(meio);
             f.setValorPagamento(scale2(p.valor()));
             f.setIndicadorFormaPagamento(NFIndicadorFormaPagamento.A_VISTA);
+            // xPag obrigatorio quando tPag=99 (SEFAZ cStat 441). Trim 2..60
+            // chars — abaixo disso a lib pode reclamar; acima estoura no XSD.
+            if ("99".equals(p.tipo())) {
+                String xpag = p.descricao();
+                if (xpag == null || xpag.isBlank()) xpag = "Outros";
+                if (xpag.length() > 60) xpag = xpag.substring(0, 60);
+                if (xpag.length() < 2) xpag = "Outros";
+                f.setDescricaoMeioPagamento(xpag);
+            }
             // Cartão de crédito/débito EXIGE tag <card> com dados do adquirente
             // (cStat 391 se faltar). Sem integração TEF usamos SEPARADO + OUTROS.
             if ("03".equals(p.tipo()) || "04".equals(p.tipo())) {

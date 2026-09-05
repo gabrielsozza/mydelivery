@@ -51,10 +51,15 @@ public interface NfeGateway {
             BigDecimal aliquotaPis,
             BigDecimal aliquotaCofins) {}
 
-    /** Dados de pagamento pra NFC-e (obrigatório). */
+    /** Dados de pagamento pra NFC-e (obrigatório).
+     *  descricao: preenche {@code xPag} — obrigatório quando tipo="99" (Outros);
+     *  ignorado pros demais. Null = gateway usa "Outros". */
     record Pagamento(
-            String tipo,          // "01"=Dinheiro, "03"=Cartão crédito, "04"=Débito, "17"=PIX
-            BigDecimal valor) {}
+            String tipo,          // "01"=Dinheiro, "03"=Cartão crédito, "04"=Débito, "17"=PIX, "99"=Outros
+            BigDecimal valor,
+            String descricao) {
+        public Pagamento(String tipo, BigDecimal valor) { this(tipo, valor, null); }
+    }
 
     /** Tudo que a emissão precisa. */
     record RequisicaoEmissao(

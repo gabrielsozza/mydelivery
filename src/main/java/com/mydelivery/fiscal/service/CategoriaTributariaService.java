@@ -151,6 +151,36 @@ public class CategoriaTributariaService {
         return catRepo.save(c);
     }
 
+    /**
+     * Vincula a categoria a TODOS os produtos ativos do restaurante que tem
+     * o nome informado (case-insensitive). Cobre o caso comum onde existem
+     * versoes duplicadas do mesmo produto (ex: "X-Tudo" do delivery e outro
+     * "X-Tudo" da mesa) e o dono só ligou 1 na tela — a emissao rejeita
+     * porque o outro ficou sem NCM. Retorna quantos foram vinculados agora.
+     */
+    @Transactional
+    public int vincularPorNome(Restaurante r, Long catId, String nome) {
+        var c = catRepo.findById(catId).orElseThrow();
+        if (!c.getRestaurante().getId().equals(r.getId())) throw new IllegalArgumentException("Nao pertence");
+        if (nome == null || nome.isBlank()) return 0;
+        String alvo = nome.trim().toLowerCase();
+        var todos = produtoRepo.findByRestauranteId(r.getId());
+        int n = 0;
+        Set<Produto> conjunto = c.getProdutos() == null ? new HashSet<>() : new HashSet<>(c.getProdutos());
+        for (var p : todos) {
+            if (p.getNome() == null) continue;
+            if (!p.getNome().trim().toLowerCase().equals(alvo)) continue;
+            if (conjunto.add(p)) {
+                propagarParaPerfil(p, c);
+                n++;
+            }
+        }
+        c.setProdutos(conjunto);
+        catRepo.save(c);
+        log.info("[Fiscal][Cat] vincularPorNome '{}' → categoria '{}' vinculou {} novo(s)", nome, c.getNome(), n);
+        return n;
+    }
+
     /** Reaplica todas as categorias do restaurante nos produtos vinculados. */
     @Transactional
     public int repropagarTodas(Restaurante r) {

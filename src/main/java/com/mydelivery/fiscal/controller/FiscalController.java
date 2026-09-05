@@ -426,6 +426,24 @@ public class FiscalController {
         return ResponseEntity.ok(Map.of("ok", true, "categoriasRepropagadas", cats));
     }
 
+    /**
+     * Auto-vincula TODOS os produtos com o nome informado a uma categoria.
+     * Resolve caso onde emissao rejeita porque existe produto duplicado no
+     * cardapio (mesa vs delivery, versao antiga...) e dono ligou so um.
+     * Body: {@code { nome: "X-Tudo", categoriaId: 42 }}.
+     */
+    @PostMapping("/categorias/vincular-por-nome")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Map<String, Object>> vincularPorNome(
+            @AuthenticationPrincipal String email,
+            @RequestBody Map<String, Object> body) {
+        Restaurante r = exigirAtivo(email);
+        String nome = body == null ? null : String.valueOf(body.get("nome"));
+        Long catId = body == null ? null : Long.valueOf(String.valueOf(body.get("categoriaId")));
+        int n = categoriaService.vincularPorNome(r, catId, nome);
+        return ResponseEntity.ok(Map.of("ok", true, "vinculados", n));
+    }
+
     /** Diagnóstico do pedido — mostra CFOP/CSOSN gravados pra CADA item. */
     @GetMapping("/pedido/{id}/diag-itens")
     @PreAuthorize("hasRole('RESTAURANTE')")

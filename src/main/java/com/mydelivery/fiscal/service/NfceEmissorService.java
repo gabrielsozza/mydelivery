@@ -417,21 +417,25 @@ public class NfceEmissorService {
         }
 
         // Itens — coleta TODOS os produtos sem fiscal do pedido antes de
-        // lançar exception (dono vê a lista completa de uma vez, não item
-        // por item). Mensagem aponta pra a tela nova de Categorias.
+        // lançar exception. Mensagem inclui produtoId pro dono achar na
+        // tela de categorias (o mesmo nome pode existir em multiplos
+        // produtos — cardapio antigo/duplicado — e cada um precisa da
+        // vinculacao propria).
         List<String> semFiscal = new ArrayList<>();
         for (PedidoItem pi : p.getItens()) {
             if (pi.getProduto() == null) continue;
             if (perfilProdRepo.findByProdutoId(pi.getProduto().getId()).isEmpty()) {
-                semFiscal.add(pi.getNomeProduto() != null ? pi.getNomeProduto()
-                              : pi.getProduto().getNome());
+                String nome = pi.getNomeProduto() != null ? pi.getNomeProduto() : pi.getProduto().getNome();
+                semFiscal.add(nome + " (ID " + pi.getProduto().getId() + ")");
             }
         }
         if (!semFiscal.isEmpty()) {
             throw new IllegalStateException(
                     "Não emite: item(ns) do pedido sem NCM/CFOP configurado — "
                   + String.join(", ", semFiscal)
-                  + ". Vincule a alguma Categoria tributária (Área Fiscal → Categorias tributárias → aba Produtos).");
+                  + ". Vincule a alguma Categoria tributária (Área Fiscal → Categorias tributárias → aba Produtos)."
+                  + " Se o produto já parece vinculado, pode existir outro com o mesmo nome"
+                  + " (versão antiga do cardápio) — o ID acima aponta qual precisa.");
         }
 
         List<NfeGateway.ItemNota> itens = new ArrayList<>();
@@ -470,9 +474,11 @@ public class NfceEmissorService {
         }
         BigDecimal valorTotal = valorItens.setScale(2, java.math.RoundingMode.HALF_UP);
         List<NfeGateway.Pagamento> pagamentos = new ArrayList<>();
-        pagamentos.add(new NfeGateway.Pagamento(
-                mapearFormaPagamento(p.getFormaPagamento() == null ? null : p.getFormaPagamento().name()),
-                valorTotal));
+        String formaNome = p.getFormaPagamento() == null ? null : p.getFormaPagamento().name();
+        String tPag = mapearFormaPagamento(formaNome);
+        // xPag preenchido só faz sentido em 99 (SEFAZ exige e rejeita se null).
+        String xPag = "99".equals(tPag) ? descricaoFormaPagamento(formaNome) : null;
+        pagamentos.add(new NfeGateway.Pagamento(tPag, valorTotal, xPag));
 
         return new NfeGateway.RequisicaoEmissao(
                 perfil.getUf(), amb, serie, numero, emitidaEm,
@@ -665,8 +671,27 @@ public class NfceEmissorService {
         if (f.contains("PIX"))               return "17";
         if (f.contains("CREDITO") || f.contains("CRÉDITO")) return "03";
         if (f.contains("DEBITO") || f.contains("DÉBITO"))   return "04";
+        // Maquininha genérica (Stone, Pagseguro, etc) — sem saber se cliente
+        // pagou crédito ou débito, cai em "outros" (99). SEFAZ exige xPag
+        // quando tPag=99, populado no gateway.
+        if (f.contains("MAQUININHA") || f.contains("MAQUINETA")) return "99";
         if (f.contains("VALE"))              return "05";
-        return "99"; // Outros
+        return "99";
+    }
+
+    /**
+     * Descrição textual do meio de pagamento — SEFAZ EXIGE {@code xPag}
+     * (2..60 chars) sempre que {@code tPag=99} (Outros). Sem essa tag,
+     * rejeita com cStat 441. Usado pelo gateway ao montar {@code detPag}.
+     */
+    public static String descricaoFormaPagamento(String forma) {
+        if (forma == null) return "Outros";
+        String f = forma.toUpperCase();
+        if (f.contains("MAQUININHA") || f.contains("MAQUINETA")) return "Cartao maquininha";
+        if (f.contains("VOUCHER"))    return "Voucher";
+        if (f.contains("CORTESIA"))   return "Cortesia";
+        if (f.contains("FIADO"))      return "Fiado";
+        return "Outros";
     }
 
     private static String nvl(String a, String b) { return (a == null || a.isBlank()) ? b : a; }

@@ -152,6 +152,29 @@ public class CategoriaTributariaService {
     }
 
     /**
+     * Vincula a categoria a UM produto específico por ID. Uso direto: o
+     * modal de correção rápida na tela de emissão pega o ID da mensagem
+     * de erro do backend e chama aqui — garantido, sem depender de match
+     * por nome (o item do pedido guarda snapshot que pode divergir do
+     * nome atual do produto).
+     */
+    @Transactional
+    public boolean vincularPorProdutoId(Restaurante r, Long catId, Long produtoId) {
+        var c = catRepo.findById(catId).orElseThrow();
+        if (!c.getRestaurante().getId().equals(r.getId())) throw new IllegalArgumentException("Nao pertence");
+        var p = produtoRepo.findById(produtoId).orElse(null);
+        if (p == null || p.getRestaurante() == null || !p.getRestaurante().getId().equals(r.getId())) return false;
+        Set<Produto> conjunto = c.getProdutos() == null ? new HashSet<>() : new HashSet<>(c.getProdutos());
+        boolean novo = conjunto.add(p);
+        c.setProdutos(conjunto);
+        catRepo.save(c);
+        propagarParaPerfil(p, c);
+        log.info("[Fiscal][Cat] vincularPorProdutoId produto={} → categoria '{}' (novo={})",
+                produtoId, c.getNome(), novo);
+        return true;
+    }
+
+    /**
      * Vincula a categoria a TODOS os produtos ativos do restaurante que tem
      * o nome informado (case-insensitive). Cobre o caso comum onde existem
      * versoes duplicadas do mesmo produto (ex: "X-Tudo" do delivery e outro

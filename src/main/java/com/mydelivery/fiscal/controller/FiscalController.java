@@ -444,6 +444,24 @@ public class FiscalController {
         return ResponseEntity.ok(Map.of("ok", true, "vinculados", n));
     }
 
+    /**
+     * Vincula o produto de ID exato a uma categoria — usado pelo modal
+     * "Correcao rapida" de emissao pra evitar match por nome que falha
+     * quando o item guardou snapshot antigo.
+     * Body: {@code { produtoId, categoriaId }}.
+     */
+    @PostMapping("/categorias/vincular-por-id")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Map<String, Object>> vincularPorId(
+            @AuthenticationPrincipal String email,
+            @RequestBody Map<String, Object> body) {
+        Restaurante r = exigirAtivo(email);
+        Long prodId = body == null ? null : Long.valueOf(String.valueOf(body.get("produtoId")));
+        Long catId  = body == null ? null : Long.valueOf(String.valueOf(body.get("categoriaId")));
+        boolean ok = categoriaService.vincularPorProdutoId(r, catId, prodId);
+        return ResponseEntity.ok(Map.of("ok", ok));
+    }
+
     /** Diagnóstico do pedido — mostra CFOP/CSOSN gravados pra CADA item. */
     @GetMapping("/pedido/{id}/diag-itens")
     @PreAuthorize("hasRole('RESTAURANTE')")

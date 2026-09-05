@@ -48,6 +48,11 @@ public class BalcaoService {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private CaixaService caixaService;
 
+    /** Opcional — dispara emissao de NFC-e quando "Cobrar depois" e cobrado.
+     *  Se modulo fiscal desativado, cai fora silencioso. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.mydelivery.fiscal.service.NfceEmissorService fiscalEmissor;
+
     /**
      * Cria pedido de balcão. Itens vêm validados (id+qtd). Total recalculado
      * server-side. Gera senha sequencial diária. Vincula cliente se telefone
@@ -380,6 +385,21 @@ public class BalcaoService {
         p.setPago(true);
         p.setPagoEm(java.time.LocalDateTime.now());
         pedidoRepo.save(p);
+        // Dispara auto-emit da NFC-e quando o pagamento (que estava pendente)
+        // e definido — cobre o fluxo "Cobrar depois": pedido foi criado sem
+        // forma real, virou ENTREGUE sem emitir (bloqueio em PedidoService),
+        // agora ao definir a forma emite a nota. Fail-safe: se fiscal off,
+        // ou pedido nao apto, ignora silencioso.
+        if (fiscalEmissor != null) {
+            try {
+                fiscalEmissor.emitirParaPedidoSeguro(p.getId(), "sistema:cobrar", null);
+                log.info("[Fiscal][AutoEmit] pedido={} disparou emit apos cobrar (forma={})",
+                        p.getId(), fp);
+            } catch (Exception e) {
+                log.warn("[Fiscal][AutoEmit] pedido={} falhou pos-cobrar: {}",
+                        p.getId(), e.getMessage());
+            }
+        }
         return Map.of("ok", true, "formaPagamento", fp.name(), "pago", true);
     }
     private Long toLong(Object o) {

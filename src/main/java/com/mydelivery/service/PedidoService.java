@@ -712,15 +712,28 @@ public class PedidoService {
         // se o módulo fiscal não estiver ativo pra essa loja, retorna cedo
         // sem barulho; se der erro na emissão, fica REJEITADA pro retry (R5).
         // A mudança de status do pedido NUNCA falha por causa da nota.
+        //
+        // NÃO emitir quando pagamento ainda está PENDENTE (fluxo "Cobrar
+        // depois"): sem forma real a NFC-e vira "Outros" (tPag=99) sem
+        // sentido fiscal. O emit dispara depois via BalcaoService.cobrar
+        // quando dono seleciona a forma real.
         if (fiscalEmissor != null
                 && statusNovo == Pedido.Status.ENTREGUE
-                && statusAntigo != Pedido.Status.ENTREGUE) {
+                && statusAntigo != Pedido.Status.ENTREGUE
+                && salvo.getFormaPagamento() != null
+                && salvo.getFormaPagamento() != Pedido.FormaPagamento.PENDENTE) {
             try {
                 fiscalEmissor.emitirParaPedidoSeguro(salvo.getId(), "sistema:auto", null);
             } catch (Exception e) {
                 log.warn("[Fiscal][AutoEmit] pedido={} falhou (não bloqueou entrega): {}",
                         salvo.getId(), e.getMessage());
             }
+        } else if (statusNovo == Pedido.Status.ENTREGUE
+                && statusAntigo != Pedido.Status.ENTREGUE
+                && (salvo.getFormaPagamento() == null
+                    || salvo.getFormaPagamento() == Pedido.FormaPagamento.PENDENTE)) {
+            log.info("[Fiscal][AutoEmit] pedido={} entregue mas SEM forma de pagamento — emit adiado ate cobrar",
+                    salvo.getId());
         }
 
         // ── NOTIFICAÇÃO PRO CLIENTE VIA WHATSAPP ──────────────────────────

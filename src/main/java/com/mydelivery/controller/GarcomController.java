@@ -138,11 +138,40 @@ public class GarcomController {
         out.put("status", s.getStatus().name());
         out.put("aberturaEm", s.getAberturaEm().toString());
         out.put("totalAcumulado", s.getTotalAcumulado());
+        // Nomes das comandas por pessoa (parsing JSON). Se null/erro, front
+        // fica com fallback "P1", "P2"...
+        out.put("nomesPessoas", parseNomesPessoas(s.getNomesPessoas()));
         // Lista de pedidos da sessão
         var pedidos = pedidoRepo.findBySessaoIdOrderByCriadoEmAsc(s.getId());
         var resumoPedidos = pedidos.stream().map(this::resumirPedido).toList();
         out.put("pedidos", resumoPedidos);
         return ResponseEntity.ok(out);
+    }
+
+    /**
+     * Parseia MesaSessao.nomesPessoas (JSON) em Map<Integer,String>.
+     * Aceita tanto array (["Fulano","Ciclano"]) quanto object ({"1":"Fulano"}).
+     * Devolve null se vazio ou parse falhar — front vai pro fallback "P1".
+     */
+    private Map<String, String> parseNomesPessoas(String json) {
+        if (json == null || json.isBlank()) return null;
+        try {
+            com.fasterxml.jackson.databind.ObjectMapper om = new com.fasterxml.jackson.databind.ObjectMapper();
+            com.fasterxml.jackson.databind.JsonNode n = om.readTree(json);
+            Map<String, String> out = new LinkedHashMap<>();
+            if (n.isArray()) {
+                for (int i = 0; i < n.size(); i++) {
+                    String v = n.get(i).asText(null);
+                    if (v != null && !v.isBlank()) out.put(String.valueOf(i + 1), v.trim());
+                }
+            } else if (n.isObject()) {
+                n.fields().forEachRemaining(e -> {
+                    String v = e.getValue().asText(null);
+                    if (v != null && !v.isBlank()) out.put(e.getKey(), v.trim());
+                });
+            }
+            return out.isEmpty() ? null : out;
+        } catch (Exception ignore) { return null; }
     }
 
     @PostMapping("/api/garcom/mesa/{slug}/abrir")
@@ -155,12 +184,52 @@ public class GarcomController {
         String nome = body == null ? null : strOf(body.get("nomeCliente"));
         String tel = body == null ? null : strOf(body.get("telefoneCliente"));
         Integer pessoas = body == null ? null : intOf(body.get("pessoas"));
+        // nomesPessoas: array de nomes indexados por pessoa (["Fulano","Ciclano"])
+        // — usado pra abrir várias comandas nomeadas na mesma mesa.
+        Object nomesRaw = body == null ? null : body.get("nomesPessoas");
         var sessao = garcomService.abrirSessao(ctx.restauranteId, slug, ctx.garcomId, nome, pessoas, tel);
+        if (nomesRaw != null) {
+            try {
+                String json = new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(nomesRaw);
+                garcomService.atualizarNomesPessoas(sessao.getId(), json);
+            } catch (Exception e) {
+                log.warn("[Garçom] falha ao serializar nomesPessoas: {}", e.getMessage());
+            }
+        }
         return ResponseEntity.ok(Map.of(
                 "ok", true,
                 "sessaoId", sessao.getId(),
                 "status", sessao.getStatus().name()
         ));
+    }
+
+    /**
+     * Edita os nomes das comandas depois da mesa aberta (garçom não pegou
+     * o nome no ato ou o cliente mudou). Body: { nomesPessoas: [...] } ou
+     * { nomesPessoas: {"1":"..."} }.
+     */
+    @org.springframework.web.bind.annotation.PutMapping("/api/garcom/mesa/{slug}/nomes")
+    @PreAuthorize("hasRole('GARCOM')")
+    public ResponseEntity<Map<String, Object>> editarNomesPessoas(
+            @AuthenticationPrincipal String subject,
+            @PathVariable String slug,
+            @RequestBody Map<String, Object> body) {
+        Ctx ctx = parseSubject(subject);
+        var sessaoOpt = garcomService.sessaoDaMesa(ctx.restauranteId, slug);
+        if (sessaoOpt.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Mesa sem sessão aberta");
+        }
+        Object nomesRaw = body == null ? null : body.get("nomesPessoas");
+        String json = null;
+        if (nomesRaw != null) {
+            try {
+                json = new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(nomesRaw);
+            } catch (Exception e) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "nomesPessoas inválido");
+            }
+        }
+        garcomService.atualizarNomesPessoas(sessaoOpt.get().getId(), json);
+        return ResponseEntity.ok(Map.of("ok", true));
     }
 
     /**
@@ -209,6 +278,15 @@ public class GarcomController {
         p.setSessaoId(sessao.getId());
         p.setGarcomId(ctx.garcomId);
         p.setPessoaIndice(pessoaIndice);
+        // Se garçom nomeou as comandas na abertura, vincula o nome ao pedido
+        // (aparece na cozinha e no cupom: "Pedido de Fulano" em vez de "P1").
+        if (pessoaIndice != null) {
+            var nomes = parseNomesPessoas(sessao.getNomesPessoas());
+            if (nomes != null) {
+                String n = nomes.get(String.valueOf(pessoaIndice));
+                if (n != null && !n.isBlank()) p.setNomeClienteMesa(n);
+            }
+        }
         p.setObservacao(observacao);
         p.setTaxaEntrega(BigDecimal.ZERO);
         p.setDesconto(BigDecimal.ZERO);
@@ -517,7 +595,7 @@ public class GarcomController {
      * recuperar, só substituir. Dono usa quando garçom (ou ele) esqueceu.
      * Body: {@code { pin: "1234" }} (4-8 dígitos numéricos).
      */
-    @PutMapping("/api/restaurante/garcons/{id}/pin")
+    @org.springframework.web.bind.annotation.PutMapping("/api/restaurante/garcons/{id}/pin")
     @PreAuthorize("hasRole('RESTAURANTE')")
     public ResponseEntity<Map<String, Object>> trocarPin(
             @AuthenticationPrincipal String email,
@@ -585,15 +663,21 @@ public class GarcomController {
         m.put("status", p.getStatus().name());
         m.put("total", p.getTotal());
         m.put("pessoaIndice", p.getPessoaIndice());
+        // Nome da comanda vinculada (quando garçom nomeou as pessoas na
+        // abertura). Front usa pra mostrar "Pedido de Fulano" em vez de "P1".
+        m.put("nomePessoa", p.getNomeClienteMesa());
         m.put("criadoEm", p.getCriadoEm() == null ? null : p.getCriadoEm().toString());
-        // Map.of() rejeita null. Itens vindos do cliente/balcão podem ter
-        // nomeProduto/subtotal nulos — usamos HashMap pra preservar a chave
-        // mesmo com null e evitar NPE -> HTTP 400 no GET /mesa/{slug}.
+        // Map.of() rejeita null. Devolve TUDO que o modal de edição precisa
+        // pra não zerar preço/produtoId ao salvar (bug reportado pela cliente).
         m.put("itens", p.getItens().stream().map(it -> {
             Map<String, Object> i = new LinkedHashMap<>();
+            i.put("id", it.getId());
+            i.put("produtoId", it.getProduto() == null ? null : it.getProduto().getId());
             i.put("nome", it.getNomeProduto());
             i.put("quantidade", it.getQuantidade());
+            i.put("precoUnitario", it.getPrecoUnitario());
             i.put("subtotal", it.getSubtotal());
+            i.put("observacao", it.getObservacao());
             return i;
         }).toList());
         return m;

@@ -246,6 +246,20 @@ public class GarcomService {
         });
     }
 
+    /**
+     * Salva o JSON dos nomes das comandas (por pessoa) na sessão. Passar
+     * null limpa (mesa volta pra P1/P2 no front). O JSON é opaco pro service
+     * — o controller valida/serializa; aqui é só persistir.
+     */
+    @Transactional
+    public void atualizarNomesPessoas(Long sessaoId, String json) {
+        sessaoRepo.findById(sessaoId).ifPresent(s -> {
+            s.setNomesPessoas(json);
+            s.setUltimaInteracaoEm(LocalDateTime.now());
+            sessaoRepo.save(s);
+        });
+    }
+
     @Transactional
     public MesaSessao fecharSessao(Long sessaoId, Long garcomId) {
         return fecharSessao(sessaoId, garcomId, null);

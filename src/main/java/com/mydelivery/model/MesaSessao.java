@@ -129,6 +129,12 @@ public class MesaSessao {
     @Column(name = "valor_cobrado", precision = 10, scale = 2)
     private BigDecimal valorCobrado;
 
+    /** JSON com nomes das comandas por pessoa. Ex: {"1":"Fulano","2":"Ciclano"}
+     *  Usado pra o garçom identificar de quem é cada pedido e a cozinha
+     *  ver na comanda impressa. Null = usa "P1", "P2"... (fallback). */
+    @Column(name = "nomes_pessoas", columnDefinition = "TEXT")
+    private String nomesPessoas;
+
     public enum Status {
         /** Acabou de abrir, sem pedidos ainda. */
         ABERTA,

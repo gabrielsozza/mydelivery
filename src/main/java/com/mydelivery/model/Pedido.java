@@ -43,6 +43,10 @@ public class Pedido {
     // dispararia LazyInitializationException ao ler mesa.getNome().
     @ManyToOne @JoinColumn(name="mesa_id") private Mesa mesa;
     @Column(name="nome_cliente_mesa", length=80) private String nomeClienteMesa;
+    /** Razao da ultima tentativa FALHA de auto-emit da NFC-e. Null = sem erro
+     *  (nunca tentou ou ultima emissao foi OK). Painel exibe como badge de
+     *  alerta pro dono ver imediatamente por que a nota nao saiu. */
+    @Column(name="fiscal_erro_auto", length=500) private String fiscalErroAuto;
     // length=30 garante que AGUARDANDO_PAGAMENTO (20 chars) caiba. ddl-auto=update
     // não amplia colunas existentes — pra bancos já criados, ver MigracaoEnumLengthJob.
     @Enumerated(EnumType.STRING) @Column(nullable=false, length=30) private Status status;

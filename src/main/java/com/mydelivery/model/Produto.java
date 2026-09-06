@@ -75,6 +75,16 @@ public class Produto {
     @Column(name = "mais_de_18", nullable = false)
     private Boolean maisDe18 = false;
 
+    /**
+     * Produto EXCLUSIVO de balcao/PDV — nao aparece no cardapio delivery
+     * publico. Uso: revenda presencial (agua gelada de balcao, brinde, item
+     * de reposicao) que o dono NAO quer expor pro cliente online. Filtro
+     * aplicado em /api/cardapio/{slug} e no listar publico de categorias.
+     */
+    @Builder.Default
+    @Column(name = "apenas_balcao", nullable = false)
+    private Boolean apenasBalcao = false;
+
     @Builder.Default
     private Integer ordem = 0;
 

@@ -41,6 +41,18 @@ public class BalcaoController {
     private final RestauranteRepository restauranteRepo;
     private final PedidoRepository pedidoRepo;
     private final SenhaBalcaoRepository senhaRepo;
+    private final com.mydelivery.service.CardapioService cardapioService;
+
+    /** Cardapio COMPLETO pro balcao — inclui produtos com apenasBalcao=true
+     *  (que o endpoint publico /api/cardapio/{slug} esconde do delivery).
+     *  Autenticado — so o dono pode consumir. */
+    @GetMapping("/api/restaurante/balcao/cardapio")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<?> cardapioBalcao(@AuthenticationPrincipal String email) {
+        Restaurante r = restauranteRepo.findByUsuarioEmail(email)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+        return ResponseEntity.ok(cardapioService.getCardapioBalcao(r.getSlug()));
+    }
 
     @PostMapping("/api/restaurante/balcao/pedido")
     @PreAuthorize("hasRole('RESTAURANTE')")

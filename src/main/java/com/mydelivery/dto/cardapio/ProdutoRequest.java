@@ -31,6 +31,11 @@ public class ProdutoRequest {
      *  badge e exige confirmação de idade antes de adicionar ao carrinho. */
     private Boolean maisDe18 = false;
 
+    /** Produto exclusivo de balcao/PDV — nao aparece no cardapio delivery.
+     *  Serve pra revenda presencial: agua gelada, brinde, item de reposicao.
+     *  Balcao.html mostra esses; /api/cardapio/{slug} publico filtra fora. */
+    private Boolean apenasBalcao = false;
+
     /** Quando true, o preço é só REFERENCIAL (vitrine). O valor real cobrado
      *  vem dos complementos (porções). Exemplo: feijão tropeiro R$ 59,99/kg
      *  — cliente escolhe porção 250g/500g/1kg via complemento. */

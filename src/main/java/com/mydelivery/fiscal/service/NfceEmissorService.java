@@ -348,17 +348,49 @@ public class NfceEmissorService {
     @org.springframework.scheduling.annotation.Async
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.REQUIRES_NEW)
     public void emitirParaPedidoSeguro(Long pedidoId, String usuarioEmail, String ipOrigem) {
+        log.info("[Fiscal][AutoEmit] START pedido={} usuario={}", pedidoId, usuarioEmail);
         try {
-            // Só tenta se restaurante tem emissão ativa (senão nem chama o motor)
             Pedido p = pedidoRepo.findById(pedidoId).orElse(null);
-            if (p == null || p.getRestaurante() == null) return;
+            if (p == null || p.getRestaurante() == null) {
+                log.warn("[Fiscal][AutoEmit] pedido={} inexistente ou sem restaurante — abort", pedidoId);
+                return;
+            }
             var perfil = perfilRepo.findByRestauranteId(p.getRestaurante().getId()).orElse(null);
-            if (perfil == null || !Boolean.TRUE.equals(perfil.getEmissaoAtiva())) return;
+            if (perfil == null) {
+                log.warn("[Fiscal][AutoEmit] pedido={} restaurante={} SEM perfil fiscal (modulo nao configurado) — skip",
+                        pedidoId, p.getRestaurante().getId());
+                registrarErroAutoEmit(p, "Modulo fiscal nao configurado neste restaurante");
+                return;
+            }
+            if (!Boolean.TRUE.equals(perfil.getEmissaoAtiva())) {
+                log.warn("[Fiscal][AutoEmit] pedido={} restaurante={} emissaoAtiva=false — skip",
+                        pedidoId, p.getRestaurante().getId());
+                registrarErroAutoEmit(p, "Emissao automatica desligada no perfil fiscal");
+                return;
+            }
 
+            log.info("[Fiscal][AutoEmit] pedido={} passou pre-checks → emitindo", pedidoId);
             emitirParaPedido(pedidoId, usuarioEmail, ipOrigem);
+            log.info("[Fiscal][AutoEmit] OK pedido={} emitido com sucesso", pedidoId);
+            registrarErroAutoEmit(p, null); // limpa erro anterior se sucesso
         } catch (Exception e) {
-            log.warn("[Fiscal][AutoEmit] Falha silenciosa pedido={}: {}", pedidoId, e.getMessage());
+            log.error("[Fiscal][AutoEmit] FALHA pedido={}: {}", pedidoId, e.getMessage(), e);
+            // Grava razao no pedido pra o dono ver no painel (nao mais silencioso).
+            try {
+                var pFallback = pedidoRepo.findById(pedidoId).orElse(null);
+                if (pFallback != null) registrarErroAutoEmit(pFallback, e.getMessage());
+            } catch (Exception ignore) {}
         }
+    }
+
+    /** Persiste a razao da ultima tentativa de auto-emit no pedido — passar
+     *  null limpa (sucesso). Best-effort: se o campo nao existir no DB (deploy
+     *  antigo), engole o erro. Painel exibe esse texto num badge. */
+    private void registrarErroAutoEmit(Pedido p, String erro) {
+        try {
+            p.setFiscalErroAuto(erro);
+            pedidoRepo.save(p);
+        } catch (Throwable ignore) { /* campo ainda nao migrado, sem stress */ }
     }
 
     /**

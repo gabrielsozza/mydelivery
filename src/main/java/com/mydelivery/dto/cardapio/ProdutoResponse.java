@@ -24,6 +24,8 @@ public class ProdutoResponse {
     /** +18 (bebida alcoólica, tabaco). Frontend pinta badge no card e exige
      *  confirmação de idade no cardápio público. */
     private Boolean maisDe18;
+    /** Produto exclusivo de balcao/PDV — nao vai pro cardapio delivery. */
+    private Boolean apenasBalcao;
     private Long categoriaId;
     private String categoriaNome;
     /** Posição do produto dentro da categoria (menor = aparece primeiro). */

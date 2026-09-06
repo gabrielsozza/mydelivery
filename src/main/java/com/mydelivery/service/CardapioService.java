@@ -56,6 +56,37 @@ public class CardapioService {
     @org.springframework.cache.annotation.Cacheable(
             value = "cardapio",
             key = "#slug + '::' + T(java.time.LocalDate).now(T(java.time.ZoneId).of('America/Sao_Paulo')).getDayOfWeek().name()")
+    /**
+     * Cardapio pro BALCAO — igual ao publico, mas SEM o filtro apenasBalcao.
+     * Serve pro POS/balcao ver e vender os produtos exclusivos presenciais
+     * (agua gelada, brinde, item de reposicao) alem dos regulares.
+     * Usado por GET /api/restaurante/balcao/cardapio (autenticado).
+     */
+    public List<CategoriaComProdutosResponse> getCardapioBalcao(String slug) {
+        Restaurante restaurante = restauranteRepository.findBySlug(slug)
+                .orElseThrow(() -> new RuntimeException("Restaurante não encontrado"));
+        final String hoje = codigoDiaSemanaAtual();
+        List<Categoria> categorias = categoriaRepository
+                .findByRestauranteIdAndAtivoTrueOrderByOrdemAsc(restaurante.getId());
+        return categorias.stream().map(cat -> {
+            List<ProdutoResponse> produtos = produtoRepository
+                    .findByRestauranteIdAndDisponivelTrue(restaurante.getId())
+                    .stream()
+                    .filter(p -> p.getCategoria() != null &&
+                                 p.getCategoria().getId().equals(cat.getId()))
+                    // NAO filtra apenasBalcao — inclui todos.
+                    .filter(p -> diaSemanaAceita(p.getDiasSemanaAtivos(), hoje))
+                    .sorted(java.util.Comparator
+                            .comparing((Produto p) -> p.getOrdem() == null ? Integer.MAX_VALUE : p.getOrdem())
+                            .thenComparing(Produto::getId))
+                    .map(this::toProdutoResponse)
+                    .toList();
+            return CategoriaComProdutosResponse.builder()
+                    .id(cat.getId()).nome(cat.getNome()).ordem(cat.getOrdem())
+                    .produtos(produtos).build();
+        }).toList();
+    }
+
     public List<CategoriaComProdutosResponse> getCardapioPublico(String slug) {
         Restaurante restaurante = restauranteRepository.findBySlug(slug)
                 .orElseThrow(() -> new RuntimeException("Restaurante não encontrado"));
@@ -71,6 +102,11 @@ public class CardapioService {
                     .stream()
                     .filter(p -> p.getCategoria() != null &&
                                  p.getCategoria().getId().equals(cat.getId()))
+                    // Produto marcado "apenas balcao" NAO aparece no cardapio
+                    // delivery — reservado pra venda presencial (agua gelada
+                    // do balcao, brinde). O balcao.html usa outro endpoint
+                    // que inclui esses.
+                    .filter(p -> !Boolean.TRUE.equals(p.getApenasBalcao()))
                     // Se o produto tem restrição de dias e hoje não está na lista, esconde.
                     // Sem restrição (null/vazio) = aparece sempre (retrocompat pra 99% dos produtos).
                     .filter(p -> diaSemanaAceita(p.getDiasSemanaAtivos(), hoje))
@@ -267,6 +303,7 @@ public class CardapioService {
         // Preserva contrato "cópia = cópia" — dono espera achar tudo igual
         // no clone, só o nome que muda + inativo por padrão.
         p.setMaisDe18(Boolean.TRUE.equals(orig.getMaisDe18()));
+        p.setApenasBalcao(Boolean.TRUE.equals(orig.getApenasBalcao()));
         p.setPrecoVitrine(Boolean.TRUE.equals(orig.getPrecoVitrine()));
         p.setUnidadePreco(orig.getUnidadePreco());
         p.setPrecoAPartirDe(Boolean.TRUE.equals(orig.getPrecoAPartirDe()));
@@ -410,6 +447,7 @@ public class CardapioService {
         produto.setDisponivel(request.getDisponivel());
         produto.setDestaque(request.getDestaque());
         produto.setMaisDe18(Boolean.TRUE.equals(request.getMaisDe18()));
+        produto.setApenasBalcao(Boolean.TRUE.equals(request.getApenasBalcao()));
         if (request.getPrecoVitrine() != null) produto.setPrecoVitrine(request.getPrecoVitrine());
         if (request.getUnidadePreco() != null) produto.setUnidadePreco(request.getUnidadePreco());
         if (request.getPrecoAPartirDe() != null) produto.setPrecoAPartirDe(request.getPrecoAPartirDe());
@@ -454,6 +492,7 @@ public class CardapioService {
         if (request.getDisponivel() != null)   produto.setDisponivel(request.getDisponivel());
         if (request.getDestaque() != null)     produto.setDestaque(request.getDestaque());
         if (request.getMaisDe18() != null)     produto.setMaisDe18(request.getMaisDe18());
+        if (request.getApenasBalcao() != null) produto.setApenasBalcao(request.getApenasBalcao());
         if (request.getPrecoVitrine() != null) produto.setPrecoVitrine(request.getPrecoVitrine());
         if (request.getUnidadePreco() != null) produto.setUnidadePreco(request.getUnidadePreco());
         if (request.getPrecoAPartirDe() != null) produto.setPrecoAPartirDe(request.getPrecoAPartirDe());
@@ -548,6 +587,7 @@ public class CardapioService {
                 .disponivel(p.getDisponivel())
                 .destaque(p.getDestaque())
                 .maisDe18(Boolean.TRUE.equals(p.getMaisDe18()))
+                .apenasBalcao(Boolean.TRUE.equals(p.getApenasBalcao()))
                 .categoriaId(p.getCategoria() != null ? p.getCategoria().getId() : null)
                 .categoriaNome(p.getCategoria() != null ? p.getCategoria().getNome() : null)
                 .ordem(p.getOrdem())

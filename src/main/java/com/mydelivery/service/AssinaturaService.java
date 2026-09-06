@@ -780,11 +780,12 @@ public class AssinaturaService {
         if (!ativos.isEmpty()) {
             List<Map<String, Object>> lista = new ArrayList<>();
             for (PlanoCatalogo p : ativos) {
-                // Planos ADD-ON (fiscal, etc.) não entram na lista de planos
-                // principais — se aparecessem, o dono trocaria o plano PRINCIPAL
-                // pelo add-on por engano. Add-ons ficam num endpoint separado
-                // consumido pela tela de configuração do módulo.
-                if ("FISCAL".equalsIgnoreCase(p.getOnboardingTipo())) continue;
+                // Add-ons (fiscal, etc.) aparecem na mesma tela dos planos
+                // principais — front os diferencia visualmente (badge "Add-on
+                // Fiscal", cor azul-indigo) via classe plan--fiscal e nao ha
+                // risco de troca acidental porque o onboardingTipo=FISCAL
+                // dispara fluxo proprio (configuracao do modulo, nao troca
+                // do plano principal).
                 lista.add(planoCatalogoService.toMapRestaurante(p, r));
             }
             return lista;

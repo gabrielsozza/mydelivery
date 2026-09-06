@@ -774,39 +774,87 @@ public class MyHelpService {
     private java.util.List<Map<String, Object>> parseListaProdutosComPreco(String texto) {
         java.util.List<Map<String, Object>> out = new ArrayList<>();
         if (texto == null || texto.isBlank()) return out;
-        // Quebra por linha; se veio uma linha só, tenta dividir por ; ou ,
-        String[] linhas = texto.split("\\r?\\n");
+        // Corta o "cabecalho": tudo ate o primeiro ":" quando a frase e
+        // "adicione esses produtos na categoria X: item1 R$ ..., item2 R$ ...".
+        // Sem esse corte, o pedaco antes do ":" polui o primeiro nome.
+        String trabalho = texto;
+        int idxDoisPontos = texto.indexOf(':');
+        if (idxDoisPontos > 0 && idxDoisPontos < texto.length() - 1) {
+            String antes = texto.substring(0, idxDoisPontos).toLowerCase();
+            if (antes.matches(".*(cria|criar|adicion\\w*|cadastr\\w*|inclui\\w*|registr\\w*|produtos?|itens?|categoria).*")) {
+                trabalho = texto.substring(idxDoisPontos + 1);
+            }
+        }
+
+        // ESTRATEGIA 1: WhatsApp/chat cola tudo numa linha só —
+        // "Paçoca R$ 0,60 Chiclete Trident R$ 3,50 Halls R$ 3,00 ...".
+        // Detecta multiplos precos e fatia entre eles.
+        java.util.regex.Pattern P_PRECO_INLINE = java.util.regex.Pattern.compile(
+                "(?i)\\s*[-–—:]?\\s*(?:r\\s*\\$\\s*)?(\\d+(?:[.,]\\d{1,2})?)(?:\\s*reais)?");
+        java.util.regex.Matcher matcher = P_PRECO_INLINE.matcher(trabalho);
+        java.util.List<int[]> ranges = new ArrayList<>();
+        java.util.List<String> precos = new ArrayList<>();
+        while (matcher.find()) {
+            // So aceita se: veio R$ OU "reais" OU se antes tem espaco/inicio E preco decimal (com ,/.)
+            String raw = matcher.group();
+            String precoStr = matcher.group(1);
+            boolean temMarcadorMoeda = raw.toLowerCase().contains("r$") || raw.toLowerCase().contains("reais");
+            boolean temDecimal = precoStr.contains(",") || precoStr.contains(".");
+            if (!temMarcadorMoeda && !temDecimal) continue; // "500g" isolado nao vira preco
+            // Rejeita se logo depois vem unidade colada (g, ml, kg, l) — e' tamanho, nao preco
+            int fim = matcher.end();
+            if (fim < trabalho.length()) {
+                String depois = trabalho.substring(fim).trim().toLowerCase();
+                if (depois.matches("^(g|ml|mg|kg|l|un|und)\\b.*") && !temMarcadorMoeda) continue;
+            }
+            ranges.add(new int[]{ matcher.start(), matcher.end() });
+            precos.add(precoStr.replace('.', ','));
+        }
+
+        if (ranges.size() >= 2) {
+            int cursorNome = 0;
+            for (int i = 0; i < ranges.size(); i++) {
+                int[] rr = ranges.get(i);
+                String nome = trabalho.substring(cursorNome, rr[0]).trim();
+                nome = limparNomeItem(nome);
+                cursorNome = rr[1];
+                if (nome.isEmpty()) continue;
+                BigDecimal preco;
+                try { preco = new BigDecimal(precos.get(i).replace(',', '.')); }
+                catch (Exception e) { continue; }
+                if (preco.signum() <= 0) continue;
+                Map<String, Object> it = new java.util.LinkedHashMap<>();
+                it.put("nome", nome);
+                it.put("preco", preco);
+                out.add(it);
+            }
+            if (out.size() >= 2) return out;
+            out.clear();
+        }
+
+        // ESTRATEGIA 2 (fallback): 1 linha por produto (ou ; como separador).
+        String[] linhas = trabalho.split("\\r?\\n");
         java.util.List<String> partes = new ArrayList<>();
         for (String l : linhas) {
             l = l == null ? "" : l.trim();
             if (l.isEmpty()) continue;
             partes.add(l);
         }
-        // Se veio texto todo em 1 linha, tenta separar por ";" (mais seguro
-        // que virgula — nome pode conter virgula). "Paçoca R$0,60; Halls R$3"
         if (partes.size() == 1 && partes.get(0).contains(";")) {
             String[] arr = partes.get(0).split(";");
             partes.clear();
             for (String a : arr) if (a != null && !a.trim().isEmpty()) partes.add(a.trim());
         }
-        // Regex de preço "R$ X,YZ" ou "X,YZ reais" ou "X.YZ" — captura DEPOIS
-        // do nome. Aceita separador . ou , de decimal, com ou sem R$.
-        java.util.regex.Pattern P_PRECO = java.util.regex.Pattern.compile(
+        java.util.regex.Pattern P_PRECO_LINHA = java.util.regex.Pattern.compile(
                 "(?i)\\s*[-–—:]?\\s*(?:r\\s*\\$\\s*)?(\\d+(?:[.,]\\d{1,2})?)\\s*(?:reais)?\\s*$");
         for (String linha : partes) {
-            // Ignora "cabeçalho" — linha com verbo de acao + palavra "produtos"/"categoria"
             String low = linha.toLowerCase();
             if (low.matches(".*(cria|criar|adicion\\w*|cadastr\\w*|inclui\\w*|registr\\w*).*(produtos?|itens?|categoria).*")) continue;
-            java.util.regex.Matcher m = P_PRECO.matcher(linha);
+            java.util.regex.Matcher m = P_PRECO_LINHA.matcher(linha);
             if (!m.find()) continue;
             String precoStr = m.group(1).replace('.', ',');
-            String nome = linha.substring(0, m.start()).trim();
-            // Remove marcadores de lista (*, -, •, 1., etc)
-            nome = nome.replaceFirst("^\\s*(?:[-•*·]|\\d+[.)-])\\s*", "").trim();
-            // Remove tail "R$" solto (caso o "R$" tenha ficado colado no nome)
-            nome = nome.replaceFirst("(?i)\\s*[-–—:]?\\s*r\\s*\\$?\\s*$", "").trim();
+            String nome = limparNomeItem(linha.substring(0, m.start()));
             if (nome.isEmpty()) continue;
-            // Parse preço
             BigDecimal preco;
             try { preco = new BigDecimal(precoStr.replace(',', '.')); }
             catch (Exception e) { continue; }
@@ -817,6 +865,24 @@ public class MyHelpService {
             out.add(it);
         }
         return out;
+    }
+
+    /** Limpa nome: remove marcadores de lista, R$ solto, virgulas/pontuacao
+     *  do inicio/fim, colapsa espacos. Preserva hifen dentro do nome. */
+    private String limparNomeItem(String nome) {
+        if (nome == null) return "";
+        String n = nome.trim();
+        // Remove ", " ou "," do INICIO (separador anterior colou)
+        n = n.replaceFirst("^[,;]+\\s*", "").trim();
+        // Marcadores de lista
+        n = n.replaceFirst("^\\s*(?:[-•*·]|\\d+[.)-])\\s*", "").trim();
+        // R$ solto no fim
+        n = n.replaceFirst("(?i)\\s*[-–—:]?\\s*r\\s*\\$?\\s*$", "").trim();
+        // Virgula/ponto no fim
+        n = n.replaceFirst("[,;.]+$", "").trim();
+        // Colapsa espacos multiplos
+        n = n.replaceAll("\\s{2,}", " ");
+        return n;
     }
 
     // ── Novo produto ─────────────────────────────────────────────────────

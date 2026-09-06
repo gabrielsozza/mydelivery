@@ -233,7 +233,10 @@ public class BalcaoController {
         out.put("restaurante", r.getNome());
         out.put("prontos", prontos);
         out.put("preparando", preparando);
-        return ResponseEntity.ok(out);
+        return ResponseEntity.ok()
+                .header("Cache-Control", "no-store, no-cache, must-revalidate")
+                .header("Pragma", "no-cache")
+                .body(out);
     }
 
     private String strOf(Object o) { return o == null ? null : o.toString(); }

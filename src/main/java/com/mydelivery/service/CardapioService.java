@@ -124,7 +124,12 @@ public class CardapioService {
                     .ordem(cat.getOrdem())
                     .produtos(produtos)
                     .build();
-        }).toList();
+        })
+        // Esconde categorias vazias no cardapio publico — se nenhum produto
+        // sobreviveu aos filtros (sem produtos, todos apenas-balcao, ou fora
+        // dos dias-da-semana ativos), a categoria vira ruido no cliente.
+        .filter(catResp -> catResp.getProdutos() != null && !catResp.getProdutos().isEmpty())
+        .toList();
     }
 
     /** Código de 3 letras pro dia da semana atual (fuso Brasil). */

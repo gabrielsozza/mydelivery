@@ -418,6 +418,38 @@ public class FiscalController {
      * produtos vinculados. Resolve caso onde o dono editou categoria antes do
      * fix de propagação automática — os produtos ficaram com valores antigos.
      */
+    /**
+     * Reemissao em massa: busca pedidos ENTREGUE das ultimas N horas do
+     * restaurante que NAO tem NotaFiscalEmitida.AUTORIZADA e dispara o
+     * auto-emit pra cada um. Cobre falhas silenciosas do fluxo (ex: um
+     * pedido delivery entregue que nunca chegou a tentar emitir por bug
+     * do @Async antigo). Body opcional: {@code { horas: 24 }} (default 24).
+     * Retorna quantos foram enfileirados + lista de ids.
+     */
+    @PostMapping("/reemitir-pendentes")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Map<String, Object>> reemitirPendentes(
+            @AuthenticationPrincipal String email,
+            @RequestBody(required = false) Map<String, Object> body) {
+        Restaurante r = exigirAtivo(email);
+        int horas = 24;
+        try {
+            if (body != null && body.get("horas") != null) {
+                horas = Integer.parseInt(String.valueOf(body.get("horas")));
+                if (horas < 1) horas = 1;
+                if (horas > 168) horas = 168; // teto 7 dias — evita sobrecarga
+            }
+        } catch (Exception ignore) {}
+        java.time.LocalDateTime desde = java.time.LocalDateTime.now().minusHours(horas);
+        java.util.List<Long> enfileirados = emissor.reemitirPendentes(r.getId(), desde);
+        return ResponseEntity.ok(Map.of(
+                "ok", true,
+                "enfileirados", enfileirados.size(),
+                "pedidoIds", enfileirados,
+                "janelaHoras", horas
+        ));
+    }
+
     @PostMapping("/categorias/repropagar")
     @PreAuthorize("hasRole('RESTAURANTE')")
     public ResponseEntity<Map<String, Object>> repropagarCategorias(@AuthenticationPrincipal String email) {

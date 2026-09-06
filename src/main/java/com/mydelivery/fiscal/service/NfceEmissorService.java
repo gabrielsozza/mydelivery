@@ -345,6 +345,39 @@ public class NfceEmissorService {
      * com o try/catch abaixo — porque quem falha na hora do commit é a
      * transação, não o método.
      */
+    /**
+     * Busca pedidos ENTREGUE do restaurante criados a partir de {@code desde}
+     * que NAO tem NotaFiscalEmitida AUTORIZADA e dispara o auto-emit pra
+     * cada um. Ignora pedidos com formaPagamento=null ou PENDENTE (nao ha
+     * como emitir sem forma real). Retorna IDs enfileirados.
+     */
+    @Transactional(readOnly = true)
+    public java.util.List<Long> reemitirPendentes(Long restauranteId, java.time.LocalDateTime desde) {
+        var inicio = desde;
+        var fim = java.time.LocalDateTime.now().plusMinutes(1);
+        var pedidos = pedidoRepo.findByRestauranteIdAndPeriodo(restauranteId, inicio, fim);
+        java.util.List<Long> alvos = new java.util.ArrayList<>();
+        for (var p : pedidos) {
+            if (p.getStatus() != com.mydelivery.model.Pedido.Status.ENTREGUE) continue;
+            if (p.getFormaPagamento() == null
+                    || p.getFormaPagamento() == com.mydelivery.model.Pedido.FormaPagamento.PENDENTE) continue;
+            // Ja tem AUTORIZADA? pula.
+            var notas = notaRepo.findByPedidoId(p.getId());
+            boolean autorizada = notas != null && notas.stream()
+                    .anyMatch(n -> n.getStatus() == NotaFiscalEmitida.Status.AUTORIZADA);
+            if (autorizada) continue;
+            alvos.add(p.getId());
+        }
+        // Dispara o async pra cada — cada um roda em transacao propria REQUIRES_NEW.
+        for (Long pid : alvos) {
+            try { emitirParaPedidoSeguro(pid, "sistema:reemit-pendentes", null); }
+            catch (Exception e) { log.warn("[Fiscal][Reemit] falha ao enfileirar {}: {}", pid, e.getMessage()); }
+        }
+        log.info("[Fiscal][Reemit] restaurante={} janela={}h -> {} pedido(s) enfileirado(s)",
+                restauranteId, java.time.Duration.between(inicio, fim).toHours(), alvos.size());
+        return alvos;
+    }
+
     @org.springframework.scheduling.annotation.Async
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.REQUIRES_NEW)
     public void emitirParaPedidoSeguro(Long pedidoId, String usuarioEmail, String ipOrigem) {

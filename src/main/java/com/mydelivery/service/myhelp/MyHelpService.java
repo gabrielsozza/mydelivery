@@ -760,13 +760,92 @@ public class MyHelpService {
         return card("promoProduto", itemPromo(p, precoP, false), "Confere a promoção — o preço normal fica preservado:");
     }
 
+    /**
+     * Parseia texto em formato de LISTA "Nome R$ Preço" (uma por linha OU
+     * separado por virgula). Retorna [{nome, preco}] — sem preco null.
+     * Aceita:
+     *   Paçoca R$ 0,60
+     *   Chiclete Trident - R$ 3,50
+     *   Halls 3,00
+     *   Big Big - sabores variados R$ 0,25
+     * Ignora linhas sem preço reconhecível. Ignora a 1ª linha se contiver
+     * o "cabeçalho" (verbos + categoria) — que é o pedido em si.
+     */
+    private java.util.List<Map<String, Object>> parseListaProdutosComPreco(String texto) {
+        java.util.List<Map<String, Object>> out = new ArrayList<>();
+        if (texto == null || texto.isBlank()) return out;
+        // Quebra por linha; se veio uma linha só, tenta dividir por ; ou ,
+        String[] linhas = texto.split("\\r?\\n");
+        java.util.List<String> partes = new ArrayList<>();
+        for (String l : linhas) {
+            l = l == null ? "" : l.trim();
+            if (l.isEmpty()) continue;
+            partes.add(l);
+        }
+        // Se veio texto todo em 1 linha, tenta separar por ";" (mais seguro
+        // que virgula — nome pode conter virgula). "Paçoca R$0,60; Halls R$3"
+        if (partes.size() == 1 && partes.get(0).contains(";")) {
+            String[] arr = partes.get(0).split(";");
+            partes.clear();
+            for (String a : arr) if (a != null && !a.trim().isEmpty()) partes.add(a.trim());
+        }
+        // Regex de preço "R$ X,YZ" ou "X,YZ reais" ou "X.YZ" — captura DEPOIS
+        // do nome. Aceita separador . ou , de decimal, com ou sem R$.
+        java.util.regex.Pattern P_PRECO = java.util.regex.Pattern.compile(
+                "(?i)\\s*[-–—:]?\\s*(?:r\\s*\\$\\s*)?(\\d+(?:[.,]\\d{1,2})?)\\s*(?:reais)?\\s*$");
+        for (String linha : partes) {
+            // Ignora "cabeçalho" — linha com verbo de acao + palavra "produtos"/"categoria"
+            String low = linha.toLowerCase();
+            if (low.matches(".*(cria|criar|adicion\\w*|cadastr\\w*|inclui\\w*|registr\\w*).*(produtos?|itens?|categoria).*")) continue;
+            java.util.regex.Matcher m = P_PRECO.matcher(linha);
+            if (!m.find()) continue;
+            String precoStr = m.group(1).replace('.', ',');
+            String nome = linha.substring(0, m.start()).trim();
+            // Remove marcadores de lista (*, -, •, 1., etc)
+            nome = nome.replaceFirst("^\\s*(?:[-•*·]|\\d+[.)-])\\s*", "").trim();
+            // Remove tail "R$" solto (caso o "R$" tenha ficado colado no nome)
+            nome = nome.replaceFirst("(?i)\\s*[-–—:]?\\s*r\\s*\\$?\\s*$", "").trim();
+            if (nome.isEmpty()) continue;
+            // Parse preço
+            BigDecimal preco;
+            try { preco = new BigDecimal(precoStr.replace(',', '.')); }
+            catch (Exception e) { continue; }
+            if (preco.signum() <= 0) continue;
+            Map<String, Object> it = new java.util.LinkedHashMap<>();
+            it.put("nome", nome);
+            it.put("preco", preco);
+            out.add(it);
+        }
+        return out;
+    }
+
     // ── Novo produto ─────────────────────────────────────────────────────
     private Map<String, Object> fluxoNovoProduto(Restaurante r, String texto, String norm) {
+        Categoria catShared = acharCategoriaNaFrase(r.getId(), norm);
+
+        // FORMATO LISTA COM PREÇO POR ITEM (linha ou virgula):
+        //   "Adicione produtos na categoria X:
+        //      Nome1 R$ 0,60
+        //      Nome2 R$ 3,50 ..."
+        // Cada linha vira 1 produto com preco proprio — resolve batch de balas,
+        // guloseimas, bebidas etc que tem valores diferentes.
+        java.util.List<Map<String, Object>> listaComPreco = parseListaProdutosComPreco(texto);
+        if (listaComPreco.size() > 1 && catShared != null) {
+            List<Map<String, Object>> itens = new ArrayList<>();
+            for (Map<String, Object> it : listaComPreco) {
+                String n = (String) it.get("nome");
+                BigDecimal pr = (BigDecimal) it.get("preco");
+                itens.add(item("novoProduto", n, null, "tag", null,
+                        n + " • " + (pr != null ? moeda(pr) : "preço a definir") + " • " + catShared.getNome(), null,
+                        mp("textoNovo", n, "precoNovo", pr, "categoriaId", catShared.getId())));
+            }
+            return lote("novoProduto", itens, "Vou criar estes " + listaComPreco.size() + " produtos em *" + catShared.getNome() + "* com os preços indicados. Confirma?");
+        }
+
         // MÚLTIPLOS produtos? "cria os produtos X e Y na categoria Z" / "cria o X e o Y em Z"
         String segProds = fatiaEntreRaw(texto, "produtos", "(na categoria|em categoria|categoria)");
         if (segProds == null)
             segProds = fatiaEntreRaw(texto, "(cria|criar|crie|adiciona|adicione|adicionar|cadastra|cadastre|inclui|inclua|registra|registre)", "(na categoria|em categoria|categoria)");
-        Categoria catShared = acharCategoriaNaFrase(r.getId(), norm);
         if (segProds != null && catShared != null) segProds = tiraEntidadeFinal(segProds, catShared.getNome());
         if (segProds != null) {
             List<String> nomesP = new ArrayList<>();

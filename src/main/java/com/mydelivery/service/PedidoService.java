@@ -56,6 +56,10 @@ public class PedidoService {
      *  funcionando (só não emite nota). Fail-safe total. */
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.mydelivery.fiscal.service.NfceEmissorService fiscalEmissor;
+    /** Opcional — usado so pra popular status fiscal na resposta do pedido.
+     *  Se nao existir (fiscal desativado), toResponse deixa os campos null. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.mydelivery.fiscal.repository.NotaFiscalEmitidaRepository fiscalNotaRepo;
     private final com.mydelivery.service.ifood.IfoodClient ifoodClient;
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private WebPushService webPushService;
@@ -1166,7 +1170,55 @@ public class PedidoService {
                 // usa pra mostrar a logo no card/drawer.
                 .origem(p.getOrigem() == null ? "MYDELIVERY" : p.getOrigem().name())
                 .ifoodDisplayId(p.getIfoodDisplayId())
-                .itens(itens).build();
+                .itens(itens)
+                // Status fiscal — usado pelo painel pra mostrar "NFC-e emitida"
+                // (verde, com link do QR) em vez de "Emitir NFC-e" quando a
+                // nota ja foi autorizada. Ausencia = null (nao emitiu ainda).
+                .fiscalStatus(fiscalStatusPara(p))
+                .fiscalChave(fiscalChavePara(p))
+                .fiscalQrUrl(fiscalQrUrlPara(p))
+                .fiscalErroAuto(p.getFiscalErroAuto())
+                .build();
+    }
+
+    private String fiscalStatusPara(Pedido p) {
+        if (fiscalNotaRepo == null) return null;
+        try {
+            var notas = fiscalNotaRepo.findByPedidoId(p.getId());
+            if (notas == null || notas.isEmpty()) return null;
+            // Prefere a AUTORIZADA/CANCELADA se existir; senao pega a mais
+            // recente (que carrega o motivo da ultima falha).
+            var autorizada = notas.stream()
+                    .filter(n -> n.getStatus() == com.mydelivery.fiscal.model.NotaFiscalEmitida.Status.AUTORIZADA
+                              || n.getStatus() == com.mydelivery.fiscal.model.NotaFiscalEmitida.Status.CANCELADA)
+                    .findFirst().orElse(null);
+            var alvo = autorizada != null ? autorizada : notas.get(notas.size() - 1);
+            return alvo.getStatus() == null ? null : alvo.getStatus().name();
+        } catch (Exception e) { return null; }
+    }
+
+    private String fiscalChavePara(Pedido p) {
+        if (fiscalNotaRepo == null) return null;
+        try {
+            var notas = fiscalNotaRepo.findByPedidoId(p.getId());
+            if (notas == null) return null;
+            return notas.stream()
+                    .filter(n -> n.getStatus() == com.mydelivery.fiscal.model.NotaFiscalEmitida.Status.AUTORIZADA)
+                    .map(com.mydelivery.fiscal.model.NotaFiscalEmitida::getChaveAcesso)
+                    .findFirst().orElse(null);
+        } catch (Exception e) { return null; }
+    }
+
+    private String fiscalQrUrlPara(Pedido p) {
+        if (fiscalNotaRepo == null) return null;
+        try {
+            var notas = fiscalNotaRepo.findByPedidoId(p.getId());
+            if (notas == null) return null;
+            return notas.stream()
+                    .filter(n -> n.getStatus() == com.mydelivery.fiscal.model.NotaFiscalEmitida.Status.AUTORIZADA)
+                    .map(com.mydelivery.fiscal.model.NotaFiscalEmitida::getQrcodeUrlConsulta)
+                    .findFirst().orElse(null);
+        } catch (Exception e) { return null; }
     }
 
     /** Cache leve do JSON parseado por sessaoId — evita re-parsear em

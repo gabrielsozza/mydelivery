@@ -68,6 +68,18 @@ public class PedidoResponse {
      *  maior se houver mais de um pedido na mesa. */
     private BigDecimal valorCobradoSessao;
 
+    /** Status da NFC-e desse pedido: null = nao tem nota; AUTORIZADA = ok,
+     *  REJEITADA = precisa reemitir, CONTINGENCIA_EPEC = fila offline, etc.
+     *  Painel usa pra trocar o botao "Emitir NFC-e" por um estado adequado. */
+    private String fiscalStatus;
+    /** Chave 44 da NFC-e autorizada (null se sem nota). */
+    private String fiscalChave;
+    /** URL do QR Code de consulta da SEFAZ (link direto pra consulta). */
+    private String fiscalQrUrl;
+    /** Razao da ultima FALHA de auto-emit (populada quando SEFAZ rejeitou
+     *  ou pre-checks bloquearam). Null quando ok. */
+    private String fiscalErroAuto;
+
     @Data @Builder
     public static class ItemPedidoResponse {
         private Long id;

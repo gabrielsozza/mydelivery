@@ -69,6 +69,12 @@ public class NfceEmissorService {
     private final NfceStorageService storage;
     private final AuditoriaFiscalService auditoria;
     private final NfeGateway gateway;
+    /** Self-injection LAZY pra chamar metodos com @Async / @Transactional
+     *  REQUIRES_NEW PELO PROXY do Spring. this.emitirParaPedidoSeguro NAO
+     *  passa pelo AOP e ignora as anotacoes — bug do dispatch em massa. */
+    @org.springframework.beans.factory.annotation.Autowired
+    @org.springframework.context.annotation.Lazy
+    private NfceEmissorService selfProxy;
 
     /** WhatsApp: notifica cliente com link da NFC-e. Opcional — se WhatsApp
      *  não estiver conectado pra loja, ignora silencioso. */
@@ -381,8 +387,12 @@ public class NfceEmissorService {
             }
         }
         log.info("[Fiscal][Reemit] restaurante={} alvos_pra_emit={}", restauranteId, alvos.size());
+        // IMPORTANTE: usa selfProxy pra o @Async + @Transactional REQUIRES_NEW
+        // serem aplicados. this.emitirParaPedidoSeguro rodaria SINCRONO dentro
+        // da txn readOnly deste metodo → save do fiscalErroAuto explodiria
+        // com "read-only transaction" → 500 pro cliente.
         for (Long pid : alvos) {
-            try { emitirParaPedidoSeguro(pid, "sistema:reemit-pendentes", null); }
+            try { selfProxy.emitirParaPedidoSeguro(pid, "sistema:reemit-pendentes", null); }
             catch (Exception e) { log.warn("[Fiscal][Reemit] falha ao enfileirar {}: {}", pid, e.getMessage()); }
         }
         return alvos;
@@ -428,12 +438,13 @@ public class NfceEmissorService {
 
     /** Persiste a razao da ultima tentativa de auto-emit no pedido — passar
      *  null limpa (sucesso). Best-effort: se o campo nao existir no DB (deploy
-     *  antigo), engole o erro. Painel exibe esse texto num badge. */
+     *  antigo) OU a txn atual for read-only (chamado indireto), engole o erro.
+     *  Painel exibe esse texto num badge. */
     private void registrarErroAutoEmit(Pedido p, String erro) {
         try {
             p.setFiscalErroAuto(erro);
             pedidoRepo.save(p);
-        } catch (Throwable ignore) { /* campo ainda nao migrado, sem stress */ }
+        } catch (Throwable ignore) { /* campo nao migrado, txn readOnly, etc — sem stress */ }
     }
 
     /**

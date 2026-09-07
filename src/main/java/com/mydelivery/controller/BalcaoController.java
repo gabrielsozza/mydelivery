@@ -52,7 +52,10 @@ public class BalcaoController {
     public ResponseEntity<?> cardapioBalcao(@AuthenticationPrincipal String email) {
         Restaurante r = restauranteRepo.findByUsuarioEmail(email)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
-        return ResponseEntity.ok(cardapioService.getCardapioBalcao(r.getSlug()));
+        return ResponseEntity.ok()
+                .header("Cache-Control", "no-store, no-cache, must-revalidate")
+                .header("Pragma", "no-cache")
+                .body(cardapioService.getCardapioBalcao(r.getSlug()));
     }
 
     /** Altera SO o precoBalcao de um produto (nao mexe no preco delivery).

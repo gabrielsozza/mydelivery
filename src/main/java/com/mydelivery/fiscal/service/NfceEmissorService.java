@@ -353,28 +353,38 @@ public class NfceEmissorService {
      */
     @Transactional(readOnly = true)
     public java.util.List<Long> reemitirPendentes(Long restauranteId, java.time.LocalDateTime desde) {
+        log.info("[Fiscal][Reemit] START restaurante={} desde={}", restauranteId, desde);
+        java.util.List<Long> alvos = new java.util.ArrayList<>();
         var inicio = desde;
         var fim = java.time.LocalDateTime.now().plusMinutes(1);
-        var pedidos = pedidoRepo.findByRestauranteIdAndPeriodo(restauranteId, inicio, fim);
-        java.util.List<Long> alvos = new java.util.ArrayList<>();
-        for (var p : pedidos) {
-            if (p.getStatus() != com.mydelivery.model.Pedido.Status.ENTREGUE) continue;
-            if (p.getFormaPagamento() == null
-                    || p.getFormaPagamento() == com.mydelivery.model.Pedido.FormaPagamento.PENDENTE) continue;
-            // Ja tem AUTORIZADA? pula.
-            var notas = notaRepo.findByPedidoId(p.getId());
-            boolean autorizada = notas != null && notas.stream()
-                    .anyMatch(n -> n.getStatus() == NotaFiscalEmitida.Status.AUTORIZADA);
-            if (autorizada) continue;
-            alvos.add(p.getId());
+        java.util.List<Pedido> pedidos;
+        try {
+            pedidos = pedidoRepo.findByRestauranteIdAndPeriodo(restauranteId, inicio, fim);
+        } catch (Exception e) {
+            log.error("[Fiscal][Reemit] falha ao buscar pedidos:", e);
+            throw new RuntimeException("Falha ao buscar pedidos do periodo: " + e.getMessage(), e);
         }
-        // Dispara o async pra cada — cada um roda em transacao propria REQUIRES_NEW.
+        log.info("[Fiscal][Reemit] restaurante={} pedidos_no_periodo={}", restauranteId, pedidos.size());
+        for (var p : pedidos) {
+            try {
+                if (p.getStatus() != Pedido.Status.ENTREGUE) continue;
+                if (p.getFormaPagamento() == null
+                        || p.getFormaPagamento() == Pedido.FormaPagamento.PENDENTE) continue;
+                var notas = notaRepo.findByPedidoId(p.getId());
+                boolean autorizada = notas != null && notas.stream()
+                        .anyMatch(n -> n != null && n.getStatus() == NotaFiscalEmitida.Status.AUTORIZADA);
+                if (autorizada) continue;
+                alvos.add(p.getId());
+            } catch (Exception e) {
+                // Nao deixa 1 pedido ruim derrubar toda a varredura.
+                log.warn("[Fiscal][Reemit] erro avaliando pedido {}: {}", p.getId(), e.getMessage());
+            }
+        }
+        log.info("[Fiscal][Reemit] restaurante={} alvos_pra_emit={}", restauranteId, alvos.size());
         for (Long pid : alvos) {
             try { emitirParaPedidoSeguro(pid, "sistema:reemit-pendentes", null); }
             catch (Exception e) { log.warn("[Fiscal][Reemit] falha ao enfileirar {}: {}", pid, e.getMessage()); }
         }
-        log.info("[Fiscal][Reemit] restaurante={} janela={}h -> {} pedido(s) enfileirado(s)",
-                restauranteId, java.time.Duration.between(inicio, fim).toHours(), alvos.size());
         return alvos;
     }
 

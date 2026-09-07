@@ -814,23 +814,32 @@ public class WhatsappBotService {
     private String mensagemPorStatus(String statusNome, String tipo) {
         if (tipo != null && "MESA".equalsIgnoreCase(tipo)) return null;
         boolean retirada = tipo != null && "RETIRADA".equalsIgnoreCase(tipo);
+        // Cliente pediu avisos em cada etapa. Contingencia mantida: cada
+        // mensagem e' curta, variada (rotacao anti-shadowban ja no
+        // BotVariations quando disponivel) e sem link — o link inicial ja
+        // foi mandado 1x pelo notificarLinkAcompanhamentoAsync. WhatsApp
+        // linkPreview:false ja no UazapiClient, sem preview nas mensagens
+        // seguintes.
         switch (statusNome.toUpperCase()) {
+            case "CONFIRMADO":
+                return "✅ Pedido confirmado! Já foi pra cozinha e começamos a preparar.";
+            case "EM_PREPARO":
+                return "👨‍🍳 Seu pedido está sendo preparado com carinho agora.";
             case "PRONTO":
-                // Jul/2026: RETIRADA marca PRONTO = avisa cliente pra vir buscar.
-                // DELIVERY marca PRONTO = aguarda entregador — cliente é notificado
-                // só no SAIU_ENTREGA (não faz sentido "prepara-se, cozinha
-                // terminou" pra delivery). Anti-duplicação: se dono depois marcar
-                // SAIU_ENTREGA em retirada, não avisa de novo (case abaixo).
-                return retirada
-                        ? BotVariations.montarMensagemSaiuEntregaRetirada()
-                        : null;
+                // RETIRADA: avisa pra vir buscar. DELIVERY: cozinha terminou,
+                // aguardando entregador — cliente prefere saber, e' pouco texto.
+                if (retirada) {
+                    try { return BotVariations.montarMensagemSaiuEntregaRetirada(); }
+                    catch (Throwable ignore) { return "🎯 Pedido pronto! Pode vir retirar."; }
+                }
+                return "🎯 Pedido pronto! Aguardando o entregador sair.";
             case "SAIU_ENTREGA":
-                // Anti-shadowban: rotaciona entre pool de variações (Meta detecta
-                // texto broadcast idêntico em contas comerciais desde 2026).
-                // Em RETIRADA, o cliente já foi avisado no PRONTO — não repete.
-                return retirada
-                        ? null
-                        : BotVariations.montarMensagemSaiuEntregaDelivery();
+                // Em RETIRADA cliente ja foi avisado no PRONTO — nao repete.
+                if (retirada) return null;
+                try { return BotVariations.montarMensagemSaiuEntregaDelivery(); }
+                catch (Throwable ignore) { return "🛵 Saiu pra entrega! Fica de olho na chegada."; }
+            case "ENTREGUE":
+                return "✅ Entregue! Muito obrigado pela preferência. Volte sempre 🧡";
             default:
                 return null;
         }

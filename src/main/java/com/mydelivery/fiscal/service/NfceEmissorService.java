@@ -87,21 +87,41 @@ public class NfceEmissorService {
      * Emite NFC-e pra um pedido específico. Se pedido já tem nota autorizada,
      * devolve a existente (idempotente).
      */
+    /** Lock em memoria por pedidoId — evita 2 emissoes SIMULTANEAS pro mesmo
+     *  pedido caindo em race entre check-de-AUTORIZADA e save da nova nota.
+     *  Casos: dono clica "Emitir" 2x rapido, auto-emit + manual paralelos,
+     *  reemitir-pendentes + auto-emit ao entregar quase juntos. Resultado
+     *  desses cenarios sem lock = 2 notas AUTORIZADAS no banco pro mesmo
+     *  pedido (polui relatorio fiscal, cliente reclamou). */
+    private final java.util.concurrent.ConcurrentHashMap<Long, Object> _locksPorPedido =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
     @Transactional
     public NotaFiscalEmitida emitirParaPedido(Long pedidoId, String usuarioEmail, String ipOrigem) {
+        Object lock = _locksPorPedido.computeIfAbsent(pedidoId, k -> new Object());
+        synchronized (lock) {
+            try {
+                return _emitirParaPedidoInterno(pedidoId, usuarioEmail, ipOrigem);
+            } finally {
+                _locksPorPedido.remove(pedidoId);
+            }
+        }
+    }
+
+    private NotaFiscalEmitida _emitirParaPedidoInterno(Long pedidoId, String usuarioEmail, String ipOrigem) {
         Pedido pedido = pedidoRepo.findById(pedidoId)
                 .orElseThrow(() -> new IllegalArgumentException("Pedido não encontrado"));
         Restaurante r = pedido.getRestaurante();
         if (r == null) throw new IllegalStateException("Pedido sem restaurante");
 
-        // Idempotência: se pedido já tem nota AUTORIZADA, devolve. Notas em
-        // CONTINGENCIA_EPEC "presas" (contingência não retransmite bem no
-        // gateway atual) viram REJEITADA aqui pra abrir espaço pra uma emissão
-        // real nova.
+        // Idempotência: se pedido já tem nota AUTORIZADA, devolve — nunca
+        // emite segunda. Notas em CONTINGENCIA_EPEC "presas" (contingência
+        // não retransmite bem no gateway atual) viram REJEITADA aqui pra
+        // abrir espaço pra uma emissão real nova.
         var existentes = notaRepo.findByPedidoId(pedidoId);
         for (var n : existentes) {
             if (n.getStatus() == NotaFiscalEmitida.Status.AUTORIZADA) {
-                log.info("[Fiscal][Emissor] Pedido {} já tinha nota autorizada {}, devolvendo",
+                log.info("[Fiscal][Emissor] Pedido {} já tinha nota autorizada {}, devolvendo (bloqueio duplicidade)",
                         pedidoId, n.getChaveAcesso());
                 return n;
             }

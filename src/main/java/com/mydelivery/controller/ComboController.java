@@ -292,6 +292,12 @@ public class ComboController {
                         }
                         g.put("preset", presetResolvido); // marca pro frontend
                     }
+                    // Propaga a flag "1x por pedido" do ComboGrupo pro grupo
+                    // serializado — front usa pra dedup por slot (a global tem
+                    // prioridade sobre a do modelo do grupo).
+                    if (Boolean.TRUE.equals(cg.getUmaVezPorCombo())) {
+                        g.put("umaVezPorCombo", true);
+                    }
                     Map<String, Object> wrap = new HashMap<>();
                     wrap.put("grupo", g);
                     wrap.put("filhos", parseFilhosAplicaveis(cg.getFilhosAplicaveisJson()));
@@ -440,12 +446,25 @@ public class ComboController {
                 }
             }
 
+            // "1x por pedido" (brinde) — se veio marcado no front do combo,
+            // grupo aparece 1x no combo inteiro em vez de replicar por unidade.
+            boolean brindeUnico = false;
+            if (o instanceof Map<?,?> m3) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> im3 = (Map<String, Object>) m3;
+                Object bv = im3.get("umaVezPorCombo");
+                if (bv == null) bv = im3.get("brinde");
+                if (bv instanceof Boolean bb) brindeUnico = bb;
+                else if (bv != null) brindeUnico = "true".equalsIgnoreCase(bv.toString());
+            }
+
             ComboGrupo cg = ComboGrupo.builder()
                     .combo(combo)
                     .grupoModelo(gm)
                     .ordem(ordemAuto++)
                     .filhosAplicaveisJson(faJson)
                     .presetItensJson(presetJson)
+                    .umaVezPorCombo(brindeUnico)
                     .build();
             comboGrupoRepo.save(cg);
         }
@@ -582,6 +601,7 @@ public class ComboController {
             g.put("ordem", cg.getOrdem());
             g.put("filhosAplicaveis", parseFilhosAplicaveis(cg.getFilhosAplicaveisJson()));
             g.put("preset", parsePresetItens(cg.getPresetItensJson()));
+            g.put("umaVezPorCombo", Boolean.TRUE.equals(cg.getUmaVezPorCombo()));
             gruposOut.add(g);
         }
         out.put("grupos", gruposOut);
@@ -643,6 +663,8 @@ public class ComboController {
         out.put("obrigatorio", Boolean.TRUE.equals(g.getObrigatorio()));
         out.put("minEscolhas", g.getMinEscolhas() != null ? g.getMinEscolhas() : 0);
         out.put("maxEscolhas", g.getMaxEscolhas() != null ? g.getMaxEscolhas() : 1);
+        // "1x por combo": frontend usa pra evitar replicar o grupo por unidade.
+        out.put("umaVezPorCombo", Boolean.TRUE.equals(g.getUmaVezPorCombo()));
         List<Map<String, Object>> itens = new ArrayList<>();
         if (g.getItens() != null) {
             for (var i : g.getItens()) {

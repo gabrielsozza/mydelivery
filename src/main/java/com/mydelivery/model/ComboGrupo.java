@@ -99,4 +99,11 @@ public class ComboGrupo {
      */
     @Column(name = "preset_itens_json", columnDefinition = "TEXT")
     private String presetItensJson;
+
+    /** Se true, esse grupo aparece 1x SO no combo inteiro (nao replica
+     *  por unidade). Uso classico: brinde ("Fini" 1x pra combo de 3 acais).
+     *  Default false — grupos antigos mantem replicacao por slot. */
+    @Column(name = "uma_vez_por_combo")
+    @lombok.Builder.Default
+    private Boolean umaVezPorCombo = false;
 }

@@ -431,23 +431,37 @@ public class FiscalController {
     public ResponseEntity<Map<String, Object>> reemitirPendentes(
             @AuthenticationPrincipal String email,
             @RequestBody(required = false) Map<String, Object> body) {
-        Restaurante r = exigirAtivo(email);
-        int horas = 24;
         try {
-            if (body != null && body.get("horas") != null) {
-                horas = Integer.parseInt(String.valueOf(body.get("horas")));
-                if (horas < 1) horas = 1;
-                if (horas > 168) horas = 168; // teto 7 dias — evita sobrecarga
-            }
-        } catch (Exception ignore) {}
-        java.time.LocalDateTime desde = java.time.LocalDateTime.now().minusHours(horas);
-        java.util.List<Long> enfileirados = emissor.reemitirPendentes(r.getId(), desde);
-        return ResponseEntity.ok(Map.of(
-                "ok", true,
-                "enfileirados", enfileirados.size(),
-                "pedidoIds", enfileirados,
-                "janelaHoras", horas
-        ));
+            Restaurante r = exigirAtivo(email);
+            int horas = 24;
+            try {
+                if (body != null && body.get("horas") != null) {
+                    horas = Integer.parseInt(String.valueOf(body.get("horas")));
+                    if (horas < 1) horas = 1;
+                    if (horas > 168) horas = 168;
+                }
+            } catch (Exception ignore) {}
+            java.time.LocalDateTime desde = java.time.LocalDateTime.now().minusHours(horas);
+            java.util.List<Long> enfileirados = emissor.reemitirPendentes(r.getId(), desde);
+            if (enfileirados == null) enfileirados = new java.util.ArrayList<>();
+            // HashMap em vez de Map.of pra tolerar null values sem NPE.
+            java.util.Map<String, Object> out = new java.util.LinkedHashMap<>();
+            out.put("ok", true);
+            out.put("enfileirados", enfileirados.size());
+            out.put("pedidoIds", enfileirados);
+            out.put("janelaHoras", horas);
+            log.info("[Fiscal][Reemit] restaurante={} janela={}h → {} enfileirado(s)",
+                    r.getId(), horas, enfileirados.size());
+            return ResponseEntity.ok(out);
+        } catch (ResponseStatusException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("[Fiscal][Reemit] erro:", e);
+            java.util.Map<String, Object> err = new java.util.LinkedHashMap<>();
+            err.put("ok", false);
+            err.put("erro", "Falha: " + e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(err);
+        }
     }
 
     @PostMapping("/categorias/repropagar")

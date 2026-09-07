@@ -47,6 +47,10 @@ public class GarcomService {
     private final UsuarioGarcomRepository garcomRepo;
     private final PedidoRepository pedidoRepo;
     private final BCryptPasswordEncoder encoder = new BCryptPasswordEncoder();
+    /** Opcional — dispara auto-emit ao fechar sessao pra pedidos que viraram
+     *  ENTREGUE. Fail-safe: se modulo fiscal fora do classpath, fica null. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.mydelivery.fiscal.service.NfceEmissorService fiscalEmissor;
 
     // ─── LOGIN POR PIN ────────────────────────────────────────────────────
 
@@ -289,21 +293,43 @@ public class GarcomService {
                 .orElseThrow(() -> new RuntimeException("Sessão não encontrada"));
         if (s.getFechamentoEm() != null) return s; // idempotente
 
-        // Marca todos os pedidos da sessão como pagos + entregues.
-        // Sem isso, o restaurante vê os pedidos "abertos" mesmo após fechar.
+        // Marca todos os pedidos da sessão como pagos + entregues E dispara
+        // auto-emit da NFC-e pros que viraram ENTREGUE agora. ANTES so fazia
+        // saveAll direto no repo — pulava a hook do PedidoService.atualizarStatus
+        // que dispara o auto-emit fiscal, resultando em "leva de pedidos pagos
+        // sem nota" (reportado pela cliente).
+        java.util.List<Long> paraEmitir = new java.util.ArrayList<>();
         try {
             var pedidos = pedidoRepo.findBySessaoIdOrderByCriadoEmAsc(sessaoId);
             for (var p : pedidos) {
                 if (p.getStatus() == Pedido.Status.CANCELADO) continue;
+                boolean virouEntregue = p.getStatus() != Pedido.Status.ENTREGUE;
                 p.setPago(true);
-                if (p.getStatus() != Pedido.Status.ENTREGUE) {
-                    p.setStatus(Pedido.Status.ENTREGUE);
+                if (virouEntregue) p.setStatus(Pedido.Status.ENTREGUE);
+                // Coleta pra emit APOS commit — auto-emit precisa da forma real
+                // (nao PENDENTE) pra fazer sentido fiscal.
+                if (virouEntregue
+                        && p.getFormaPagamento() != null
+                        && p.getFormaPagamento() != Pedido.FormaPagamento.PENDENTE) {
+                    paraEmitir.add(p.getId());
                 }
             }
             if (!pedidos.isEmpty()) pedidoRepo.saveAll(pedidos);
         } catch (Exception e) {
             // Não deixa falha de marcação derrubar o fechamento — loga e segue.
             log.warn("[Garçom] Falha ao marcar pedidos pagos na sessão {}: {}", sessaoId, e.getMessage());
+        }
+        // Dispara auto-emit AFTER save (fora do try acima pra nao perder emit
+        // se saveAll falhou parcialmente). Cada emit roda async em txn propria.
+        if (fiscalEmissor != null) {
+            for (Long pid : paraEmitir) {
+                try {
+                    fiscalEmissor.emitirParaPedidoSeguro(pid, "sistema:fechar-sessao-garcom", null);
+                    log.info("[Garçom][Fiscal] auto-emit disparado pra pedido {} (sessao {})", pid, sessaoId);
+                } catch (Exception e) {
+                    log.warn("[Garçom][Fiscal] falha ao disparar emit pedido {}: {}", pid, e.getMessage());
+                }
+            }
         }
 
         // Persiste payload de pagamentos (se vier)

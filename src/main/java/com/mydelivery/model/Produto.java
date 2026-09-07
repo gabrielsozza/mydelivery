@@ -52,6 +52,12 @@ public class Produto {
     @Column(precision = 10, scale = 2)
     private BigDecimal precoOriginal;
 
+    /** Preco exclusivo pra vendas de BALCAO (PDV presencial). Null = usa o
+     *  preco padrao. Delivery ignora esse campo — clientes online continuam
+     *  vendo o preco normal. */
+    @Column(name = "preco_balcao", precision = 10, scale = 2)
+    private BigDecimal precoBalcao;
+
     private String fotoUrl;
 
     @Builder.Default

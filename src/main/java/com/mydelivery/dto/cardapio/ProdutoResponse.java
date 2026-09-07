@@ -26,6 +26,9 @@ public class ProdutoResponse {
     private Boolean maisDe18;
     /** Produto exclusivo de balcao/PDV — nao vai pro cardapio delivery. */
     private Boolean apenasBalcao;
+    /** Preco exclusivo pra balcao (PDV). Null = usa preco padrao.
+     *  Delivery NUNCA ve esse valor — so front do balcao consulta. */
+    private BigDecimal precoBalcao;
     private Long categoriaId;
     private String categoriaNome;
     /** Posição do produto dentro da categoria (menor = aparece primeiro). */

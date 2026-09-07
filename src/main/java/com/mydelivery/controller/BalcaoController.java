@@ -42,6 +42,7 @@ public class BalcaoController {
     private final PedidoRepository pedidoRepo;
     private final SenhaBalcaoRepository senhaRepo;
     private final com.mydelivery.service.CardapioService cardapioService;
+    private final com.mydelivery.repository.ProdutoRepository produtoRepo;
 
     /** Cardapio COMPLETO pro balcao — inclui produtos com apenasBalcao=true
      *  (que o endpoint publico /api/cardapio/{slug} esconde do delivery).
@@ -52,6 +53,42 @@ public class BalcaoController {
         Restaurante r = restauranteRepo.findByUsuarioEmail(email)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
         return ResponseEntity.ok(cardapioService.getCardapioBalcao(r.getSlug()));
+    }
+
+    /** Altera SO o precoBalcao de um produto (nao mexe no preco delivery).
+     *  Body: {@code { preco: 12.50 }} ou {@code { preco: null }} pra remover. */
+    @org.springframework.web.bind.annotation.PatchMapping("/api/restaurante/balcao/produto/{id}/preco")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    @org.springframework.transaction.annotation.Transactional
+    public ResponseEntity<Map<String, Object>> alterarPrecoBalcao(
+            @AuthenticationPrincipal String email,
+            @PathVariable Long id,
+            @RequestBody Map<String, Object> body) {
+        Restaurante r = restauranteRepo.findByUsuarioEmail(email)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+        com.mydelivery.model.Produto p = produtoRepo.findById(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Produto nao encontrado"));
+        if (p.getRestaurante() == null || !p.getRestaurante().getId().equals(r.getId())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Produto de outro restaurante");
+        }
+        Object v = body == null ? null : body.get("preco");
+        java.math.BigDecimal novo = null;
+        if (v != null && !"".equals(v.toString().trim())) {
+            try {
+                novo = new java.math.BigDecimal(v.toString().replace(",", ".").trim());
+                if (novo.signum() < 0) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Preco invalido");
+            } catch (NumberFormatException e) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Preco invalido: " + v);
+            }
+        }
+        p.setPrecoBalcao(novo); // null = remove override, usa preco padrao
+        produtoRepo.save(p);
+        return ResponseEntity.ok(Map.of(
+                "ok", true,
+                "produtoId", id,
+                "precoBalcao", novo,
+                "precoAtivo", novo != null ? novo : p.getPreco()
+        ));
     }
 
     @PostMapping("/api/restaurante/balcao/pedido")

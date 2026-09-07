@@ -80,6 +80,9 @@ public class CardapioService {
                             .comparing((Produto p) -> p.getOrdem() == null ? Integer.MAX_VALUE : p.getOrdem())
                             .thenComparing(Produto::getId))
                     .map(this::toProdutoResponse)
+                    // NAO substitui `preco` — devolve `preco` (delivery) e
+                    // `precoBalcao` separados. Front do balcao decide qual
+                    // exibir/cobrar e mostra ambos no modal de edicao.
                     .toList();
             return CategoriaComProdutosResponse.builder()
                     .id(cat.getId()).nome(cat.getNome()).ordem(cat.getOrdem())
@@ -601,6 +604,7 @@ public class CardapioService {
                 .destaque(p.getDestaque())
                 .maisDe18(Boolean.TRUE.equals(p.getMaisDe18()))
                 .apenasBalcao(Boolean.TRUE.equals(p.getApenasBalcao()))
+                .precoBalcao(p.getPrecoBalcao())
                 .categoriaId(p.getCategoria() != null ? p.getCategoria().getId() : null)
                 .categoriaNome(p.getCategoria() != null ? p.getCategoria().getNome() : null)
                 .ordem(p.getOrdem())

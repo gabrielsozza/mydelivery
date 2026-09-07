@@ -149,7 +149,11 @@ public class BalcaoService {
             if (!prod.getRestaurante().getId().equals(r.getId())) {
                 throw new SecurityException("Produto fora do restaurante");
             }
-            BigDecimal precoBase = prod.getPreco() == null ? BigDecimal.ZERO : prod.getPreco();
+            // Balcao respeita precoBalcao quando o dono definiu — assim
+            // fritas custam R$X no delivery e R$Y no PDV, sem duplicar produto.
+            BigDecimal precoBase = prod.getPrecoBalcao() != null && prod.getPrecoBalcao().signum() > 0
+                    ? prod.getPrecoBalcao()
+                    : (prod.getPreco() == null ? BigDecimal.ZERO : prod.getPreco());
             BigDecimal precoUnit = precoBase;
 
             // ── PREÇO POR ITEM (vitrine / complementos) ──

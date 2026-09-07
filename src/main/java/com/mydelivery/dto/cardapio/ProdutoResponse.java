@@ -62,6 +62,10 @@ public class ProdutoResponse {
         /** SOMA (preço soma ao produto) ou MAIOR (preço do produto vira o mais caro). */
         private String modoPreco;
         private Boolean permitirNenhuma;
+        /** Se true, aparece 1x mesmo em pedidos de N unidades (brinde). */
+        private Boolean umaVezPorCombo;
+        /** Ordem de exibicao — menor = topo. */
+        private Integer ordem;
         private java.util.List<ItemComplementoResponse> itens;
     }
 

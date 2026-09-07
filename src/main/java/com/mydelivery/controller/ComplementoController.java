@@ -85,6 +85,8 @@ public class ComplementoController {
                 .maxEscolhas(intOr(body, "maxEscolhas", 1))
                 .modoPreco(parseModoPreco(body.get("modoPreco")))
                 .permitirNenhuma(boolOr(body, "permitirNenhuma", false))
+                .umaVezPorCombo(boolOr(body, "umaVezPorCombo", false))
+                .ordem(intOr(body, "ordem", proximaOrdem(p.getId())))
                 .itens(new java.util.ArrayList<>())  // garante coleção mutável
                 .build();
         // Adiciona itens ANTES de salvar — cascade.ALL persiste tudo numa só
@@ -110,6 +112,8 @@ public class ComplementoController {
         if (body.containsKey("maxEscolhas"))  g.setMaxEscolhas(intOr(body, "maxEscolhas", 1));
         if (body.containsKey("modoPreco"))    g.setModoPreco(parseModoPreco(body.get("modoPreco")));
         if (body.containsKey("permitirNenhuma")) g.setPermitirNenhuma(boolOr(body, "permitirNenhuma", false));
+        if (body.containsKey("umaVezPorCombo")) g.setUmaVezPorCombo(boolOr(body, "umaVezPorCombo", false));
+        if (body.containsKey("ordem"))        g.setOrdem(intOr(body, "ordem", g.getOrdem() != null ? g.getOrdem() : 0));
 
         // ── Substituição completa dos itens (jeito canônico com orphanRemoval=true) ──
         // Antes: itemRepo.delete() em cada antigo + itemRepo.save() em cada novo. Isso
@@ -160,6 +164,49 @@ public class ComplementoController {
         checkOwner(email, g.getProduto().getId());
         grupoRepo.delete(g);
         return ResponseEntity.noContent().build();
+    }
+
+    /** Move grupo pra cima ou pra baixo na ordem — troca ordem com o vizinho.
+     *  Body: {@code { "direcao": "up"|"down" }}. Painel usa setas up/down. */
+    @org.springframework.web.bind.annotation.PatchMapping("/api/complementos/grupos/{grupoId}/mover")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    @Transactional
+    public ResponseEntity<Void> moverGrupo(
+            @AuthenticationPrincipal String email,
+            @PathVariable Long grupoId,
+            @RequestBody Map<String, Object> body) {
+        ComplementoGrupo g = grupoRepo.findById(grupoId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+        checkOwner(email, g.getProduto().getId());
+        String dir = strOr(body, "direcao", "down");
+        var todos = grupoRepo.findByProdutoIdOrderByIdAsc(g.getProduto().getId());
+        // Normaliza ordem: se todos com 0 (padrao antigo), define ordem por id.
+        for (int i = 0; i < todos.size(); i++) {
+            if (todos.get(i).getOrdem() == null) todos.get(i).setOrdem(i);
+        }
+        todos.sort((a, b) -> Integer.compare(
+                a.getOrdem() == null ? 0 : a.getOrdem(),
+                b.getOrdem() == null ? 0 : b.getOrdem()));
+        int idx = -1;
+        for (int i = 0; i < todos.size(); i++) if (todos.get(i).getId().equals(grupoId)) { idx = i; break; }
+        if (idx < 0) throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+        int alvo = "up".equalsIgnoreCase(dir) ? idx - 1 : idx + 1;
+        if (alvo < 0 || alvo >= todos.size()) return ResponseEntity.noContent().build();
+        // Reatribui ordens 0..N sequencial + swap
+        java.util.Collections.swap(todos, idx, alvo);
+        for (int i = 0; i < todos.size(); i++) todos.get(i).setOrdem(i);
+        grupoRepo.saveAll(todos);
+        return ResponseEntity.noContent().build();
+    }
+
+    /** Ordem seguinte pra grupos novos (append no fim). */
+    private int proximaOrdem(Long produtoId) {
+        try {
+            var todos = grupoRepo.findByProdutoIdOrderByIdAsc(produtoId);
+            int max = -1;
+            for (var g : todos) { int o = g.getOrdem() == null ? 0 : g.getOrdem(); if (o > max) max = o; }
+            return max + 1;
+        } catch (Exception e) { return 0; }
     }
 
     /**

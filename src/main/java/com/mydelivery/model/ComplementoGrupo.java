@@ -57,6 +57,23 @@ public class ComplementoGrupo {
     @Builder.Default
     private Boolean permitirNenhuma = false;
 
+    /**
+     * Se true, o grupo aparece SO 1 VEZ no fluxo do cliente, mesmo que ele
+     * compre N unidades do produto. Uso: brinde ("Fini" 1x por pedido de 3
+     * acais), personalizacao do pacote em vez de cada item. Se false
+     * (padrao), o grupo aparece a cada unidade — comportamento original.
+     */
+    @Column(name = "uma_vez_por_combo")
+    @Builder.Default
+    private Boolean umaVezPorCombo = false;
+
+    /** Ordem em que o grupo aparece no cardapio pro cliente. Menor = topo.
+     *  Default 0 — grupos antigos mantem ordem por id (fallback). Painel
+     *  ajusta via setinhas up/down. */
+    @Column(nullable = false)
+    @Builder.Default
+    private Integer ordem = 0;
+
     // EAGER porque open-in-view=false: serialização do response fora da transação
     // disparava LazyInitException ao iterar getItens() → endpoint retornava 500
     // e o painel/cardápio ficavam sem complementos mesmo com dados no banco.

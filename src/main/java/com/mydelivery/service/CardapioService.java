@@ -557,7 +557,13 @@ public class CardapioService {
         // produto não tem grupos.
         var gruposDto = new java.util.ArrayList<ProdutoResponse.GrupoComplementoResponse>();
         try {
-            var grupos = complementoGrupoRepository.findByProdutoIdOrderByIdAsc(p.getId());
+            var grupos = new java.util.ArrayList<>(
+                    complementoGrupoRepository.findByProdutoIdOrderByIdAsc(p.getId()));
+            // Ordena por 'ordem' (menor primeiro), tie-breaker por id.
+            grupos.sort(java.util.Comparator
+                    .comparingInt((com.mydelivery.model.ComplementoGrupo g) ->
+                        g.getOrdem() == null ? Integer.MAX_VALUE : g.getOrdem())
+                    .thenComparing(com.mydelivery.model.ComplementoGrupo::getId));
             for (var g : grupos) {
                 var itens = g.getItens() == null ? java.util.List.<ProdutoResponse.ItemComplementoResponse>of()
                         : g.getItens().stream()
@@ -578,6 +584,8 @@ public class CardapioService {
                         .maxEscolhas(g.getMaxEscolhas())
                         .modoPreco(g.getModoPreco() == null ? "SOMA" : g.getModoPreco().name())
                         .permitirNenhuma(g.getPermitirNenhuma())
+                        .umaVezPorCombo(Boolean.TRUE.equals(g.getUmaVezPorCombo()))
+                        .ordem(g.getOrdem() == null ? 0 : g.getOrdem())
                         .itens(itens)
                         .build());
             }

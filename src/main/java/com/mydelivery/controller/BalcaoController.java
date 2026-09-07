@@ -205,6 +205,11 @@ public class BalcaoController {
                 || st == Pedido.Status.AGUARDANDO_PAGAMENTO) continue;
 
             Map<String, Object> m = new java.util.LinkedHashMap<>();
+            // ID do pedido — front usa como chave ESTAVEL pra dedup dos polls.
+            // Antes usava senha+nome que variavam (senha null intermittente),
+            // fazendo o mesmo pedido aparecer como "novo" a cada 5s e a voz
+            // repetir em loop.
+            m.put("pedidoId", p.getId());
             // Identificador: senha numerica (BALCAO) > nome cliente (RETIRADA).
             var senha = porPedidoId.get(p.getId());
             if (senha != null) {

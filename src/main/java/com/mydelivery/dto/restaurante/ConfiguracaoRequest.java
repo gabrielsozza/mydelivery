@@ -54,6 +54,8 @@ public class ConfiguracaoRequest {
     private Boolean pararPedidosAntesFechamento;
     /** Toggle: habilita integração com balança de pesagem no Balcão (Web Serial API). */
     private Boolean balancaAtiva;
+    /** Toggle: upsell inteligente no cardápio do cliente (sugestões automáticas). */
+    private Boolean upsellAutomaticoAtivo;
     /**
      * Valor (subtotal) a partir do qual o pedido ganha frete grátis. Null ou
      * zero = feature desligada (sempre cobra a taxa configurada).

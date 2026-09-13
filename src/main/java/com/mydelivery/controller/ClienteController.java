@@ -13,6 +13,7 @@ import java.util.Map;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -53,6 +54,11 @@ public class ClienteController {
     private final ClienteRepository clienteRepo;
     private final PedidoRepository pedidoRepo;
     private final RestauranteRepository restauranteRepo;
+    /** JDBC direto — usado no import CSV pra evitar problemas de Hibernate
+     *  session state (rollback-only), OSIV e translation de exception que
+     *  vinha derrubando o batch inteiro no 409 Conflict. Cada INSERT é
+     *  auto-commit, isolado, sem passar pelo GlobalExceptionHandler. */
+    private final JdbcTemplate jdbc;
 
     private static final ZoneId TZ = ZoneId.of("America/Sao_Paulo");
 
@@ -125,13 +131,18 @@ public class ClienteController {
      */
     @PostMapping("/api/restaurante/clientes/importar")
     @PreAuthorize("hasRole('RESTAURANTE')")
-    @Transactional
     public ResponseEntity<Map<String, Object>> importar(
             @AuthenticationPrincipal String email,
             @RequestBody List<Map<String, Object>> rows) {
 
-        Restaurante r = restauranteRepo.findByUsuarioEmail(email).orElseThrow();
-        int criados = 0, ignorados = 0;
+        Restaurante rOuter = restauranteRepo.findByUsuarioEmail(email).orElseThrow();
+        final Long restauranteId = rOuter.getId();
+        log.info("[Clientes:import] INICIO restaurante={} rows={}", restauranteId, rows.size());
+        // Import via JdbcTemplate (INSERT direto), sem passar por JPA/Hibernate.
+        // Cada linha é auto-commit isolada: falha numa não polui as próximas
+        // nem propaga pro GlobalExceptionHandler (que virava 409 Conflict pro
+        // batch inteiro).
+        int criados = 0, ignorados = 0, falhados = 0;
         for (Map<String, Object> row : rows) {
             String nome = str(row, "nome");
             String tel = telLimpo(str(row, "telefone"));
@@ -139,23 +150,78 @@ public class ClienteController {
 
             if (tel != null && !tel.isBlank()) {
                 // Idempotente: se já existe por telefone+restaurante, pula
-                if (clienteRepo.findByTelefoneAndRestauranteId(tel, r.getId()).isPresent()) {
-                    ignorados++;
-                    continue;
-                }
+                try {
+                    if (clienteRepo.findByTelefoneAndRestauranteId(tel, restauranteId).isPresent()) {
+                        ignorados++;
+                        continue;
+                    }
+                } catch (Exception ignore) { /* lookup best-effort */ }
             }
-            Cliente c = Cliente.builder()
-                    .restaurante(r)
-                    .nome(nome.trim())
-                    .telefone(tel)
-                    .email(str(row, "email"))
-                    .endereco(str(row, "endereco"))
-                    .build();
-            clienteRepo.save(c);
-            criados++;
+            // Endereço: aceita campo unificado "endereco" OU as partes separadas
+            // (rua, numero, bairro, cidade, cep, estado, complemento, referencia).
+            // Quando vem separado, monta um "endereco" legível pra retrocompat
+            // com telas antigas. As colunas específicas também são preenchidas.
+            String enderecoUnificado = str(row, "endereco");
+            // Truncamento defensivo: os campos das colunas específicas têm limites
+            // no @Column (endereco_estado=10, endereco_cep=10, etc). Row problemática
+            // do CSV pode ter "estado" como "Parnamirim RN" (13 chars) ou "cep" com
+            // ", nº 12" acidental — cortamos ao invés de falhar o batch inteiro.
+            String rua      = trunc(str(row, "rua"),         200);
+            String numero   = trunc(str(row, "numero"),       20);
+            String bairro   = trunc(str(row, "bairro"),      120);
+            String cidade   = trunc(str(row, "cidade"),      120);
+            String estado   = trunc(str(row, "estado"),       10);
+            String cep      = trunc(str(row, "cep"),          10);
+            String complemento = trunc(str(row, "complemento"), 120);
+            String referencia  = trunc(str(row, "referencia"), 200);
+            // "anotacoes" da coluna CSV entra na referência do endereço se vier — evita
+            // criar coluna nova só pra um caso de importação.
+            String anotacoes = trunc(str(row, "anotacoes"), 200);
+            if (referencia == null || referencia.isBlank()) referencia = anotacoes;
+            if (enderecoUnificado == null || enderecoUnificado.isBlank()) {
+                enderecoUnificado = montarEnderecoLegivel(rua, numero, complemento, bairro, cidade, estado, cep);
+            }
+            // endereco (unificado) sem @Column length = VARCHAR(255) no MySQL.
+            enderecoUnificado = trunc(enderecoUnificado, 255);
+
+            String nomeFinal = trunc(nome.trim(), 200);
+            String emailFinal = trunc(str(row, "email"), 200);
+            // INSERT via JdbcTemplate: cada UPDATE é auto-commit isolado. Sem
+            // Hibernate session, sem OSIV, sem exception translation vindo do
+            // proxy do JpaRepository. Exception cai DENTRO do try local. Testado
+            // com a coluna criado_em populada manualmente (o Hibernate @CreationTimestamp
+            // é ignorado quando não passa pelo EntityManager).
+            try {
+                jdbc.update(
+                    "INSERT INTO clientes ("
+                    + "restaurante_id, nome, telefone, email, endereco, "
+                    + "endereco_rua, endereco_numero, endereco_complemento, endereco_bairro, "
+                    + "endereco_referencia, endereco_cidade, endereco_estado, endereco_cep, "
+                    + "total_pedidos, criado_em"
+                    + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)",
+                    restauranteId, nomeFinal, tel, emailFinal, enderecoUnificado,
+                    rua, numero, complemento, bairro,
+                    referencia, cidade, estado, cep,
+                    java.sql.Timestamp.valueOf(java.time.LocalDateTime.now())
+                );
+                criados++;
+            } catch (Exception e) {
+                falhados++;
+                log.warn("[Clientes] linha ignorada nome={} tel={}: {}",
+                        nomeFinal, tel, e.getMessage());
+            }
         }
-        log.info("[Clientes] import restaurante={} criados={} ignorados={}", r.getId(), criados, ignorados);
-        return ResponseEntity.ok(Map.of("criados", criados, "ignorados", ignorados));
+        log.info("[Clientes] import restaurante={} criados={} ignorados={} falhados={}",
+                restauranteId, criados, ignorados, falhados);
+        return ResponseEntity.ok(Map.of(
+                "criados", criados,
+                "ignorados", ignorados + falhados,
+                "falhados", falhados));
+    }
+
+    private static String trunc(String s, int max) {
+        if (s == null) return null;
+        return s.length() <= max ? s : s.substring(0, max);
     }
 
     // ── helpers ──
@@ -167,6 +233,42 @@ public class ClienteController {
     }
     private static String telLimpo(String s) {
         return s == null ? null : s.replaceAll("\\D", "");
+    }
+
+    /** Monta "Rua X, 123 — Complemento, Bairro, Cidade/UF, CEP" ignorando partes vazias.
+     *  Usado quando o CSV traz endereço em colunas separadas e queremos manter
+     *  o campo unificado `endereco` legível pras telas antigas. */
+    private static String montarEnderecoLegivel(String rua, String numero, String complemento,
+                                                 String bairro, String cidade, String estado, String cep) {
+        StringBuilder sb = new StringBuilder();
+        if (rua != null && !rua.isBlank()) {
+            sb.append(rua.trim());
+            if (numero != null && !numero.isBlank()) sb.append(", ").append(numero.trim());
+        } else if (numero != null && !numero.isBlank()) {
+            sb.append("nº ").append(numero.trim());
+        }
+        if (complemento != null && !complemento.isBlank()) {
+            if (sb.length() > 0) sb.append(" — ");
+            sb.append(complemento.trim());
+        }
+        if (bairro != null && !bairro.isBlank()) {
+            if (sb.length() > 0) sb.append(", ");
+            sb.append(bairro.trim());
+        }
+        if (cidade != null && !cidade.isBlank()) {
+            if (sb.length() > 0) sb.append(", ");
+            sb.append(cidade.trim());
+            if (estado != null && !estado.isBlank()) sb.append("/").append(estado.trim());
+        } else if (estado != null && !estado.isBlank()) {
+            if (sb.length() > 0) sb.append(", ");
+            sb.append(estado.trim());
+        }
+        if (cep != null && !cep.isBlank()) {
+            if (sb.length() > 0) sb.append(" · CEP ");
+            else sb.append("CEP ");
+            sb.append(cep.trim());
+        }
+        return sb.length() == 0 ? null : sb.toString();
     }
 
     /** Acumulador interno por cliente. */

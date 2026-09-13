@@ -466,6 +466,9 @@ public class CardapioService {
             String d = request.getDiasSemanaAtivos().trim();
             produto.setDiasSemanaAtivos(d.isEmpty() ? null : d);
         }
+        if (request.getUpsellManualIds() != null) {
+            produto.setUpsellManualIds(serializarIdsCsv(request.getUpsellManualIds()));
+        }
 
         if (request.getCategoriaId() != null) {
             Categoria cat = categoriaRepository.findById(request.getCategoriaId())
@@ -474,6 +477,20 @@ public class CardapioService {
         }
 
         return toProdutoResponse(produtoRepository.save(produto));
+    }
+
+    /** Lista de IDs → "12,45,78". Filtra nulls/duplicatas/negativos.
+     *  Limita a 20 IDs (evita blob gigante no banco). */
+    private String serializarIdsCsv(java.util.List<Long> ids) {
+        if (ids == null || ids.isEmpty()) return null;
+        java.util.LinkedHashSet<Long> unicos = new java.util.LinkedHashSet<>();
+        for (Long id : ids) {
+            if (id != null && id > 0) unicos.add(id);
+            if (unicos.size() >= 20) break;
+        }
+        if (unicos.isEmpty()) return null;
+        return unicos.stream().map(String::valueOf)
+                .collect(java.util.stream.Collectors.joining(","));
     }
 
     @Transactional
@@ -510,6 +527,9 @@ public class CardapioService {
         if (request.getDiasSemanaAtivos() != null) {
             String d = request.getDiasSemanaAtivos().trim();
             produto.setDiasSemanaAtivos(d.isEmpty() ? null : d);
+        }
+        if (request.getUpsellManualIds() != null) {
+            produto.setUpsellManualIds(serializarIdsCsv(request.getUpsellManualIds()));
         }
 
         if (request.getCategoriaId() != null) {
@@ -613,8 +633,20 @@ public class CardapioService {
                 .unidadePreco(p.getUnidadePreco())
                 .precoAPartirDe(Boolean.TRUE.equals(p.getPrecoAPartirDe()))
                 .diasSemanaAtivos(p.getDiasSemanaAtivos())
+                .upsellManualIds(parseIdsCsv(p.getUpsellManualIds()))
                 .gruposComplemento(gruposDto)
                 .build();
+    }
+
+    /** Converte "12,45,78" → [12L, 45L, 78L]. Ignora entradas invalidas
+     *  silenciosamente pra o cliente-side nao receber lixo. */
+    private java.util.List<Long> parseIdsCsv(String csv) {
+        if (csv == null || csv.isBlank()) return java.util.List.of();
+        java.util.List<Long> out = new java.util.ArrayList<>();
+        for (String tok : csv.split(",")) {
+            try { out.add(Long.parseLong(tok.trim())); } catch (Exception ignore) {}
+        }
+        return out;
     }
 
     /** Promo válida = original > preco (e ambos > 0). Evita guardar lixo no banco. */

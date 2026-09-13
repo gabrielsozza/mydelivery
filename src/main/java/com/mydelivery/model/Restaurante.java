@@ -205,6 +205,21 @@ public class Restaurante {
     private Boolean fiscalHabilitado = false;
 
     /**
+     * Upsell inteligente no cardápio do cliente. Quando true (default), o
+     * frontend do cardápio digital analisa o carrinho a cada item adicionado
+     * e sugere complementos (bebida pra lanche, açaí menor pra açaí, produtos
+     * configurados manualmente pelo dono no produto). Quando false, nenhum
+     * pop-up ou bloco de sugestão aparece.
+     *
+     * <p>Coluna nullable pra Hibernate ddl-auto=update conseguir criar em
+     * MySQL Railway (não aceita NOT NULL sem default em tabela com dados).
+     * Cardápio interpreta null como TRUE (opt-in por padrão pra restaurantes
+     * existentes ganharem a feature automaticamente).
+     */
+    @Column(name = "upsell_automatico_ativo")
+    private Boolean upsellAutomaticoAtivo;
+
+    /**
      * Se true, após o cliente finalizar o pedido no cardápio digital o
      * frontend mostra um botão "Confirmar via WhatsApp" que abre conversa
      * com o restaurante já com a mensagem pré-preenchida. O bot WhatsApp

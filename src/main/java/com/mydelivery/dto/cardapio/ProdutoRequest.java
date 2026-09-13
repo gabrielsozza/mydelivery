@@ -51,4 +51,10 @@ public class ProdutoRequest {
     /** Dias da semana em que o produto fica ativo (CSV: "QUA,SAB").
      *  NULL/vazio = sempre ativo. */
     private String diasSemanaAtivos;
+
+    /** Upsell manual: lista de IDs de outros produtos do mesmo restaurante a
+     *  serem sugeridos quando este for adicionado ao carrinho. Null = usa a
+     *  inteligência automática. Lista vazia = dono desativou o upsell só
+     *  pra ESSE produto (mesmo com upsellAutomaticoAtivo=true no restaurante). */
+    private java.util.List<Long> upsellManualIds;
 }

@@ -48,6 +48,10 @@ public class WhatsappBotService {
      *  pra não quebrar testes legados. */
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.mydelivery.repository.PedidoRepository pedidoRepo;
+    /** Opt-out de campanhas promocionais — cliente responde PARE e nunca mais
+     *  recebe broadcast. Opcional pra não quebrar testes que não sobem a bean. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.mydelivery.repository.PromoOptOutRepository promoOptOutRepo;
 
     /** Delay (ms) de "digitando…" antes da msg aparecer.
      *  Aumentado pra 2000ms a pedido do operador — bot respondendo em ms
@@ -221,6 +225,38 @@ public class WhatsappBotService {
         // {inst=mydelivery-rest-42}. Filtro no Railway: grep 'inst=X'.
         // Limpo no finally do processar() (nível acima).
         org.slf4j.MDC.put("inst", inst.getInstanceName());
+
+        // ── OPT-OUT DE CAMPANHAS PROMOCIONAIS ──
+        // Cliente respondeu "PARE" / "SAIR" — registra opt-out ANTES de qualquer
+        // outra lógica. Precisa funcionar mesmo com botAtivo=false e mesmo em
+        // warmup, senão dono não pausa ninguém e todo mundo continua no envio.
+        // Não responde nada pro cliente (silencioso) — evita loop se "PARE" for
+        // interpretado como saudação. Só grava e deixa passar.
+        if (promoOptOutRepo != null && texto != null && ehPedidoDeOptOut(texto)) {
+            try {
+                String tel = limparNumero(numero);
+                if (tel != null && !tel.isBlank()
+                        && !promoOptOutRepo.existsByRestauranteIdAndTelefone(inst.getRestaurante().getId(), tel)) {
+                    com.mydelivery.model.PromoOptOut op = com.mydelivery.model.PromoOptOut.builder()
+                            .restaurante(inst.getRestaurante())
+                            .telefone(tel)
+                            .motivo(texto.trim().substring(0, Math.min(60, texto.trim().length())))
+                            .criadoEm(java.time.LocalDateTime.now())
+                            .build();
+                    promoOptOutRepo.save(op);
+                    log.info("[Bot:OPT_OUT] registrado inst={} tel={}***",
+                            inst.getInstanceName(),
+                            tel.length() > 5 ? tel.substring(0, 5) : "?");
+                }
+            } catch (Exception e) {
+                log.warn("[Bot:OPT_OUT] falha ao registrar: {}", e.getMessage());
+            }
+            // NÃO faz return — deixa a msg cair no fluxo normal do bot. Se
+            // o cliente digitou "PARE" no meio de uma conversa de pedido, ele
+            // ainda vai receber a resposta contextual do bot como se fosse
+            // texto qualquer (o bot já ignora comandos que não bateram — segue
+            // esperando cardapio/atendente/etc).
+        }
 
         // ── Logs em INFO nos pontos de silêncio: antes eram DEBUG, bot calado
         //    sumia silenciosamente do log de produção. Agora aparece no Railway. ──
@@ -1383,6 +1419,28 @@ public class WhatsappBotService {
         String n = Normalizer.normalize(s, Normalizer.Form.NFD)
                 .replaceAll("\\p{InCombiningDiacriticalMarks}+", "");
         return n.toLowerCase().trim().replaceAll("\\s+", " ");
+    }
+
+    /**
+     * Detecta pedido de opt-out de promoções. Match agressivo pra pegar
+     * clientes com formas diferentes de dizer PARE:
+     *   PARE, SAIR, SAIA, CANCELAR, STOP, NAO QUERO RECEBER, PARAR PROMO,
+     *   PROMO NAO, TIRAR DA LISTA
+     * Case-insensitive, ignora acentos e emojis.
+     */
+    private boolean ehPedidoDeOptOut(String texto) {
+        if (texto == null) return false;
+        String t = texto.trim().toLowerCase()
+                .replaceAll("[áàâã]", "a").replaceAll("[éèê]", "e").replaceAll("[íî]", "i")
+                .replaceAll("[óòôõ]", "o").replaceAll("[úû]", "u").replaceAll("ç", "c");
+        // Palavra sozinha ou msg curta com a palavra
+        if (t.equals("pare") || t.equals("sair") || t.equals("saia")
+                || t.equals("cancelar") || t.equals("stop") || t.equals("parar")) return true;
+        if (t.length() > 60) return false; // msg longa raramente é opt-out
+        return t.contains("nao quero receber")
+                || t.contains("parar promo") || t.contains("cancelar promo")
+                || t.contains("promo nao") || t.contains("tirar da lista")
+                || t.contains("sair da lista") || t.contains("nao envie");
     }
 
     /** Tira sufixo @s.whatsapp.net e qualquer não-dígito. */

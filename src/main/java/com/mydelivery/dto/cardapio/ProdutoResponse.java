@@ -46,6 +46,10 @@ public class ProdutoResponse {
     /** CSV de dias da semana ativos ("SEG,QUA,SAB") ou null pra sempre ativo. */
     private String diasSemanaAtivos;
 
+    /** Upsell manual: IDs de produtos sugeridos quando este vai pro carrinho.
+     *  Array vazio ou null = usa inteligência automática do cliente-side. */
+    private java.util.List<Long> upsellManualIds;
+
     /** Grupos de complementos (sabores, adicionais, variações). Cada grupo tem
      *  min/máx escolhas + lista de itens com preço próprio. Usado pelo garçom
      *  e pelo cliente pra abrir modal de personalização quando o produto tem

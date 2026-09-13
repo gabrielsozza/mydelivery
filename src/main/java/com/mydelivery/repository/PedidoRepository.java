@@ -93,4 +93,19 @@ public interface PedidoRepository extends JpaRepository<Pedido, Long> {
     @org.springframework.data.jpa.repository.Modifying
     @org.springframework.data.jpa.repository.Query("UPDATE Pedido p SET p.mesa = null WHERE p.mesa.id = :mesaId")
     void desvincularMesa(@org.springframework.data.repository.query.Param("mesaId") Long mesaId);
+
+    /**
+     * Clientes elegíveis pra campanha promocional — retorna [telefone, nome, qtdPedidos]
+     * de clientes com &gt;= minCompras pedidos NÃO cancelados nesse restaurante.
+     * Ignora pedidos onde o telefone é nulo/vazio e pedidos de mesa/sessão sem cliente
+     * associado. Usado pelo PromoCampanhaService pra popular a fila de disparo.
+     */
+    @Query("SELECT c.telefone, MAX(c.nome), COUNT(p) " +
+           "FROM Pedido p JOIN p.cliente c " +
+           "WHERE p.restaurante.id = :restauranteId " +
+           "  AND c.telefone IS NOT NULL AND c.telefone <> '' " +
+           "  AND p.status <> com.mydelivery.model.Pedido$Status.CANCELADO " +
+           "GROUP BY c.telefone " +
+           "HAVING COUNT(p) >= :minCompras")
+    List<Object[]> findClientesRecorrentes(Long restauranteId, long minCompras);
 }

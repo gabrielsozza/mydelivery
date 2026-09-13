@@ -162,6 +162,23 @@ public class Produto {
     @Column(name = "dias_semana_ativos", length = 40)
     private String diasSemanaAtivos;
 
+    /**
+     * Upsell manual: CSV de IDs de outros produtos deste restaurante que
+     * devem ser SUGERIDOS quando o cliente adicionar este produto ao carrinho.
+     *
+     * <p>Se preenchido, tem PRIORIDADE MÁXIMA sobre a inteligência automática
+     * do upsell — o dono sabe o que combina com o quê e mandou.
+     * Se null ou vazio, o cliente-side aplica as heurísticas automáticas
+     * (bebida pra lanche, açaí menor pra açaí, etc.).
+     *
+     * <p>Formato: "12,45,78" (sem espaços). Sanitizado ao salvar. IDs
+     * inválidos/desativados são ignorados no cliente-side sem quebrar.
+     * Máx. 20 IDs (~200 chars) — o cliente escolhe entre 3 sugeridos,
+     * sobra folga pra o dono cadastrar variações.
+     */
+    @Column(name = "upsell_manual_ids", length = 300)
+    private String upsellManualIds;
+
     @CreationTimestamp
     private LocalDateTime criadoEm;
 }

@@ -132,14 +132,14 @@ public class EntregaController {
                             && (cep.isBlank() || p.cep().isBlank() || digitos(p.cep()).equals(digitos(cep))))
                     .findFirst().orElse(null);
             if (local != null) return ResponseEntity.ok(Map.of(
-                    "lat", local.lat(), "lng", local.lng(), "provedor", "google"));
+                    "lat", local.lat(), "lng", local.lng(), "precisao", "imovel", "provedor", "google"));
         }
 
         Double lat = restaurante.getEnderecoLatitude() == null ? null : restaurante.getEnderecoLatitude().doubleValue();
         Double lng = restaurante.getEnderecoLongitude() == null ? null : restaurante.getEnderecoLongitude().doubleValue();
         double[] fallback = entregaService.geocodificar(endereco, lat, lng);
         if (fallback == null) return ResponseEntity.notFound().build();
-        return ResponseEntity.ok(Map.of("lat", fallback[0], "lng", fallback[1], "provedor", "osm"));
+        return ResponseEntity.ok(Map.of("lat", fallback[0], "lng", fallback[1], "precisao", "rua", "provedor", "osm"));
     }
 
     private static String normalizar(String s) {

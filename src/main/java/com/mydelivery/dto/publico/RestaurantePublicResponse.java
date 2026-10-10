@@ -26,6 +26,7 @@ public class RestaurantePublicResponse {
     /** Valor a partir do qual pedido tem frete grátis. Null = feature off. */
     private BigDecimal freteGratisApartirDe;
     private List<String> modos;
+    private Boolean somenteRetiradaAtivo;
     private List<String> pagamentos;
     /** Se true, cliente que escolher PIX deve receber a chave e mandar comprovante. */
     private Boolean exigirPixAntecipado;
@@ -55,6 +56,8 @@ public class RestaurantePublicResponse {
      * null/blank → restaurante não habilitou pagamento online.
      */
     private String mpPublicKey;
+    private boolean pixOnlineDisponivel;
+    private boolean cartaoOnlineDisponivel;
 
     /** Modo de cálculo de taxa: BAIRRO (legado) ou RAIO (jul/2026).
      *  Cardápio público usa isso pra decidir: modo bairro faz lookup por

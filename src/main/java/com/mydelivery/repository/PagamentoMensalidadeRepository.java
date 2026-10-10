@@ -9,6 +9,19 @@ import com.mydelivery.model.PagamentoMensalidade;
 
 public interface PagamentoMensalidadeRepository extends JpaRepository<PagamentoMensalidade, Long> {
 
+    @org.springframework.data.jpa.repository.Query("""
+        select p from PagamentoMensalidade p join fetch p.restaurante r
+        where p.status = :status
+          and p.googleEnviadoEm is null and p.mpPaymentId is not null
+          and r.googleMeasurementConsent = true and r.googleConsentVersion = 2 and r.googleClientId is not null
+          and p.pagoEm >= :desde
+          and (p.googleTentativas is null or p.googleTentativas < 8)
+          and (p.googleTentativaEm is null or p.googleTentativaEm < :retryAntes)
+        order by p.pagoEm asc
+        """)
+    List<PagamentoMensalidade> pendentesGoogle(PagamentoMensalidade.Status status, java.time.LocalDateTime desde,
+        java.time.LocalDateTime retryAntes, org.springframework.data.domain.Pageable pagina);
+
     /** Últimos pagamentos de um restaurante em ordem decrescente (histórico da aba planos). */
     List<PagamentoMensalidade> findTop12ByRestauranteIdOrderByCriadoEmDesc(Long restauranteId);
 

@@ -103,6 +103,49 @@ public class WhatsappController {
         return ResponseEntity.ok(Map.of("botAtivo", inst.getBotAtivo()));
     }
 
+    /** Repetição inteligente é uma preferência individual da loja, desligada por padrão. */
+    @PatchMapping("/repeticao-inteligente")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Map<String, Object>> configurarRepeticaoInteligente(
+            @AuthenticationPrincipal String email,
+            @RequestBody Map<String, Boolean> body) {
+        Restaurante r = restauranteRepository.findByUsuarioEmail(email).orElseThrow();
+        boolean ativo = Boolean.TRUE.equals(body.get("ativo"));
+        r.setRepeticaoInteligenteWhatsapp(ativo);
+        restauranteRepository.save(r);
+        return ResponseEntity.ok(Map.of("ativo", ativo));
+    }
+
+    /** Configuração da mensagem enviada somente no primeiro contato do cliente. */
+    @GetMapping("/mensagem-inicial")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Map<String, String>> obterMensagemInicial(
+            @AuthenticationPrincipal String email) {
+        Restaurante r = restauranteRepository.findByUsuarioEmail(email).orElseThrow();
+        return ResponseEntity.ok(Map.of(
+                "mensagem", r.getWhatsappMensagemInicial() == null ? "" : r.getWhatsappMensagemInicial()));
+    }
+
+    /**
+     * Salva ou limpa a saudação personalizada. A mensagem é texto puro e o
+     * bot usa a apresentação padrão quando o restaurante deixa o campo vazio.
+     */
+    @PatchMapping("/mensagem-inicial")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Map<String, String>> salvarMensagemInicial(
+            @AuthenticationPrincipal String email,
+            @RequestBody(required = false) Map<String, String> body) {
+        Restaurante r = restauranteRepository.findByUsuarioEmail(email).orElseThrow();
+        String mensagem = body == null ? "" : body.getOrDefault("mensagem", "");
+        mensagem = mensagem == null ? "" : mensagem.replace("\r\n", "\n").trim();
+        if (mensagem.length() > 1200) {
+            throw new IllegalArgumentException("A mensagem inicial pode ter até 1.200 caracteres.");
+        }
+        r.setWhatsappMensagemInicial(mensagem.isBlank() ? null : mensagem);
+        restauranteRepository.save(r);
+        return ResponseEntity.ok(Map.of("mensagem", mensagem));
+    }
+
     // ── Atendimento humano (handoff) ──
 
     /** Lista números que estão sendo atendidos por humano (bot em silêncio). */
@@ -223,6 +266,8 @@ public class WhatsappController {
         m.put("qrExpiraEm", inst.getQrExpiraEm() != null ? inst.getQrExpiraEm().toString() : "");
         m.put("conectadoEm", inst.getConectadoEm() != null ? inst.getConectadoEm().toString() : "");
         m.put("botAtivo", Boolean.TRUE.equals(inst.getBotAtivo()));
+        m.put("repeticaoInteligenteWhatsapp", inst.getRestaurante() != null && Boolean.TRUE.equals(
+                inst.getRestaurante().getRepeticaoInteligenteWhatsapp()));
         return m;
     }
 }

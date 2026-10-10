@@ -42,6 +42,8 @@ public class AutoEntregueJob {
 
     private final PedidoRepository pedidoRepo;
     private final com.mydelivery.service.ifood.IfoodClient ifoodClient;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.mydelivery.service.RastreamentoEntregaService rastreamentoService;
 
     @Scheduled(fixedRate = 15 * 60_000L, initialDelay = 5 * 60_000L)
     @Transactional
@@ -55,8 +57,16 @@ public class AutoEntregueJob {
         int fechados = 0;
         for (Pedido p : esquecidos) {
             try {
+                if (p.getTipo() == Pedido.Tipo.DELIVERY && p.getOrigem() != Pedido.Origem.IFOOD
+                        && Boolean.TRUE.equals(p.getRestaurante().getEntregaCodigoConfirmacaoAtivo())) {
+                    log.info("[AutoEntregue] pedido#{} mantido aberto: aguarda código de confirmação", p.getId());
+                    continue;
+                }
                 p.setStatus(Pedido.Status.ENTREGUE);
                 pedidoRepo.save(p);
+                if (rastreamentoService != null && (p.getRastreamentoTokenHash() != null
+                        || p.getRastreamentoConsentidoEm() != null || p.getEntregaCodigoHash() != null))
+                    rastreamentoService.encerrar(p, "ENTREGA_AUTO_CONCLUIDA", null);
                 // Propaga pra iFood quando aplicável — sem isso o pedido fica
                 // marcado como ENTREGUE localmente mas a Order API do iFood
                 // continua aguardando CONCLUDED (e o restaurante "perde"

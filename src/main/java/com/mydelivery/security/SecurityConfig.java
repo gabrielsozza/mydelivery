@@ -41,16 +41,17 @@ public class SecurityConfig {
                 .sessionManagement(session
                         -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
+                .dispatcherTypeMatchers(jakarta.servlet.DispatcherType.ASYNC).permitAll()
+                .requestMatchers(HttpMethod.GET, "/api/health").permitAll()
                 .requestMatchers("/auth/**").permitAll()
                 .requestMatchers("/public/**").permitAll()
                 .requestMatchers("/api/auth/**").permitAll()
-                // Railway só envia tráfego à nova versão depois de o Spring iniciar.
-                .requestMatchers(HttpMethod.GET, "/api/health").permitAll()
                 .requestMatchers("/api/cardapio/**").permitAll()
                 .requestMatchers(HttpMethod.GET, "/api/cardapio/*/banners").permitAll()
                 .requestMatchers("/api/pedidos/novo").permitAll()
                 .requestMatchers("/api/pedidos/*/acompanhar").permitAll()
                 .requestMatchers("/api/restaurante/publico/**").permitAll()
+                .requestMatchers(HttpMethod.GET, "/api/restaurante/meta-ads/callback").permitAll()
                 .requestMatchers(HttpMethod.GET, "/api/publico/**").permitAll()
                 // Uploads (logo/capa do restaurante, etc.) — públicos pra cardápio do cliente
                 .requestMatchers("/uploads/**").permitAll()
@@ -82,6 +83,8 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.POST, "/api/restaurante/assinatura/replicar-cardapio-admin").permitAll()
                 .requestMatchers(HttpMethod.POST, "/api/restaurante/assinatura/reconciliar-pagamento-admin").permitAll()
                 // Health do WhatsApp — autenticação via X-Admin-Secret validada no controller
+                .requestMatchers("/api/admin-internal/beneficios/**").permitAll()
+                .requestMatchers("/api/admin-internal/crm/**").permitAll()
                 .requestMatchers("/api/admin-internal/whatsapp/**").permitAll()
                 // Web Push: setup VAPID — autenticado via X-Admin-Secret no controller
                 .requestMatchers("/api/admin-internal/web-push/**").permitAll()

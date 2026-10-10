@@ -25,6 +25,9 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 @Builder
 public class Assinatura {
+    /** Limite explicitamente concedido por benefício; não é pagamento. */
+    @Column(name="beneficio_vigente_ate")
+    private LocalDateTime beneficioVigenteAte;
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)

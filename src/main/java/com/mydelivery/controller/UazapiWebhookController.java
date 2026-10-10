@@ -52,6 +52,8 @@ import lombok.extern.slf4j.Slf4j;
 public class UazapiWebhookController {
 
     private final WhatsappWebhookController evolutionHandler;
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private com.mydelivery.campanhas.CampaignEvents campaignEvents;
     private final com.mydelivery.repository.WhatsappInstanceRepository instanceRepo;
     private final com.mydelivery.service.whatsapp.UazapiClient uazapiClient;
 
@@ -71,24 +73,7 @@ public class UazapiWebhookController {
             return ResponseEntity.ok().build();
         }
 
-        // Log DIAGNÓSTICO — payload cru pra descobrir o formato real
-        // (o OpenAPI da Uazapi diverge do que eles enviam na prática).
-        // Dump top-level keys + valores curtos + chaves aninhadas de "data",
-        // "message", "connection" pra achar onde vem o instance name e o texto.
-        log.info("[Uazapi-Webhook] === RAW payload ===");
-        for (var entry : payload.entrySet()) {
-            Object v = entry.getValue();
-            if (v instanceof Map<?, ?> m) {
-                log.info("[Uazapi-Webhook]   {} = (Map) keys={}", entry.getKey(), m.keySet());
-            } else if (v instanceof java.util.List<?> l) {
-                log.info("[Uazapi-Webhook]   {} = (List size={})", entry.getKey(), l.size());
-            } else {
-                String vs = v == null ? "null" : v.toString();
-                if (vs.length() > 120) vs = vs.substring(0, 117) + "...";
-                log.info("[Uazapi-Webhook]   {} = {}", entry.getKey(), vs);
-            }
-        }
-        log.info("[Uazapi-Webhook] === END raw ===");
+        log.debug("[Uazapi-Webhook] campos recebidos={}", payload.keySet());
 
         String eventUazapi = strDe(payload, "EventType");
         if (eventUazapi == null) eventUazapi = strDe(payload, "event");
@@ -125,6 +110,16 @@ public class UazapiWebhookController {
 
         log.info("[Uazapi-Webhook] event={} instance={} → traduzindo",
                 eventUazapi, instanceName);
+
+        // Atualização de entrega não é mensagem recebida nem takeover humano.
+        if ("messages_update".equalsIgnoreCase(eventUazapi)) {
+            var message = extrairMessage(payload);
+            if (message != null && campaignEvents != null) {
+                var instance = instanceRepo.findByInstanceName(instanceName);
+                if (instance.isPresent()) campaignEvents.receipt(instance.get(), message);
+            }
+            return ResponseEntity.ok().build();
+        }
 
         // TRADUZ pro formato Evolution e delega pro handler central.
         Map<String, Object> evoPayload = traduzir(eventUazapi, payload);

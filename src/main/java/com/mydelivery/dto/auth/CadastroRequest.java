@@ -28,6 +28,12 @@ public class CadastroRequest {
     /** Código do afiliado se chegou via link (?afiliado=ab12cd34). Opcional. */
     private String afiliadoCodigo;
 
+    /** Origem exclusiva de indicação entre restaurantes. */
+    private String mymoneyCodigo;
+
+    /** Código assinado do colaborador comercial que trouxe o restaurante. */
+    private String colaboradorCodigo;
+
     /** Plano clicado no link (MENSAL/SEMESTRAL/ANUAL). Opcional. */
     private String linkOrigem;
 }

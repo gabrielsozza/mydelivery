@@ -31,6 +31,14 @@ public class ComplementoItem {
     @Column(length = 300)
     private String descricao;
 
+    /** Foto opcional exibida no cardápio junto ao complemento. */
+    @Column(name = "foto_url", length = 1000)
+    private String fotoUrl;
+
+    /** Destaque manual do restaurante para itens mais pedidos (ex.: sabores). */
+    @Column(name = "mais_pedido")
+    private Boolean maisPedido = false;
+
     @Column(precision = 10, scale = 2)
     private BigDecimal precoAdicional = BigDecimal.ZERO;
 

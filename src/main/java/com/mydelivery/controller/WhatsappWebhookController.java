@@ -34,6 +34,9 @@ public class WhatsappWebhookController {
 
     private final WhatsappService whatsappService;
     private final WhatsappBotService botService;
+    private final com.mydelivery.crm.CrmInboundService crmInbound;
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private com.mydelivery.campanhas.CampaignEvents campaignEvents;
 
     /**
      * Pool dedicado pra processamento assíncrono de mensagens recebidas.
@@ -262,6 +265,7 @@ public class WhatsappWebhookController {
             }
         } catch (Exception e) {
             log.error("[WA-Webhook] Erro tratando evento {}: {}", event, e.getMessage(), e);
+            if (com.mydelivery.crm.ProspectingPolicy.isInstance(inst)) return ResponseEntity.status(503).build();
             // Devolve 200 mesmo assim — Evolution não precisa retry pra erros nossos
         }
 
@@ -290,6 +294,13 @@ public class WhatsappWebhookController {
             Object idObj = kMap.get("id");
             if (idObj != null) messageId = idObj.toString();
         }
+        if (crmInbound.receive(inst, remoteJid, messageId, extrairTexto(dataMap), fromMe, wasSentByApi, dataMap.get("messageTimestamp"))) return;
+
+        if (campaignEvents != null) {
+            try { campaignEvents.inbound(inst, remoteJid, messageId, extrairTexto(dataMap), fromMe, wasSentByApi, dataMap.get("messageTimestamp")); }
+            catch (Exception e) { log.error("[Campanhas] Registro de entrada falhou; atendimento preservado ({})", e.getClass().getSimpleName()); }
+        }
+
         // TAKEOVER MANUAL: se dono respondeu pelo celular (fromMe=true +
         // wasSentByApi=false), registra pausa do bot por 5min pra aquele número.
         // Cliente continuar mandando NÃO reseta o timer — só nova msg do dono

@@ -75,6 +75,15 @@ public class PagamentoMensalidade {
     @Column(name = "mp_status_detail", length = 80)
     private String mpStatusDetail;
 
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    private LocalDateTime googleEnviadoEm;
+
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    private LocalDateTime googleTentativaEm;
+
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    private Integer googleTentativas;
+
     @CreationTimestamp
     private LocalDateTime criadoEm;
 

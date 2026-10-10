@@ -9,6 +9,7 @@ import com.mydelivery.dto.cardapio.CategoriaComProdutosResponse;
 import com.mydelivery.dto.cardapio.CategoriaRequest;
 import com.mydelivery.dto.cardapio.ProdutoRequest;
 import com.mydelivery.dto.cardapio.ProdutoResponse;
+import com.mydelivery.dto.cardapio.ProdutoHorarioEmMassaRequest;
 import com.mydelivery.model.Categoria;
 import com.mydelivery.model.ComplementoGrupo;
 import com.mydelivery.model.ComplementoItem;
@@ -39,24 +40,6 @@ public class CardapioService {
     // ─── CARDÁPIO PÚBLICO ────────────────────────────────────────────────
 
     /**
-     * Cardapio publico do cliente final. Cacheado por 60s — endpoint hot
-     * (cada cliente que abre o link puxa). Cache invalida sozinho em 60s,
-     * entao alteracao do restaurante aparece pro cliente em ate 1 minuto.
-     * Reducao de queries no banco: ~95% em horario de pico.
-     *
-     * Cache key inclui o dia da semana no fuso Brasil pra o filtro
-     * `diasSemanaAtivos` invalidar automaticamente na virada do dia. Sem isso,
-     * na segunda 23:59 o cache guardava produtos de segunda e na terça 00:01
-     * eles apareciam por até 60s a mais do que deveriam.
-     *
-     * Filtro por dia da semana: aplicado AQUI (antes era só em PublicController
-     * legado, que nao e o endpoint que o cardapio front consome — bug que fazia
-     * produtos com restricao de dia aparecerem em qualquer dia).
-     */
-    @org.springframework.cache.annotation.Cacheable(
-            value = "cardapio",
-            key = "#slug + '::' + T(java.time.LocalDate).now(T(java.time.ZoneId).of('America/Sao_Paulo')).getDayOfWeek().name()")
-    /**
      * Cardapio pro BALCAO — igual ao publico, mas SEM o filtro apenasBalcao.
      * Serve pro POS/balcao ver e vender os produtos exclusivos presenciais
      * (agua gelada, brinde, item de reposicao) alem dos regulares.
@@ -65,7 +48,6 @@ public class CardapioService {
     public List<CategoriaComProdutosResponse> getCardapioBalcao(String slug) {
         Restaurante restaurante = restauranteRepository.findBySlug(slug)
                 .orElseThrow(() -> new RuntimeException("Restaurante não encontrado"));
-        final String hoje = codigoDiaSemanaAtual();
         List<Categoria> categorias = categoriaRepository
                 .findByRestauranteIdAndAtivoTrueOrderByOrdemAsc(restaurante.getId());
         return categorias.stream().map(cat -> {
@@ -75,7 +57,7 @@ public class CardapioService {
                     .filter(p -> p.getCategoria() != null &&
                                  p.getCategoria().getId().equals(cat.getId()))
                     // NAO filtra apenasBalcao — inclui todos.
-                    .filter(p -> diaSemanaAceita(p.getDiasSemanaAtivos(), hoje))
+                    .filter(p -> p.disponivelNoHorario(java.time.ZonedDateTime.now(java.time.ZoneId.of("America/Sao_Paulo"))))
                     .sorted(java.util.Comparator
                             .comparing((Produto p) -> p.getOrdem() == null ? Integer.MAX_VALUE : p.getOrdem())
                             .thenComparing(Produto::getId))
@@ -90,11 +72,14 @@ public class CardapioService {
         }).toList();
     }
 
+    /** Cache de 60s por minuto para refletir mudanças na virada do horário. */
+    @org.springframework.cache.annotation.Cacheable(
+            value = "cardapio",
+            key = "#slug + '::' + T(java.time.LocalDateTime).now(T(java.time.ZoneId).of('America/Sao_Paulo')).format(T(java.time.format.DateTimeFormatter).ofPattern('yyyyMMddHHmm'))")
     public List<CategoriaComProdutosResponse> getCardapioPublico(String slug) {
         Restaurante restaurante = restauranteRepository.findBySlug(slug)
                 .orElseThrow(() -> new RuntimeException("Restaurante não encontrado"));
 
-        final String hoje = codigoDiaSemanaAtual();
 
         List<Categoria> categorias = categoriaRepository
                 .findByRestauranteIdAndAtivoTrueOrderByOrdemAsc(restaurante.getId());
@@ -112,7 +97,7 @@ public class CardapioService {
                     .filter(p -> !Boolean.TRUE.equals(p.getApenasBalcao()))
                     // Se o produto tem restrição de dias e hoje não está na lista, esconde.
                     // Sem restrição (null/vazio) = aparece sempre (retrocompat pra 99% dos produtos).
-                    .filter(p -> diaSemanaAceita(p.getDiasSemanaAtivos(), hoje))
+                    .filter(p -> p.disponivelNoHorario(java.time.ZonedDateTime.now(java.time.ZoneId.of("America/Sao_Paulo"))))
                     // Ordena por ordem (nulls last) — respeita reordenação do painel.
                     // Tie-breaker pelo id pra ordem estável quando vários têm ordem=0.
                     .sorted(java.util.Comparator
@@ -135,29 +120,44 @@ public class CardapioService {
         .toList();
     }
 
-    /** Código de 3 letras pro dia da semana atual (fuso Brasil). */
-    private static String codigoDiaSemanaAtual() {
-        java.time.DayOfWeek d = java.time.LocalDate.now(
-                java.time.ZoneId.of("America/Sao_Paulo")).getDayOfWeek();
-        switch (d) {
-            case MONDAY:    return "SEG";
-            case TUESDAY:   return "TER";
-            case WEDNESDAY: return "QUA";
-            case THURSDAY:  return "QUI";
-            case FRIDAY:    return "SEX";
-            case SATURDAY:  return "SAB";
-            case SUNDAY:    return "DOM";
-            default:        return "";
-        }
+    private static void aplicarHorarioProduto(Produto produto, ProdutoRequest request) {
+        aplicarHorarioProduto(produto, request.getHorarioInicio(), request.getHorarioFim());
     }
 
-    /** true se produto pode aparecer hoje. null/vazio = sempre visível. */
-    private static boolean diaSemanaAceita(String diasCsv, String hoje) {
-        if (diasCsv == null || diasCsv.isBlank()) return true;
-        for (String d : diasCsv.split(",")) {
-            if (d.trim().equalsIgnoreCase(hoje)) return true;
+    private static void aplicarHorarioProduto(Produto produto, String horarioInicio, String horarioFim) {
+        if (horarioInicio == null && horarioFim == null) return;
+        String inicio = horarioInicio == null ? "" : horarioInicio.trim();
+        String fim = horarioFim == null ? "" : horarioFim.trim();
+        if (inicio.isEmpty() != fim.isEmpty()) throw new IllegalArgumentException("Informe o horário inicial e final.");
+        if (inicio.isEmpty()) {
+            produto.setHorarioInicio(null);
+            produto.setHorarioFim(null);
+            return;
         }
-        return false;
+        java.time.LocalTime horaInicio = java.time.LocalTime.parse(inicio);
+        java.time.LocalTime horaFim = java.time.LocalTime.parse(fim);
+        if (horaInicio.equals(horaFim)) throw new IllegalArgumentException("Os horários inicial e final precisam ser diferentes.");
+        produto.setHorarioInicio(horaInicio);
+        produto.setHorarioFim(horaFim);
+    }
+
+    @Transactional
+    public List<ProdutoResponse> atualizarHorarioEmMassa(Long restauranteId, ProdutoHorarioEmMassaRequest request) {
+        var ids = new java.util.LinkedHashSet<>(request.getProdutoIds());
+        if (ids.isEmpty()) throw new IllegalArgumentException("Selecione ao menos um produto.");
+
+        List<Produto> encontrados = produtoRepository.findAllById(ids);
+        if (encontrados.size() != ids.size()) throw new IllegalArgumentException("Um ou mais produtos não foram encontrados.");
+        for (Produto produto : encontrados) {
+            validarPropriedade(produto.getRestaurante().getId(), restauranteId);
+        }
+
+        for (Produto produto : encontrados) {
+            String dias = request.getDiasSemanaAtivos();
+            if (dias != null) produto.setDiasSemanaAtivos(dias.trim().isEmpty() ? null : dias.trim());
+            aplicarHorarioProduto(produto, request.getHorarioInicio(), request.getHorarioFim());
+        }
+        return produtoRepository.saveAll(encontrados).stream().map(this::toProdutoResponse).toList();
     }
 
     // ─── CATEGORIAS ──────────────────────────────────────────────────────
@@ -316,6 +316,8 @@ public class CardapioService {
         p.setUnidadePreco(orig.getUnidadePreco());
         p.setPrecoAPartirDe(Boolean.TRUE.equals(orig.getPrecoAPartirDe()));
         p.setDiasSemanaAtivos(orig.getDiasSemanaAtivos());
+        p.setHorarioInicio(orig.getHorarioInicio());
+        p.setHorarioFim(orig.getHorarioFim());
         // tipo preservado (NORMAL/COMBO). COMBO sem combo_itens fica vazio
         // até dono recadastrar — evita FK cruzada com produto antigo.
         try { p.setTipo(orig.getTipo()); } catch (Exception ignore) {}
@@ -447,6 +449,7 @@ public class CardapioService {
         produto.setNome(request.getNome());
         produto.setDescricao(request.getDescricao());
         produto.setPreco(request.getPreco());
+        aplicarPrecosPagamento(produto, request, false);
         // precoOriginal só faz sentido se for MAIOR que preco (promo válida).
         // Front pode mandar 0/null pra "sem promo".
         produto.setPrecoOriginal(promoValida(request.getPrecoOriginal(), request.getPreco())
@@ -466,6 +469,7 @@ public class CardapioService {
             String d = request.getDiasSemanaAtivos().trim();
             produto.setDiasSemanaAtivos(d.isEmpty() ? null : d);
         }
+        aplicarHorarioProduto(produto, request);
         if (request.getUpsellManualIds() != null) {
             produto.setUpsellManualIds(serializarIdsCsv(request.getUpsellManualIds()));
         }
@@ -507,6 +511,7 @@ public class CardapioService {
         if (request.getNome() != null)         produto.setNome(request.getNome());
         if (request.getDescricao() != null)    produto.setDescricao(request.getDescricao());
         if (request.getPreco() != null)        produto.setPreco(request.getPreco());
+        aplicarPrecosPagamento(produto, request, true);
         // precoOriginal: 0/null = remove promo. Vem promo válida (>preco)? grava.
         if (request.getPrecoOriginal() != null) {
             java.math.BigDecimal po = request.getPrecoOriginal();
@@ -528,6 +533,7 @@ public class CardapioService {
             String d = request.getDiasSemanaAtivos().trim();
             produto.setDiasSemanaAtivos(d.isEmpty() ? null : d);
         }
+        aplicarHorarioProduto(produto, request);
         if (request.getUpsellManualIds() != null) {
             produto.setUpsellManualIds(serializarIdsCsv(request.getUpsellManualIds()));
         }
@@ -572,6 +578,21 @@ public class CardapioService {
         if (!dono.equals(solicitante)) {
             throw new RuntimeException("Acesso negado a este recurso");
         }
+    }
+
+    private void aplicarPrecosPagamento(Produto produto, ProdutoRequest request, boolean parcial) {
+        if (!parcial || request.getPrecoPix() != null) produto.setPrecoPix(precoOpcional(request.getPrecoPix()));
+        if (!parcial || request.getPrecoDinheiro() != null) produto.setPrecoDinheiro(precoOpcional(request.getPrecoDinheiro()));
+        if (!parcial || request.getPrecoDebito() != null) produto.setPrecoDebito(precoOpcional(request.getPrecoDebito()));
+        if (!parcial || request.getPrecoCredito() != null) produto.setPrecoCredito(precoOpcional(request.getPrecoCredito()));
+    }
+
+    private java.math.BigDecimal precoOpcional(java.math.BigDecimal valor) {
+        if (valor == null || valor.signum() == 0) return null;
+        if (valor.signum() < 0 || valor.scale() > 2 || valor.compareTo(new java.math.BigDecimal("99999999.99")) > 0)
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.BAD_REQUEST, "Preço por pagamento inválido.");
+        return valor;
     }
 
     private ProdutoResponse toProdutoResponse(Produto p) {
@@ -619,6 +640,10 @@ public class CardapioService {
                 .descricao(p.getDescricao())
                 .preco(p.getPreco())
                 .precoOriginal(p.getPrecoOriginal())
+                .precoPix(p.getPrecoPix())
+                .precoDinheiro(p.getPrecoDinheiro())
+                .precoDebito(p.getPrecoDebito())
+                .precoCredito(p.getPrecoCredito())
                 .fotoUrl(p.getFotoUrl())
                 .disponivel(p.getDisponivel())
                 .destaque(p.getDestaque())
@@ -633,6 +658,8 @@ public class CardapioService {
                 .unidadePreco(p.getUnidadePreco())
                 .precoAPartirDe(Boolean.TRUE.equals(p.getPrecoAPartirDe()))
                 .diasSemanaAtivos(p.getDiasSemanaAtivos())
+                .horarioInicio(p.getHorarioInicio())
+                .horarioFim(p.getHorarioFim())
                 .upsellManualIds(parseIdsCsv(p.getUpsellManualIds()))
                 .gruposComplemento(gruposDto)
                 .build();

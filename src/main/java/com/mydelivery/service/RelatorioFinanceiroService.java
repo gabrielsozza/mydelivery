@@ -47,6 +47,7 @@ public class RelatorioFinanceiroService {
 
     private final PedidoRepository pedidoRepository;
     private final FichaTecnicaItemRepository fichaRepository;
+    private final com.mydelivery.repository.WhatsappRepeticaoConversaRepository repeticaoRepo;
 
     // readOnly=true mantém a sessão Hibernate aberta durante a iteração de Pedido.itens (lazy)
     // e evita LazyInitializationException ao calcular CMV e agregar produtos.
@@ -103,6 +104,8 @@ public class RelatorioFinanceiroService {
         var insights = gerarInsights(faturamento, faturamentoAnt, pedidos.size(), pedidosAnt.size(),
                 ticket, ticketAnt, margemPct, porCanal, statsProdutos);
 
+        var repetidos = montarIndicadoresRepeticao(restauranteId, ini, fim);
+
         return RelatorioFinanceiroDTO.builder()
                 .dataInicio(dataIni.toString())
                 .dataFim(dataFim.toString())
@@ -125,7 +128,32 @@ public class RelatorioFinanceiroService {
                 .topProdutos(topProdutos)
                 .matrizBCG(bcg)
                 .insights(insights)
+                .pedidosRepetidosWhatsapp(repetidos)
                 .build();
+    }
+
+    private RelatorioFinanceiroDTO.PedidosRepetidosWhatsapp montarIndicadoresRepeticao(
+            Long restauranteId, LocalDateTime inicio, LocalDateTime fim) {
+        long ofertas = repeticaoRepo.contarOfertas(restauranteId, inicio, fim);
+        long aceites = repeticaoRepo.contarAceites(restauranteId, inicio, fim);
+        var criados = pedidoRepository.findByRestauranteIdAndPeriodo(restauranteId, inicio, fim).stream()
+                .filter(p -> p.getOrigem() == Pedido.Origem.WHATSAPP_REPETICAO).toList();
+        var confirmados = criados.stream().filter(p -> p.getStatus() != Pedido.Status.CANCELADO
+                && p.getStatus() != Pedido.Status.AGUARDANDO_PAGAMENTO
+                && (p.getStatus() == Pedido.Status.ENTREGUE || Boolean.TRUE.equals(p.getPago()))).toList();
+        BigDecimal faturamentoConfirmado = confirmados.stream().map(p -> p.getTotal() == null
+                ? BigDecimal.ZERO : p.getTotal()).reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal ticketRepetido = confirmados.isEmpty() ? BigDecimal.ZERO
+                : faturamentoConfirmado.divide(BigDecimal.valueOf(confirmados.size()), 2, RoundingMode.HALF_UP);
+        BigDecimal conversao = ofertas == 0 ? BigDecimal.ZERO
+                : BigDecimal.valueOf(criados.size()).multiply(BigDecimal.valueOf(100))
+                        .divide(BigDecimal.valueOf(ofertas), 1, RoundingMode.HALF_UP);
+        return RelatorioFinanceiroDTO.PedidosRepetidosWhatsapp.builder()
+                .ofertas(ofertas).aceites(aceites).pedidosCriados(criados.size())
+                .pedidosConfirmados(confirmados.size())
+                .clientesUnicos(repeticaoRepo.contarClientesConvertidos(restauranteId, inicio, fim))
+                .faturamentoConfirmado(faturamentoConfirmado).ticketMedio(ticketRepetido)
+                .conversaoPercentual(conversao).build();
     }
 
     // ── HELPERS ──────────────────────────────────────────────────────────────

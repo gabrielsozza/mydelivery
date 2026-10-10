@@ -25,6 +25,7 @@ import com.mydelivery.fiscal.model.PerfilFiscalRestaurante;
 import com.mydelivery.fiscal.repository.ContadorNumeroNfceRepository;
 import com.mydelivery.fiscal.repository.NotaFiscalEmitidaRepository;
 import com.mydelivery.fiscal.repository.NotaFiscalEntradaRepository;
+import com.mydelivery.fiscal.repository.NotaEntradaAnexoRepository;
 import com.mydelivery.fiscal.repository.PerfilFiscalProdutoRepository;
 import com.mydelivery.fiscal.repository.PerfilFiscalRestauranteRepository;
 import com.mydelivery.model.Pedido;
@@ -63,6 +64,7 @@ public class NfceEmissorService {
     private final ContadorNumeroNfceRepository contadorRepo;
     private final NotaFiscalEmitidaRepository notaRepo;
     private final NotaFiscalEntradaRepository notaEntradaRepo;
+    private final NotaEntradaAnexoRepository entradaAnexoRepo;
     private final PedidoRepository pedidoRepo;
     private final CertificadoService certificadoService;
     private final PerfilFiscalService perfilFiscalService;
@@ -87,51 +89,29 @@ public class NfceEmissorService {
      * Emite NFC-e pra um pedido específico. Se pedido já tem nota autorizada,
      * devolve a existente (idempotente).
      */
-    /** Lock em memoria por pedidoId — evita 2 emissoes SIMULTANEAS pro mesmo
-     *  pedido caindo em race entre check-de-AUTORIZADA e save da nova nota.
-     *  Casos: dono clica "Emitir" 2x rapido, auto-emit + manual paralelos,
-     *  reemitir-pendentes + auto-emit ao entregar quase juntos. Resultado
-     *  desses cenarios sem lock = 2 notas AUTORIZADAS no banco pro mesmo
-     *  pedido (polui relatorio fiscal, cliente reclamou). */
-    private final java.util.concurrent.ConcurrentHashMap<Long, Object> _locksPorPedido =
-            new java.util.concurrent.ConcurrentHashMap<>();
-
+    /** Lock do pedido mantido pelo banco até o commit, inclusive entre instâncias. */
     @Transactional
     public NotaFiscalEmitida emitirParaPedido(Long pedidoId, String usuarioEmail, String ipOrigem) {
-        Object lock = _locksPorPedido.computeIfAbsent(pedidoId, k -> new Object());
-        synchronized (lock) {
-            try {
-                return _emitirParaPedidoInterno(pedidoId, usuarioEmail, ipOrigem);
-            } finally {
-                _locksPorPedido.remove(pedidoId);
-            }
-        }
-    }
-
-    private NotaFiscalEmitida _emitirParaPedidoInterno(Long pedidoId, String usuarioEmail, String ipOrigem) {
-        Pedido pedido = pedidoRepo.findById(pedidoId)
+        Pedido pedido = pedidoRepo.findByIdForFiscal(pedidoId)
                 .orElseThrow(() -> new IllegalArgumentException("Pedido não encontrado"));
         Restaurante r = pedido.getRestaurante();
         if (r == null) throw new IllegalStateException("Pedido sem restaurante");
 
         // Idempotência: se pedido já tem nota AUTORIZADA, devolve — nunca
-        // emite segunda. Notas em CONTINGENCIA_EPEC "presas" (contingência
-        // não retransmite bem no gateway atual) viram REJEITADA aqui pra
-        // abrir espaço pra uma emissão real nova.
-        var existentes = notaRepo.findByPedidoId(pedidoId);
+        // emite segunda. Tentativas incertas exigem conciliação antes de outra emissão.
+        var existentes = notaRepo.findByPedidoIdForUpdate(pedidoId);
         for (var n : existentes) {
             if (n.getStatus() == NotaFiscalEmitida.Status.AUTORIZADA) {
                 log.info("[Fiscal][Emissor] Pedido {} já tinha nota autorizada {}, devolvendo (bloqueio duplicidade)",
                         pedidoId, n.getChaveAcesso());
                 return n;
             }
-            if (n.getStatus() == NotaFiscalEmitida.Status.CONTINGENCIA_EPEC) {
-                log.warn("[Fiscal][Emissor] Pedido {} tinha nota em CONTINGENCIA_EPEC (chave={}); marcando REJEITADA pra permitir nova emissão",
-                        pedidoId, n.getChaveAcesso());
-                n.setStatus(NotaFiscalEmitida.Status.REJEITADA);
-                n.setSefazMotivo("Descartada — contingência não retransmitiu, reemitida");
-                n.setProximaTentativaEm(null);
-                notaRepo.save(n);
+            if (n.getStatus() == NotaFiscalEmitida.Status.CONTINGENCIA_EPEC
+                    || n.getStatus() == NotaFiscalEmitida.Status.ENVIANDO
+                    || "539".equals(n.getSefazCstat()) || "204".equals(n.getSefazCstat())
+                    || "ERRO_TEC".equals(n.getSefazCstat())) {
+                throw new IllegalStateException("Já existe uma tentativa sem confirmação definitiva para este pedido. "
+                        + "Confira a situação na SEFAZ antes de emitir outra nota.");
             }
         }
 
@@ -174,6 +154,8 @@ public class NfceEmissorService {
             throw new IllegalStateException("Falha ao montar nota: " + e.getMessage(), e);
         }
 
+        nota.setValorTotal(req.valorTotal());
+
         // ── 6. Chama gateway ──
         NfeGateway.ResultadoEmissao res;
         try {
@@ -184,35 +166,8 @@ public class NfceEmissorService {
                     null, null, null, null);
         }
 
-        // ── 6a. RETRY AUTOMÁTICO PRA CHAVE DUPLICADA (cStat 539) ──
-        // A chave duplicada aparece quando o número/cNF colidiu com uma
-        // emissão anterior no ambiente SEFAZ (ex: retry após timeout).
-        // Como a chave nova depende do numero+cNF (aleatório), pular pro
-        // próximo número e re-tentar até 5x resolve automaticamente.
-        int retryDup = 0;
-        long numeroAtual = numero;
-        // Avança 1 por vez, até 20x — mantém a numeração fiscal contígua
-        // (contadora não estranha) e cobre até 20 chaves duplicadas em fila.
-        // Se a chave duplicada persiste, avança 50 números por vez pra escapar
-        // da faixa ocupada por notas antigas do mesmo CNPJ em outros sistemas.
-        while (!res.aprovada() && "539".equals(res.cStat()) && retryDup < 10) {
-            retryDup++;
-            numeroAtual += 50;
-            try {
-                var c = contadorRepo.findForUpdate(perfil.getCnpj(), serie, ambiente).orElse(null);
-                if (c != null) { c.setProximoNumero(numeroAtual + 1); contadorRepo.save(c); }
-            } catch (Exception ignore) {}
-            log.warn("[Fiscal][Emissor] cStat=539 — retry {} numero={}", retryDup, numeroAtual);
-            NfeGateway.RequisicaoEmissao reqRetry;
-            try {
-                reqRetry = montarRequisicao(pedido, perfil, ambiente, serie, numeroAtual, LocalDateTime.now(), pfx.pfx(), pfx.senha(), csc);
-                res = gateway.emitir(reqRetry);
-            } catch (Exception e) {
-                log.error("[Fiscal][Emissor] erro no retry {}: {}", retryDup, e.getMessage());
-                break;
-            }
-        }
-        nota.setNumero(numeroAtual);
+        // Duplicidade/timeout não autorizam trocar a numeração e emitir outra venda.
+        nota.setNumero(numero);
 
         // ── 6b. CONTINGÊNCIA DESABILITADA ──
         // O gateway atual gera XML "mínimo" na contingência (sem itens), então
@@ -241,7 +196,8 @@ public class NfceEmissorService {
             // Envio ao cliente via WhatsApp — fail-safe (nunca quebra emissão)
             enviarWhatsAppCliente(pedido, res.chaveAcesso(), res.qrCodeUrl());
         } else {
-            nota.setStatus(NotaFiscalEmitida.Status.REJEITADA);
+            boolean incerta = "ERRO_TEC".equals(res.cStat()) || "539".equals(res.cStat()) || "204".equals(res.cStat());
+            nota.setStatus(incerta ? NotaFiscalEmitida.Status.ENVIANDO : NotaFiscalEmitida.Status.REJEITADA);
             nota.setTentativas(nota.getTentativas() + 1);
             auditoria.registrar(r.getId(), perfil.getCnpj(), usuarioEmail, "NFCE_EMITIR", "FALHA",
                     ipOrigem, Map.of("pedidoId", pedidoId, "cStat", res.cStat(), "motivo", res.motivo()));
@@ -298,7 +254,7 @@ public class NfceEmissorService {
         var pfx = certificadoService.abrirParaUso(r.getId(), usuarioEmail, ipOrigem);
 
         NfeGateway.RequisicaoCancelamento req = new NfeGateway.RequisicaoCancelamento(
-                perfil.getUf(), perfil.getAmbienteSefaz(), perfil.getCnpj(),
+                perfil.getUf(), n.getAmbiente(), n.getCnpj(),
                 n.getChaveAcesso(), n.getProtocolo(), justificativa,
                 1, pfx.pfx(), pfx.senha());
 
@@ -571,14 +527,16 @@ public class NfceEmissorService {
         }
         if (itens.isEmpty()) throw new IllegalStateException("Pedido sem itens válidos.");
 
-        // NFC-e: pagamento e total DEVEM ser o somatório dos itens (sem taxa
-        // de entrega, que é serviço e não entra em nota de mercadoria).
-        // Se usar p.getTotal() (que inclui taxa), a SEFAZ rejeita com cStat 564.
+        // vNF = produtos - desconto + frete; ambos são discriminados nos itens e totais.
         BigDecimal valorItens = BigDecimal.ZERO;
         for (NfeGateway.ItemNota it : itens) {
             valorItens = valorItens.add(it.quantidade().multiply(it.valorUnitario()));
         }
-        BigDecimal valorTotal = valorItens.setScale(2, java.math.RoundingMode.HALF_UP);
+        BigDecimal desconto = p.getDesconto() == null ? BigDecimal.ZERO : p.getDesconto();
+        BigDecimal frete = p.getTaxaEntrega() == null ? BigDecimal.ZERO : p.getTaxaEntrega();
+        BigDecimal valorTotal = valorItens.subtract(desconto).add(frete).setScale(2, java.math.RoundingMode.HALF_UP);
+        if (desconto.signum() < 0 || frete.signum() < 0 || desconto.compareTo(valorItens) > 0)
+            throw new IllegalStateException("Desconto ou frete inválido para a nota fiscal.");
         List<NfeGateway.Pagamento> pagamentos = new ArrayList<>();
         String formaNome = p.getFormaPagamento() == null ? null : p.getFormaPagamento().name();
         String tPag = mapearFormaPagamento(formaNome);
@@ -591,7 +549,7 @@ public class NfceEmissorService {
         return new NfeGateway.RequisicaoEmissao(
                 perfil.getUf(), amb, serie, numero, emitidaEm,
                 emitente, dest, itens, valorTotal, pagamentos,
-                perfil.getCscId(), csc, pfx, senhaCert);
+                perfil.getCscId(), csc, pfx, senhaCert, desconto, frete);
     }
 
     /**
@@ -894,6 +852,9 @@ public class NfceEmissorService {
     public byte[] montarRelatorioZip(Long restauranteId, String dataInicial, String dataFinal) {
         LocalDateTime di = parseDataIso(dataInicial, LocalDate.of(2000, 1, 1).atStartOfDay());
         LocalDateTime df = parseDataIso(dataFinal, LocalDate.now().atTime(23, 59, 59));
+        if (dataFinal != null && dataFinal.matches("\\d{4}-\\d{2}-\\d{2}")) {
+            df = df.toLocalDate().atTime(23, 59, 59, 999_999_999);
+        }
 
         // CFOP de entrada padrão que o contador quer ver ESPELHANDO cada saída
         // (pra facilitar a escrituração dele). Default 1102.
@@ -1051,6 +1012,15 @@ public class NfceEmissorService {
                 }
             }
 
+            // Fotos/PDFs são apenas comprovantes. Não entram no CSV fiscal de NF-e,
+            // pois não contêm chave de acesso nem XML validado.
+            var comprovantes = entradaAnexoRepo.findByRestauranteIdAndCriadoEmBetween(restauranteId, di, df);
+            for (var a : comprovantes) {
+                zip.putNextEntry(new ZipEntry("entradas/comprovantes/" + a.getId() + "-" + a.getNomeArquivo()));
+                zip.write(a.getConteudo());
+                zip.closeEntry();
+            }
+
             // README explicativo pro contador
             String readme = "" +
                 "RELATÓRIO FISCAL — MyDelivery\n" +
@@ -1070,7 +1040,8 @@ public class NfceEmissorService {
                 "  saidas/resumo_cfop_cst.csv     — totais AGRUPADOS por (CFOP + CST/CSOSN + CST PIS + CST COFINS) — formato que a contabilidade usa\n" +
                 "  saidas/xmls/*.xml              — XMLs autorizados prontos pra importar (SPED/EFD)\n" +
                 "  entradas/resumo.csv            — lista das NF-e recebidas de fornecedor\n" +
-                "  entradas/*.xml                 — XMLs de entrada (upload manual do dono)\n\n" +
+                "  entradas/*.xml                 — XMLs de entrada (upload manual do dono)\n" +
+                "  entradas/comprovantes/*        — fotos/PDFs recebidos (não são XML fiscal)\n\n" +
                 "Gerado em " + LocalDateTime.now().format(FMT) + "\n";
             zip.putNextEntry(new ZipEntry("LEIA-ME.txt"));
             zip.write(readme.getBytes(StandardCharsets.UTF_8));

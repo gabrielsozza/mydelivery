@@ -63,8 +63,11 @@ public class IfoodMerchantController {
     @PreAuthorize("hasRole('RESTAURANTE')")
     public ResponseEntity<List<Map<String, Object>>> listar(
             @AuthenticationPrincipal String email) {
-        exigirIntegracaoAtiva(email);
-        return ResponseEntity.ok(merchantClient.listarMerchants());
+        String merchantId = merchantIdDoDono(email);
+        var loja = merchantClient.detalhesMerchant(merchantId);
+        if (loja == null || !merchantId.equalsIgnoreCase(String.valueOf(loja.get("id"))))
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "O iFood não confirmou os dados desta loja.");
+        return ResponseEntity.ok(List.of(loja));
     }
 
     /** Detalhes completos da loja (endereço, telefones, ticket médio, etc). */
@@ -211,6 +214,11 @@ public class IfoodMerchantController {
         log.warn("[iFood-Merchant] repassando erro {} pro painel: {}",
                 e.getStatusIfood(), e.getBodyIfood());
         Map<String, Object> body = new LinkedHashMap<>();
+        if (e.getStatusIfood() == 403 || e.getStatusIfood() == 404) {
+            body.put("message", com.mydelivery.service.ifood.IfoodConnectionService.SEM_AUTORIZACAO);
+            body.put("statusIfood", e.getStatusIfood());
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(body);
+        }
         body.put("erro", "iFood retornou erro");
         body.put("statusIfood", e.getStatusIfood());
         body.put("mensagemIfood", e.getBodyIfood());

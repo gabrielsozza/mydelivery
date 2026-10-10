@@ -134,6 +134,28 @@ public class WhatsappService {
             }
         }
 
+        // Um registro local pode sobreviver à remoção da instância na Uazapi.
+        // Nessa situação o token antigo dá 401 e o QR guardado no banco nunca
+        // volta a funcionar. Um pedido explícito de novo QR reprovisiona apenas
+        // a instância ausente, preservando o cadastro e o histórico locais.
+        if (forcarNovoQr && inst != null && inst.getStatus() != WhatsappInstance.Status.CONECTADA) {
+            var remotas = evolutionClient.fetchInstancesRaw();
+            String instanceName = inst.getInstanceName();
+            if (!remotas.isEmpty() && remotas.stream().noneMatch(remote ->
+                    instanceName.equals(String.valueOf(remote.get("name"))))) {
+                log.warn("[WhatsApp] {} ausente na Uazapi; reprovisionando para gerar QR válido", inst.getInstanceName());
+                String webhookUrl = props.getWebhookBaseUrl() + "/api/webhooks/whatsapp/" + inst.getInstanceName();
+                Map<String, Object> criada = evolutionClient.criarInstancia(inst.getInstanceName(), webhookUrl, inst.getProxyPool());
+                String novoToken = extrairInstanceToken(criada);
+                if (novoToken == null || novoToken.isBlank()) throw new IllegalStateException("Não foi possível obter o token da nova conexão WhatsApp.");
+                inst.setInstanceToken(novoToken);
+                evolutionClient.registrarToken(inst.getInstanceName(), novoToken);
+                inst.setQrCode(null);
+                inst.setQrExpiraEm(null);
+                repo.save(inst);
+            }
+        }
+
         // Refresca status atual da Evolution antes de decidir o que fazer
         atualizarStatusDaEvolution(inst);
         repo.save(inst);
@@ -192,6 +214,10 @@ public class WhatsappService {
                 // 55s + auto-refresh do painel a cada 45s, o QR exibido está
                 // SEMPRE válido.
                 inst.setQrExpiraEm(LocalDateTime.now().plusSeconds(55));
+            } else if (inst.getQrExpiraEm() != null && LocalDateTime.now().isAfter(inst.getQrExpiraEm())) {
+                // Nunca devolve ao painel um QR vencido quando a Uazapi falha.
+                inst.setQrCode(null);
+                inst.setQrExpiraEm(null);
             }
             // Se QR ainda não veio após retries, webhook QRCODE_UPDATED chega
             // em alguns segundos e popula via salvarQrCode(). Não marca ERRO —
@@ -460,6 +486,17 @@ public class WhatsappService {
      * @param delayMs ms de "digitando…" mostrado antes da msg (0 = imediato).
      */
     public void enviarMensagem(WhatsappInstance inst, String numeroDestino, String texto, int delayMs) {
+        enviarMensagem(inst, numeroDestino, texto, delayMs, false);
+    }
+
+    /** A logo é exclusiva da primeira resposta na conversa loja/cliente. */
+    public void enviarRespostaBot(WhatsappInstance inst, String numeroDestino, String texto, int delayMs) {
+        enviarMensagem(inst, numeroDestino, texto, delayMs, true);
+    }
+
+    private void enviarMensagem(WhatsappInstance inst, String numeroDestino, String texto, int delayMs,
+                                boolean respostaBot) {
+        if (com.mydelivery.crm.ProspectingPolicy.isInstance(inst)) return;
         if (inst.getStatus() != WhatsappInstance.Status.CONECTADA) {
             log.warn("[WhatsApp:SILENCIO] Pulando envio: instância {} status={} (precisa ser CONECTADA)",
                     inst.getInstanceName(), inst.getStatus());
@@ -509,6 +546,16 @@ public class WhatsappService {
             return;
         }
         try {
+            if (respostaBot && reservarPrimeiraRespostaBot(inst, numeroDestino)) {
+                String logo = inst.getRestaurante().getLogoUrl();
+                if (logo != null && !logo.isBlank()) {
+                    evolutionClient.enviarMidia(inst.getInstanceName(), inst.getInstanceToken(),
+                            numeroDestino, logo, texto, delayMs);
+                    marcarRespostaEnviada(inst);
+                    trackerEnvio(inst.getInstanceName(), numeroDestino);
+                    return;
+                }
+            }
             // Convenção interna: se a resposta do bot começa com "IMG::<url>::<caption>",
             // envia imagem com legenda em vez de texto puro. Resolve o "quadrado preto"
             // do preview do link na mensagem de cardápio — agora aparece a logo do
@@ -563,6 +610,58 @@ public class WhatsappService {
                 } catch (Exception ignore) { /* incidente é best-effort, não bloqueia envio */ }
             }
         }
+    }
+
+    /** Reserva durável antes do transporte: timeout não permite repetir a logo.
+     *  REQUIRES_NEW evita rollback do webhook desfazer a reserva após o envio. */
+    boolean reservarPrimeiraRespostaBot(WhatsappInstance inst, String numero) {
+        if (inst.getRestaurante() == null || inst.getRestaurante().getId() == null) return false;
+        String telefone = numero == null ? "" : numero.split("@", 2)[0].replaceAll("\\D", "");
+        if (telefone.length() == 10 || telefone.length() == 11) telefone = "55" + telefone;
+        // WhatsApp pode alternar o mesmo celular brasileiro com/sem o nono dígito.
+        if (telefone.startsWith("55") && telefone.length() == 13 && telefone.charAt(4) == '9')
+            telefone = telefone.substring(0, 4) + telefone.substring(5);
+        if (telefone.isBlank() || telefone.length() > 32) return false;
+        final String chave = telefone;
+        try {
+            var tx = new org.springframework.transaction.support.TransactionTemplate(txManager);
+            tx.setPropagationBehavior(org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+            return Boolean.TRUE.equals(tx.execute(status -> jdbcTemplate.update(
+                    "INSERT IGNORE INTO whatsapp_bot_primeiro_contato (restaurante_id, telefone, criado_em) VALUES (?, ?, CURRENT_TIMESTAMP)",
+                    inst.getRestaurante().getId(), chave) == 1));
+        } catch (RuntimeException e) {
+            // Falha de controle não interrompe o atendimento nem repete imagem.
+            log.warn("[Bot] Não foi possível consultar primeiro contato; resposta seguirá em texto. restaurante={}",
+                    inst.getRestaurante().getId());
+            return false;
+        }
+    }
+
+    /** Envio da fila de promoções, cujo ritmo é controlado pelo PromoCampanhaSender.
+     * Não consome a cota global das respostas do bot. Retorna false se não enviou;
+     * falhas do provedor são propagadas para o histórico da campanha.
+     */
+    public boolean enviarPromocao(WhatsappInstance inst, String numeroDestino, String texto) {
+        return enviarPromocao(inst, numeroDestino, texto, null);
+    }
+
+    public boolean enviarPromocao(WhatsappInstance inst, String numeroDestino, String texto, String imagemUrl) {
+        if (com.mydelivery.crm.ProspectingPolicy.isInstance(inst)) return false;
+        if (inst.getStatus() != WhatsappInstance.Status.CONECTADA) return false;
+        // A fila histórica guarda DDD + telefone. O provedor exige DDI + DDD + telefone.
+        String nacional = PromoCampanhaService.normalizarTel(numeroDestino);
+        if (nacional == null) throw new IllegalArgumentException("Telefone de destino inválido para a campanha.");
+        numeroDestino = "55" + nacional;
+        if (!rateLimitPorNumeroOk(inst.getInstanceName(), numeroDestino)) return false;
+        if (mensagemDuplicadaRecente(inst.getInstanceName(), numeroDestino, texto)) return false;
+        if (imagemUrl == null || imagemUrl.isBlank()) {
+            evolutionClient.enviarTexto(inst.getInstanceName(), inst.getInstanceToken(), numeroDestino, texto, 0);
+        } else {
+            evolutionClient.enviarMidia(inst.getInstanceName(), inst.getInstanceToken(), numeroDestino, imagemUrl, texto, 0);
+        }
+        marcarRespostaEnviada(inst);
+        trackerEnvio(inst.getInstanceName(), numeroDestino);
+        return true;
     }
 
     /** Overload sem delay — mantém callers antigos. */
@@ -1386,16 +1485,11 @@ public class WhatsappService {
             Map<String, Object> resp = evolutionClient.consultarStatus(inst.getInstanceName());
             String state = extrairState(resp);
             if ("open".equalsIgnoreCase(state)) {
-                // RESPEITA INTENÇÃO DO USUÁRIO: se o usuário acabou de clicar
-                // "Desconectar" (status=DESCONECTADA), NÃO promove de volta pra
-                // CONECTADA só porque a Evolution ainda mostra "open" — o logout
-                // demora alguns segundos pra propagar no Baileys. Antes desse fix
-                // a tela ficava presa em "Conectado" após desconectar.
-                // Só auto-promove se a transição faz sentido: NOVA, AGUARDANDO_QR
-                // ou ERRO indicam que estamos tentando subir; CONECTADA já está OK.
-                if (inst.getStatus() == WhatsappInstance.Status.NOVA
-                        || inst.getStatus() == WhatsappInstance.Status.AGUARDANDO_QR
-                        || inst.getStatus() == WhatsappInstance.Status.ERRO) {
+                // O usuário que desconectou manualmente continua desconectado.
+                // Nos demais casos, uma resposta open corrige o estado local
+                // mesmo se o heartbeat anterior registrou DESCONECTADA.
+                if (!Boolean.TRUE.equals(inst.getDesconectadoManualmente())
+                        && inst.getStatus() != WhatsappInstance.Status.CONECTADA) {
                     inst.setStatus(WhatsappInstance.Status.CONECTADA);
                     inst.setConectadoEm(LocalDateTime.now());
                     inst.setQrCode(null);
@@ -1403,7 +1497,22 @@ public class WhatsappService {
                 }
             } else if ("close".equalsIgnoreCase(state)) {
                 if (inst.getStatus() == WhatsappInstance.Status.CONECTADA) {
-                    inst.setStatus(WhatsappInstance.Status.DESCONECTADA);
+                    // /instance/status pode oscilar por segundos. Uma tela em
+                    // polling não deve derrubar uma sessão sem confirmação do
+                    // inventário administrativo do provedor.
+                    boolean quedaConfirmada = evolutionClient.fetchInstancesRaw().stream()
+                            .filter(remota -> inst.getInstanceName().equals(String.valueOf(remota.get("name"))))
+                            .anyMatch(remota -> {
+                                Object conectado = remota.get("isConnected");
+                                Object logado = remota.get("isLogged");
+                                if (conectado instanceof Boolean && logado instanceof Boolean)
+                                    return Boolean.FALSE.equals(conectado) && Boolean.FALSE.equals(logado);
+                                Object status = remota.get("status");
+                                if (status == null) status = remota.get("state");
+                                return status != null && java.util.Set.of("disconnected", "close", "closed")
+                                        .contains(status.toString().toLowerCase(java.util.Locale.ROOT));
+                            });
+                    if (quedaConfirmada) inst.setStatus(WhatsappInstance.Status.DESCONECTADA);
                 }
             }
             // Sync do phone: se o Uazapi capturou o número via jid.user na

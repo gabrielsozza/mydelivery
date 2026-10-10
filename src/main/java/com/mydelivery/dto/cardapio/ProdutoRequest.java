@@ -22,6 +22,10 @@ public class ProdutoRequest {
     /** Preço normal (sem desconto). Quando preenchido, indica que {@link #preco}
      *  é o preço PROMOCIONAL e este é o "de" riscado pro cliente. Null = sem promo. */
     private BigDecimal precoOriginal;
+    private BigDecimal precoPix;
+    private BigDecimal precoDinheiro;
+    private BigDecimal precoDebito;
+    private BigDecimal precoCredito;
 
     private Long categoriaId;
     private String fotoUrl;
@@ -51,6 +55,9 @@ public class ProdutoRequest {
     /** Dias da semana em que o produto fica ativo (CSV: "QUA,SAB").
      *  NULL/vazio = sempre ativo. */
     private String diasSemanaAtivos;
+    /** Horários no formato HH:mm; string vazia remove a programação existente. */
+    private String horarioInicio;
+    private String horarioFim;
 
     /** Upsell manual: lista de IDs de outros produtos do mesmo restaurante a
      *  serem sugeridos quando este for adicionado ao carrinho. Null = usa a

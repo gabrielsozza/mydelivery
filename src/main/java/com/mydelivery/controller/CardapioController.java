@@ -22,6 +22,7 @@ import com.mydelivery.dto.cardapio.CategoriaComProdutosResponse;
 import com.mydelivery.dto.cardapio.CategoriaRequest;
 import com.mydelivery.dto.cardapio.ProdutoRequest;
 import com.mydelivery.dto.cardapio.ProdutoResponse;
+import com.mydelivery.dto.cardapio.ProdutoHorarioEmMassaRequest;
 import com.mydelivery.dto.cardapio.UltimoPedidoResponse;
 import com.mydelivery.model.Categoria;
 import com.mydelivery.model.Restaurante;
@@ -42,6 +43,10 @@ public class CardapioController {
     private final com.mydelivery.repository.CategoriaRepository categoriaRepository;
     private final com.mydelivery.repository.ClienteRepository clienteRepository;
     private final com.mydelivery.repository.PedidoItemRepository pedidoItemRepository;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.mydelivery.repository.WhatsappRepeticaoConversaRepository repeticaoConversaRepository;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.mydelivery.service.whatsapp.WhatsappRepeticaoService repeticaoService;
 
     /**
      * Auto-preenchimento de checkout — pra cliente recorrente.
@@ -66,7 +71,7 @@ public class CardapioController {
         if (r == null) return ResponseEntity.noContent().build();
         String tel = com.mydelivery.util.TelefoneUtil.normalizar(telefone);
         if (tel == null || tel.length() < 10) return ResponseEntity.noContent().build();
-        var opt = clienteRepository.findByTelefoneAndRestauranteId(tel, r.getId());
+        var opt = clienteRepository.findFirstByTelefoneAndRestauranteIdOrderByIdAsc(tel, r.getId());
         if (opt.isEmpty()) return ResponseEntity.noContent().build();
         var c = opt.get();
         // Só devolve se tiver pelo menos rua + bairro — sem isso, não dá
@@ -119,7 +124,7 @@ public class CardapioController {
         }
         Restaurante r = restauranteRepository.findBySlug(slug).orElse(null);
         if (r == null) return ResponseEntity.noContent().build();
-        var cliente = clienteRepository.findByRestauranteIdAndDeviceUuid(r.getId(), uuid).orElse(null);
+        var cliente = clienteRepository.findFirstByRestauranteIdAndDeviceUuidOrderByIdAsc(r.getId(), uuid).orElse(null);
         if (cliente == null || cliente.getUltimoPedido() == null) {
             return ResponseEntity.noContent().build();
         }
@@ -131,68 +136,70 @@ public class CardapioController {
                 || !pedido.getRestaurante().getId().equals(r.getId())) {
             return ResponseEntity.noContent().build();
         }
+        return respostaUltimoPedido(r, cliente, pedido);
+    }
+
+    /** Link de repetição opaco, curto e expirável enviado pelo bot. */
+    @GetMapping("/api/cardapio/{slug}/repeticao/{token}/ultimo-pedido")
+    @Transactional(readOnly = true)
+    public ResponseEntity<UltimoPedidoResponse> ultimoPedidoPorLinkSeguro(
+            @PathVariable String slug, @PathVariable String token) {
+        if (token == null || !token.matches("[A-Za-z0-9_-]{40,50}")
+                || repeticaoConversaRepository == null || repeticaoService == null) {
+            return ResponseEntity.noContent().build();
+        }
+        Restaurante r = restauranteRepository.findBySlug(slug).orElse(null);
+        if (r == null) return ResponseEntity.noContent().build();
+        String hash = repeticaoService.hashToken(token);
+        var conversa = repeticaoConversaRepository.findByLinkToken(hash,
+                java.time.LocalDateTime.now(), r.getId()).orElse(null);
+        if (conversa == null || conversa.getEstado() == com.mydelivery.model.WhatsappRepeticaoConversa.Estado.PEDIDO_CRIADO)
+            return ResponseEntity.noContent().build();
+        var pedido = conversa.getPedidoReferencia();
+        if (pedido == null || pedido.getCliente() == null || pedido.getRestaurante() == null
+                || !r.getId().equals(pedido.getRestaurante().getId())) return ResponseEntity.noContent().build();
+        return respostaUltimoPedido(r, pedido.getCliente(), pedido);
+    }
+
+    private ResponseEntity<UltimoPedidoResponse> respostaUltimoPedido(Restaurante r,
+            com.mydelivery.model.Cliente cliente, com.mydelivery.model.Pedido pedido) {
         var itens = pedidoItemRepository.findByPedidoIdComProduto(pedido.getId());
         if (itens == null || itens.isEmpty()) return ResponseEntity.noContent().build();
-
         UltimoPedidoResponse resp = new UltimoPedidoResponse();
         resp.setNome(cliente.getNome());
         resp.setTelefone(cliente.getTelefone());
         UltimoPedidoResponse.EnderecoDto end = new UltimoPedidoResponse.EnderecoDto();
-        end.setRua(cliente.getEnderecoRua());
-        end.setNumero(cliente.getEnderecoNumero());
-        end.setComplemento(cliente.getEnderecoComplemento());
-        end.setBairro(cliente.getEnderecoBairro());
-        end.setCidade(cliente.getEnderecoCidade());
-        end.setEstado(cliente.getEnderecoEstado());
-        end.setCep(cliente.getEnderecoCep());
-        end.setReferencia(cliente.getEnderecoReferencia());
-        resp.setEndereco(end);
-        resp.setPedidoId(pedido.getId());
-        resp.setPedidoEm(pedido.getCriadoEm());
+        end.setRua(cliente.getEnderecoRua()); end.setNumero(cliente.getEnderecoNumero());
+        end.setComplemento(cliente.getEnderecoComplemento()); end.setBairro(cliente.getEnderecoBairro());
+        end.setCidade(cliente.getEnderecoCidade()); end.setEstado(cliente.getEnderecoEstado());
+        end.setCep(cliente.getEnderecoCep()); end.setReferencia(cliente.getEnderecoReferencia());
+        resp.setEndereco(end); resp.setPedidoId(pedido.getId()); resp.setPedidoEm(pedido.getCriadoEm());
         resp.setTotalAnterior(pedido.getTotal());
-
-        boolean algumMudou = false;
-        boolean algumRemovido = false;
+        boolean algumMudou = false, algumRemovido = false;
         java.math.BigDecimal totalAtual = java.math.BigDecimal.ZERO;
         java.util.List<UltimoPedidoResponse.ItemDto> itensOut = new java.util.ArrayList<>();
         for (var it : itens) {
             UltimoPedidoResponse.ItemDto d = new UltimoPedidoResponse.ItemDto();
-            d.setPedidoItemId(it.getId());
-            d.setNome(it.getNomeProduto());
-            d.setQuantidade(it.getQuantidade());
-            d.setPrecoOriginal(it.getPrecoUnitario());
-            d.setObservacao(it.getObservacao());
+            d.setPedidoItemId(it.getId()); d.setNome(it.getNomeProduto()); d.setQuantidade(it.getQuantidade());
+            d.setPrecoOriginal(it.getPrecoUnitario()); d.setObservacao(it.getObservacao());
             var prod = it.getProduto();
-            boolean disponivel = prod != null
-                    && Boolean.TRUE.equals(prod.getDisponivel())
-                    && prod.getRestaurante() != null
-                    && prod.getRestaurante().getId().equals(r.getId());
+            boolean disponivel = prod != null && Boolean.TRUE.equals(prod.getDisponivel())
+                    && prod.getRestaurante() != null && prod.getRestaurante().getId().equals(r.getId());
             d.setDisponivel(disponivel);
             if (disponivel) {
-                d.setProdutoId(prod.getId());
-                d.setFotoUrl(prod.getFotoUrl());
-                d.setPrecoAtual(prod.getPreco());
-                boolean mudou = it.getPrecoUnitario() != null
-                        && prod.getPreco() != null
+                d.setProdutoId(prod.getId()); d.setFotoUrl(prod.getFotoUrl()); d.setPrecoAtual(prod.getPreco());
+                boolean mudou = it.getPrecoUnitario() != null && prod.getPreco() != null
                         && prod.getPreco().compareTo(it.getPrecoUnitario()) != 0;
-                d.setPrecoMudou(mudou);
-                if (mudou) algumMudou = true;
-                totalAtual = totalAtual.add(prod.getPreco()
-                        .multiply(java.math.BigDecimal.valueOf(it.getQuantidade())));
+                d.setPrecoMudou(mudou); algumMudou |= mudou;
+                totalAtual = totalAtual.add(prod.getPreco().multiply(java.math.BigDecimal.valueOf(it.getQuantidade())));
             } else {
-                d.setPrecoAtual(it.getPrecoUnitario());
-                d.setPrecoMudou(false);
-                algumRemovido = true;
+                d.setPrecoAtual(it.getPrecoUnitario()); d.setPrecoMudou(false); algumRemovido = true;
             }
             itensOut.add(d);
         }
-        resp.setItens(itensOut);
-        resp.setTotalAtual(totalAtual);
-        resp.setAlgumPrecoMudou(algumMudou);
-        resp.setAlgumItemRemovido(algumRemovido);
-        return ResponseEntity.ok()
-                .header("Cache-Control", "no-store")
-                .body(resp);
+        resp.setItens(itensOut); resp.setTotalAtual(totalAtual);
+        resp.setAlgumPrecoMudou(algumMudou); resp.setAlgumItemRemovido(algumRemovido);
+        return ResponseEntity.ok().header("Cache-Control", "no-store").body(resp);
     }
 
     // ─── PÚBLICO ──────────────────────────────────────────────────────────
@@ -365,6 +372,16 @@ public class CardapioController {
             @Valid @RequestBody ProdutoRequest request) {
         Long restauranteId = getRestauranteId(email);
         return ResponseEntity.ok(cardapioService.atualizarProduto(restauranteId, id, request));
+    }
+
+    @PatchMapping("/api/restaurante/{slug}/produtos/horario-em-massa")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<List<ProdutoResponse>> atualizarHorarioProdutosEmMassa(
+            @PathVariable String slug,
+            @AuthenticationPrincipal String email,
+            @Valid @RequestBody ProdutoHorarioEmMassaRequest request) {
+        Long restauranteId = getRestauranteId(email);
+        return ResponseEntity.ok(cardapioService.atualizarHorarioEmMassa(restauranteId, request));
     }
 
     @DeleteMapping("/api/restaurante/{slug}/produtos/{id}")

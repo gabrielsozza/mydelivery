@@ -76,7 +76,16 @@ public interface NfeGateway {
             String cscId,
             String cscValor,
             byte[] certificadoPfx,
-            String certificadoSenha) {}
+            String certificadoSenha,
+            BigDecimal desconto,
+            BigDecimal frete) {
+        public RequisicaoEmissao(String uf, int ambiente, int serie, long numero, LocalDateTime emitidaEm,
+                Emitente emitente, Destinatario destinatario, List<ItemNota> itens, BigDecimal valorTotal,
+                List<Pagamento> pagamentos, String cscId, String cscValor, byte[] certificadoPfx, String certificadoSenha) {
+            this(uf, ambiente, serie, numero, emitidaEm, emitente, destinatario, itens, valorTotal, pagamentos,
+                    cscId, cscValor, certificadoPfx, certificadoSenha, BigDecimal.ZERO, BigDecimal.ZERO);
+        }
+    }
 
     /** Resposta da SEFAZ, já parseada. */
     record ResultadoEmissao(

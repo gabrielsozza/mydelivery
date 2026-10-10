@@ -18,6 +18,7 @@ public class ConfiguracaoService {
 
     private final RestauranteRepository restauranteRepository;
     private final ConfiguracaoRestauranteRepository configRepo;
+    private final HorarioLojaService horarioLojaService;
 
     @Transactional
     public Restaurante salvar(Restaurante restaurante, ConfiguracaoRequest req) {
@@ -44,6 +45,8 @@ public class ConfiguracaoService {
         }
         if (req.getCorPrimaria() != null)  restaurante.setCorPrimaria(req.getCorPrimaria());
         if (req.getTemaCardapio() != null) restaurante.setTemaCardapio(req.getTemaCardapio());
+        boolean alterouAbertura = req.getAberto() != null
+                && !req.getAberto().equals(restaurante.getAberto());
         if (req.getAberto() != null)       restaurante.setAberto(req.getAberto());
         if (req.getTempoEntrega() != null) restaurante.setTempoEntrega(req.getTempoEntrega());
         if (req.getTempoEntregaMax() != null) restaurante.setTempoEntregaMax(req.getTempoEntregaMax());
@@ -57,7 +60,13 @@ public class ConfiguracaoService {
             restaurante.setFreteGratisApartirDe(v.signum() <= 0 ? null : v);
         }
         if (req.getQtdMesas() != null)     restaurante.setQtdMesas(req.getQtdMesas());
-        if (req.getModos() != null)        restaurante.setModos(req.getModos());
+        if (req.getModos() != null) {
+            var modos = new java.util.ArrayList<>(req.getModos());
+            if (Boolean.TRUE.equals(restaurante.getSomenteRetiradaAtivo()) && !modos.contains("retirada")) {
+                modos.add("retirada");
+            }
+            restaurante.setModos(modos);
+        }
         if (req.getPagamentos() != null)   restaurante.setPagamentos(req.getPagamentos());
         // PIX antecipado — só persiste a chave se a flag estiver ativa, evita lixo
         if (req.getExigirPixAntecipado() != null) restaurante.setExigirPixAntecipado(req.getExigirPixAntecipado());
@@ -112,6 +121,8 @@ public class ConfiguracaoService {
                 restaurante.setHorariosJson(json);
             } catch (Exception ignore) { /* preserva valor antigo se serializar quebrar */ }
         }
+        if (alterouAbertura) restaurante.setStatusManualAte(
+                horarioLojaService.proximoLimite(restaurante, Boolean.TRUE.equals(req.getAberto())));
 
         if (req.getAgendamento() != null) {
             var ag = req.getAgendamento();

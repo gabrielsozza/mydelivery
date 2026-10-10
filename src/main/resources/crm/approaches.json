@@ -1,0 +1,6 @@
+[
+ {"id":"pedidos_proprios","title":"Pedidos próprios","facts":{"utilizaIfood":true},"benefit":"O MyDelivery permite receber pedidos no seu próprio cardápio, sem comissão por pedido do sistema. Vocês podem oferecer esse canal aos clientes que já conhecem a loja."},
+ {"id":"organizacao_whatsapp","title":"Organização do WhatsApp","facts":{"pedidosWhatsApp":true},"benefit":"O MyDelivery reúne cardápio digital, organização dos pedidos, impressão automática e atendimento pelo WhatsApp para facilitar a rotina do delivery."},
+ {"id":"experiencia_pedido","title":"Experiência de pedido","facts":{"melhorarExperienciaPedido":true},"benefit":"O MyDelivery oferece um caminho direto do cardápio até o pedido, ajudando a organizar a experiência de quem chega pelo Instagram ou WhatsApp."},
+ {"id":"gestao_delivery","title":"Gestão do delivery","facts":{},"benefit":"O MyDelivery reúne cardápio digital, pedidos, impressão automática, atendimento pelo WhatsApp e emissão fiscal, conforme a configuração da loja."}
+]

@@ -36,6 +36,7 @@ public class CarrinhoAbandonadoService {
     private final ConfiguracaoRestauranteRepository configuracaoRepository;
     private final JavaMailSender mailSender;
     private final ObjectMapper objectMapper;
+    private final com.mydelivery.metaads.RestaurantMetaTrackingService metaTracking;
 
     // ── CARDÁPIO PÚBLICO ─────────────────────────────────────────────────────
     @Transactional
@@ -139,6 +140,7 @@ public class CarrinhoAbandonadoService {
         c.setStatus(CarrinhoAbandonado.Status.NOTIFICADO);
         c.setNotificadoEm(LocalDateTime.now());
         carrinhoRepository.save(c);
+        metaTracking.abandonedCart(c.getRestaurante().getId(), c.getId(), c.getTelefoneCliente());
     }
 
     @Transactional
@@ -193,6 +195,7 @@ public class CarrinhoAbandonadoService {
             carrinho.setStatus(CarrinhoAbandonado.Status.NOTIFICADO);
             carrinho.setNotificadoEm(LocalDateTime.now());
             carrinhoRepository.save(carrinho);
+            metaTracking.abandonedCart(carrinho.getRestaurante().getId(), carrinho.getId(), carrinho.getTelefoneCliente());
             return;
         }
 
@@ -216,6 +219,7 @@ public class CarrinhoAbandonadoService {
             carrinho.setStatus(CarrinhoAbandonado.Status.NOTIFICADO);
             carrinho.setNotificadoEm(LocalDateTime.now());
             carrinhoRepository.save(carrinho);
+            metaTracking.abandonedCart(carrinho.getRestaurante().getId(), carrinho.getId(), carrinho.getTelefoneCliente());
 
             log.info("Notificação enviada para carrinho {}", carrinho.getId());
         } catch (Exception e) {

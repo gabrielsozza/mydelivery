@@ -48,7 +48,7 @@ public class Cliente {
     @Column(name = "endereco_rua", length = 200)
     private String enderecoRua;
 
-    @Column(name = "endereco_numero", length = 20)
+    @Column(name = "endereco_numero", length = 120)
     private String enderecoNumero;
 
     @Column(name = "endereco_complemento", length = 120)

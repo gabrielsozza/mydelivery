@@ -164,11 +164,21 @@ public class MyHelpService {
         Map<String, Object> ensino = fluxoAprender(r, texto, norm);
         if (ensino != null) return ensino;
 
+        // Pedido com categoria e tabela Markdown: preserva cada preço e descrição
+        // na mesma linha, inclusive quando o texto vem colado de uma planilha.
+        Map<String, Object> tabela = fluxoCategoriaProdutosTabela(r, texto);
+        if (tabela != null) return tabela;
+
         // ── Múltiplas OPERAÇÕES na mesma frase ("cria X e Y ... e coloca a descrição ...") ──
         if (permitirMulti) {
             Map<String, Object> multi = fluxoMultiOperacao(r, texto, norm);
             if (multi != null) return multi;
         }
+
+        // Ajustes de cardápio descritos em linguagem natural. Este fluxo consulta
+        // os produtos/grupos reais da loja e devolve apenas o que ainda falta.
+        Map<String, Object> ajusteCardapio = fluxoAjusteCardapio(r, texto, norm);
+        if (ajusteCardapio != null) return ajusteCardapio;
 
         // Complementos (grupo / item) — os mais específicos
         if (falaGrupo && criar && !grupoLocal) return fluxoNovoGrupo(r, texto, norm);
@@ -225,7 +235,7 @@ public class MyHelpService {
     private List<String> separarOperacoes(String texto) {
         List<String> out = new ArrayList<>();
         if (texto == null) return out;
-        String verbos = "(?:coloca|coloque|poe|põe|bota|adiciona|adicione|adicionar|muda|mude|mudar|altera|altere|"
+        String verbos = "(?:coloca|coloque|poe|põe|bota|adiciona|adicione|adicionar|aplica|aplique|aplicar|muda|mude|mudar|altera|altere|"
             + "troca|troque|cria|crie|criar|cadastra|cadastre|inclui|inclua|renomeia|renomear|define|defina|deixa|"
             + "atualiza|atualize|remova|remove|exclui|exclua|apaga|apague)";
         for (String p : texto.split("(?i)\\s+(?:e|entao|então|depois|dai|daí|tambem|também)\\s+(?=" + verbos + "\\b)")) {
@@ -233,6 +243,79 @@ public class MyHelpService {
             if (!t.isBlank()) out.add(t);
         }
         return out;
+    }
+
+    private Map<String, Object> fluxoCategoriaProdutosTabela(Restaurante r, String texto) {
+        // A caixa antiga era <input> e transformava colagens de tabela em uma
+        // única linha. Nunca cair no fluxo genérico de "nova categoria" nesse
+        // caso: ele interpretava a tabela inteira como nomes de categorias.
+        String normalizado = MyHelpTexto.norm(texto);
+        boolean tabelaAparentementeColada = normalizado.contains("produto preco descricao")
+                && (texto.contains("|") || texto.contains("\t") || texto.length() > 120);
+        if (!tabelaAparentementeColada) return null;
+        String[] linhas = texto.split("\\R");
+        String nomeCategoria = null;
+        for (int i = 0; i < linhas.length; i++) {
+            String linha = linhas[i].trim();
+            if (linha.matches("^#{1,6}\\s+.+")) nomeCategoria = linha.replaceFirst("^#{1,6}\\s+", "").trim();
+            if ((linha.matches("(?i)^\\|?\\s*produto\\s*\\|\\s*preço\\s*\\|\\s*descrição\\s*\\|?$")
+                    || linha.matches("(?i)^produto\\tpreço\\tdescrição$")) && i > 0 && nomeCategoria == null) {
+                String anterior = linhas[i - 1].trim();
+                if (!anterior.isBlank() && !anterior.contains("|") && !anterior.contains("\t")
+                        && !anterior.endsWith(":") && !MyHelpTexto.norm(anterior).contains("categoria"))
+                    nomeCategoria = anterior;
+            }
+        }
+        Matcher categoria = Pattern.compile("(?is)\\bcategoria\\s+(.+?)\\s+e\\s+(?:nela|nessa\\s+categoria)\\s+"
+                + "(?:adicione|adicionar|adiciona|inclua|incluir|inclui|cadastre|cadastrar|crie|criar)\\b").matcher(texto);
+        if (nomeCategoria == null && categoria.find()) nomeCategoria = categoria.group(1).trim();
+        if (nomeCategoria == null) return texto("Não identifiquei a categoria da tabela. Coloque o título acima dela, por exemplo: ### Destaques Da Casa.");
+        nomeCategoria = nomeCategoria.replaceAll("\\s+", " ");
+        if (nomeCategoria.isBlank() || nomeCategoria.length() > 255) return texto("O nome da categoria está vazio ou muito longo. Corrija e envie a tabela novamente.");
+
+        List<Map<String, Object>> produtos = new ArrayList<>();
+        Set<String> nomes = new HashSet<>();
+        boolean cabecalho = false;
+        for (String linha : linhas) {
+            String row = linha.trim();
+            String[] colunas;
+            if (row.startsWith("|")) colunas = row.replaceFirst("^\\|", "").replaceFirst("\\|$", "").split("\\|", -1);
+            else if (row.contains("\t")) colunas = row.split("\\t", -1);
+            else continue;
+            if (colunas.length != 3) return texto("Uma linha da tabela não tem exatamente Produto, Preço e Descrição. Corrija e envie novamente; não alterei o cardápio.");
+            String nome = colunas[0].trim().replaceAll("\\*", "");
+            String precoTexto = colunas[1].trim().replaceAll("\\*", "");
+            String descricao = colunas[2].trim().replaceAll("\\*\\*", "");
+            if (MyHelpTexto.norm(nome).equals("produto")) {cabecalho = true; continue;}
+            if (nome.matches("[-: ]+")) continue;
+            if (nome.isBlank() || descricao.isBlank() || nome.length() > 255 || descricao.length() > 5000)
+                return texto("Há uma linha sem nome ou descrição, ou com texto muito longo. Corrija a tabela e envie novamente.");
+            Matcher preco = Pattern.compile("(?i)^(?:R\\s*\\$\\s*)?(\\d{1,6}(?:\\.\\d{3})*,\\d{2})$").matcher(precoTexto);
+            if (!preco.matches()) return texto("Não consegui ler o preço de *" + nome + "*. Use o formato R$ 32,90 e envie a tabela novamente.");
+            BigDecimal valor = new BigDecimal(preco.group(1).replace(".", "").replace(',', '.'));
+            if (!precoValido(valor)) return texto("O preço de *" + nome + "* não parece válido. Corrija e envie novamente.");
+            if (!nomes.add(MyHelpTexto.norm(nome))) return texto("O produto *" + nome + "* aparece mais de uma vez na tabela. Revise antes de confirmar.");
+            produtos.add(mp("nome", nome, "preco", valor, "descricao", descricao));
+        }
+        if (!cabecalho || produtos.isEmpty()) return texto("A tabela perdeu as quebras de linha ao colar. Cole novamente no campo atualizado, com uma linha por produto; não alterei o cardápio.");
+        if (produtos.size() > 100) return texto("Envie no máximo 100 produtos por vez para eu conferir todos antes de criar.");
+
+        List<Map<String, Object>> itens = new ArrayList<>();
+        itens.add(item("novaCategoriaProdutos", "Categoria: " + nomeCategoria, null, "folder", null,
+                produtos.size() + " produtos", null, mp("categoriaNome", nomeCategoria)));
+        for (Map<String, Object> produto : produtos) {
+            String nome = (String) produto.get("nome");
+            String descricao = (String) produto.get("descricao");
+            Map<String, Object> preview = item("novaCategoriaProdutos", nome, null, "tag", null,
+                    moeda((BigDecimal) produto.get("preco")), null, mp("nome", nome));
+            preview.put("detalhe", descricao);
+            itens.add(preview);
+        }
+        Map<String, Object> resposta = lote("novaCategoriaProdutos", itens,
+                "Encontrei a categoria *" + nomeCategoria + "* e " + produtos.size()
+                + " produtos com preço e descrição. Confira antes de criar. Descrições com '...' serão salvas exatamente assim.");
+        resposta.put("payload", mp("acao", "novaCategoriaProdutos", "categoriaNome", nomeCategoria, "produtos", produtos));
+        return resposta;
     }
 
     /** Itens (cada um com payload) de uma resposta card/lote. */
@@ -282,6 +365,112 @@ public class MyHelpService {
         }
         if (todosItens.isEmpty()) return null;   // não deu pra encadear → deixa o fluxo normal
         return lote("multi", todosItens, "Vou fazer estas " + todosItens.size() + " alterações. Confirma?");
+    }
+
+    /**
+     * Prepara ajustes recorrentes do cardápio sem exigir que o dono saiba os
+     * nomes internos dos produtos/grupos. A operação é somente de leitura até
+     * a confirmação: grupos e itens já existentes são filtrados aqui.
+     */
+    private Map<String, Object> fluxoAjusteCardapio(Restaurante r, String texto, String norm) {
+        boolean pedeCaramelo = norm.contains("caramelo")
+            && norm.matches(".*\\b(cobertura|coberturas|coberto|cobrir)\\b.*")
+            && norm.matches(".*\\b(tod[oa]s?|cada|produtos|itens|acompanha|acompanham)\\b.*");
+        boolean pedeAcai = norm.matches(".*\\bacai\\b.*")
+            && norm.matches(".*\\b(light|zero acucar|zero|sem acucar)\\b.*");
+        if (!pedeCaramelo && !pedeAcai) return null;
+
+        List<Map<String, Object>> itens = new ArrayList<>();
+        int jaExistentes = 0;
+        int gruposCobertura = 0;
+        int gruposAcai = 0;
+        for (Produto p : produtoRepo.findByRestauranteId(r.getId())) {
+            if (p == null || p.getRestaurante() == null || p.getRestaurante().getId() == null
+                    || !p.getRestaurante().getId().equals(r.getId())) continue;
+            List<ComplementoGrupo> grupos = grupoRepo.findByProdutoIdOrderByIdAsc(p.getId());
+            for (ComplementoGrupo g : grupos) {
+                if (g == null || g.getId() == null) continue;
+                String nomeGrupo = MyHelpTexto.norm(g.getNome());
+                if (pedeCaramelo && nomeGrupo.contains("cobertura")) {
+                    gruposCobertura++;
+                    if (temComplementoEquivalente(g, "caramelo")) {
+                        jaExistentes++;
+                    } else {
+                        itens.add(item("ajusteCardapio", "Caramelo — " + p.getNome(), null, "layers",
+                            null, "Adicionar em " + g.getNome() + " • grátis", null,
+                            mp("grupoId", g.getId(), "textoNovo", "Caramelo", "precoNovo", BigDecimal.ZERO,
+                                "tipoAjuste", "cobertura")));
+                    }
+                }
+                if (pedeAcai && produtoPareceAcai(p) && grupoPareceSaboresAcai(g)) {
+                    gruposAcai++;
+                    if (!temComplementoEquivalente(g, "acai light")) {
+                        itens.add(item("ajusteCardapio", "Açaí Light — " + p.getNome(), null, "layers",
+                            null, "Adicionar em " + g.getNome() + " • " + moeda(BigDecimal.ONE), null,
+                            mp("grupoId", g.getId(), "textoNovo", "Açaí Light", "precoNovo", BigDecimal.ONE,
+                                "tipoAjuste", "acai")));
+                    } else {
+                        jaExistentes++;
+                    }
+                    if (!temComplementoEquivalente(g, "acai zero acucar")) {
+                        itens.add(item("ajusteCardapio", "Açaí Zero Açúcar — " + p.getNome(), null, "layers",
+                            null, "Adicionar em " + g.getNome() + " • " + moeda(BigDecimal.ONE), null,
+                            mp("grupoId", g.getId(), "textoNovo", "Açaí Zero Açúcar", "precoNovo", BigDecimal.ONE,
+                                "tipoAjuste", "acai")));
+                    } else {
+                        jaExistentes++;
+                    }
+                }
+            }
+        }
+        if (itens.isEmpty()) {
+            if (jaExistentes > 0)
+                return texto("O cardápio já tem essas opções nos grupos encontrados. Não criei duplicados.");
+            if (pedeCaramelo && gruposCobertura == 0)
+                return texto("Não encontrei grupos chamados *Coberturas* no cardápio. Me diga o nome do grupo para eu aplicar o Caramelo com segurança.");
+            if (pedeAcai && gruposAcai == 0)
+                return texto("Encontrei produtos de açaí, mas nenhum grupo de sabores/complementos identificado. Me diga o nome do grupo para eu adicionar as opções sem mexer no grupo errado.");
+            return texto("Não encontrei grupos compatíveis para esse ajuste.");
+        }
+        StringBuilder msg = new StringBuilder("Encontrei o cardápio atual e preparei ")
+            .append(itens.size()).append(itens.size() == 1 ? " inclusão" : " inclusões")
+            .append(". Itens que já existiam foram ignorados");
+        if (jaExistentes > 0) msg.append(" (" ).append(jaExistentes).append(" já estavam cadastrados)");
+        msg.append(". Confirma tudo?");
+        return lote("ajusteCardapio", itens, msg.toString());
+    }
+
+    private boolean grupoPareceSaboresAcai(ComplementoGrupo g) {
+        String nome = MyHelpTexto.norm(g.getNome());
+        if (nome.contains("sabor") || nome.contains("creme") || nome.contains("acai")) return true;
+        if (g.getItens() == null) return false;
+        for (ComplementoItem it : g.getItens()) {
+            String n = MyHelpTexto.norm(it == null ? null : it.getNome());
+            if (n.contains("acai") || n.contains("tradicional") || n.contains("zero acucar") || n.contains("light")) return true;
+        }
+        return false;
+    }
+
+    private boolean produtoPareceAcai(Produto p) {
+        if (p == null) return false;
+        String nome = MyHelpTexto.norm(p.getNome());
+        String descricao = MyHelpTexto.norm(p.getDescricao());
+        String categoria = p.getCategoria() == null ? "" : MyHelpTexto.norm(p.getCategoria().getNome());
+        return nome.contains("acai") || descricao.contains("acai") || categoria.contains("acai")
+            || categoria.contains("creme");
+    }
+
+    private boolean temComplementoEquivalente(ComplementoGrupo g, String desejado) {
+        String alvo = MyHelpTexto.norm(desejado);
+        if (g.getItens() == null) return false;
+        for (ComplementoItem it : g.getItens()) {
+            String atual = MyHelpTexto.norm(it == null ? null : it.getNome());
+            if (atual.equals(alvo)) return true;
+            if (alvo.equals("caramelo") && atual.contains("caramelo")) return true;
+            if (alvo.equals("acai light") && atual.contains("light") && atual.contains("acai")) return true;
+            if (alvo.equals("acai zero acucar") && ((atual.contains("zero") && atual.contains("acucar")) || atual.contains("sem acucar"))) return true;
+        }
+        return false;
     }
 
     /**
@@ -1614,8 +1803,10 @@ public class MyHelpService {
             case "precoComplemento": return confirmarPrecoComplemento(r, cvL(body.get("itemId")), cvD(body.get("precoNovo")));
             case "novaCategoria":    return confirmarNovaCategoria(r, cvS(body.get("textoNovo")));
             case "novoProduto":      return confirmarNovoProduto(r, cvS(body.get("textoNovo")), cvD(body.get("precoNovo")), cvL(body.get("categoriaId")), cvS(body.get("textoDesc")));
+            case "novaCategoriaProdutos": return confirmarCategoriaProdutos(r, cvS(body.get("categoriaNome")), body.get("produtos"));
             case "novoGrupo":        return confirmarNovoGrupo(r, cvL(body.get("produtoId")), cvS(body.get("textoNovo")));
             case "novoComplemento":  return confirmarNovoComplemento(r, cvL(body.get("grupoId")), cvS(body.get("textoNovo")), cvD(body.get("precoNovo")));
+            case "ajusteCardapio":   return confirmarAjusteCardapio(r, cvL(body.get("grupoId")), cvS(body.get("textoNovo")), cvD(body.get("precoNovo")));
             case "promoProduto":     return confirmarPromo(r, cvL(body.get("produtoId")), cvD(body.get("precoNovo")), "1".equals(cvS(body.get("tirar"))));
             case "aprender":         return confirmarAprender(r, cvS(body.get("gatilho")), cvS(body.get("valor")), cvS(body.get("contexto")));
             default:                 return confirmarPreco(r, cvL(body.get("produtoId")), cvD(body.get("precoNovo")));
@@ -1788,6 +1979,54 @@ public class MyHelpService {
     }
 
     @Transactional
+    public Map<String, Object> confirmarCategoriaProdutos(Restaurante r, String nomeCategoria, Object dados) {
+        if (nomeCategoria == null || nomeCategoria.isBlank() || nomeCategoria.length() > 255
+                || !(dados instanceof List<?> linhas) || linhas.isEmpty() || linhas.size() > 100)
+            return texto("A categoria ou a lista de produtos não está válida. Envie a tabela novamente.");
+        List<Map<String, Object>> validos = new ArrayList<>();
+        Set<String> nomes = new HashSet<>();
+        for (Object dado : linhas) {
+            if (!(dado instanceof Map<?, ?> linha)) return texto("Uma linha da tabela está inválida. Envie novamente.");
+            String nome = cvS(linha.get("nome")), descricao = cvS(linha.get("descricao"));
+            BigDecimal preco = cvD(linha.get("preco"));
+            if (nome == null || nome.isBlank() || nome.length() > 255 || descricao == null || descricao.isBlank()
+                    || descricao.length() > 5000 || !precoValido(preco) || !nomes.add(MyHelpTexto.norm(nome)))
+                return texto("Há um produto com nome, preço ou descrição inválido. Nenhuma alteração foi feita.");
+            validos.add(mp("nome", nome.trim(), "preco", preco, "descricao", descricao.trim()));
+        }
+        Restaurante rr = restauranteRepo.findById(r.getId()).orElse(r);
+        List<Categoria> categorias = categoriaRepo.findByRestauranteIdOrderByOrdemAsc(rr.getId());
+        Categoria categoria = categorias.stream().filter(c -> MyHelpTexto.norm(c.getNome()).equals(MyHelpTexto.norm(nomeCategoria)))
+                .findFirst().orElse(null);
+        boolean categoriaCriada = categoria == null;
+        if (categoriaCriada) {
+            int ordem = categorias.stream().map(Categoria::getOrdem).filter(java.util.Objects::nonNull)
+                    .mapToInt(Integer::intValue).max().orElse(-1) + 1;
+            categoria = new Categoria(); categoria.setRestaurante(rr); categoria.setNome(nomeCategoria.trim());
+            categoria.setOrdem(ordem); categoria.setAtivo(true);
+            categoria = categoriaRepo.save(categoria);
+        }
+        Set<String> existentes = new HashSet<>();
+        for (Produto p : produtoRepo.findByRestauranteId(rr.getId()))
+            if (p.getCategoria() != null && categoria.getId().equals(p.getCategoria().getId()))
+                existentes.add(MyHelpTexto.norm(p.getNome()));
+        int criados = 0, ignorados = 0;
+        for (Map<String, Object> item : validos) {
+            String nome = (String) item.get("nome");
+            if (!existentes.add(MyHelpTexto.norm(nome))) { ignorados++; continue; }
+            Produto produto = new Produto(); produto.setRestaurante(rr); produto.setCategoria(categoria);
+            produto.setNome(nome); produto.setPreco((BigDecimal) item.get("preco"));
+            produto.setDescricao((String) item.get("descricao")); produto.setDisponivel(true);
+            produtoRepo.save(produto); criados++;
+        }
+        if (criados > 0 || categoriaCriada) invalidarCachePublico(r.getSlug());
+        Map<String, Object> out = texto("Categoria *" + categoria.getNome() + "*: " + criados + " produtos criados"
+                + (ignorados > 0 ? ", " + ignorados + " já existiam e foram mantidos" : "") + ".");
+        if (criados > 0 || categoriaCriada) out.put("alterado", true);
+        return out;
+    }
+
+    @Transactional
     public Map<String, Object> confirmarNovoGrupo(Restaurante r, Long produtoId, String nome) {
         if (produtoId == null || nome == null || nome.isBlank()) return texto("Faltou o produto ou o nome do grupo 🤔");
         Produto p = produtoRepo.findById(produtoId).orElse(null);
@@ -1826,6 +2065,38 @@ public class MyHelpService {
         invalidarCachePublico(r.getSlug());
         log.info("[myHelp] loja={} novo complemento '{}' {} grupo={}", r.getSlug(), nome.trim(), p, g.getId());
         Map<String, Object> out = texto("Pronto! ✅ Complemento *" + nome.trim() + "* (" + moeda(p) + ") adicionado ao grupo *" + g.getNome() + "*.");
+        out.put("alterado", true);
+        return out;
+    }
+
+    /** Aplica uma inclusão preparada pelo ajuste de cardápio, sempre conferindo
+     * a loja e a existência do item novamente no momento da confirmação. */
+    @Transactional
+    public Map<String, Object> confirmarAjusteCardapio(Restaurante r, Long grupoId, String nome, BigDecimal preco) {
+        if (grupoId == null || nome == null || nome.isBlank()) return texto("Faltou o grupo ou o complemento 🤔");
+        ComplementoGrupo g = grupoRepo.findById(grupoId).orElse(null);
+        if (g == null || g.getProduto() == null || g.getProduto().getRestaurante() == null
+                || !g.getProduto().getRestaurante().getId().equals(r.getId()))
+            return texto("Não achei esse grupo na sua loja 😕");
+        if (temComplementoEquivalente(g, nome)) {
+            Map<String, Object> out = texto("*" + nome + "* já estava nesse grupo; mantive apenas uma opção.");
+            out.put("alterado", true);
+            return out;
+        }
+        BigDecimal valor = preco == null ? BigDecimal.ZERO : preco;
+        if (valor.signum() < 0 || valor.compareTo(new BigDecimal("100000")) > 0)
+            return texto("Esse valor não parece certo 🙂");
+        ComplementoItem it = new ComplementoItem();
+        it.setGrupo(g);
+        it.setNome(nome.trim());
+        it.setPrecoAdicional(valor);
+        it.setAtivo(true);
+        itemRepo.save(it);
+        invalidarCachePublico(r.getSlug());
+        log.info("[myHelp] loja={} ajuste cardapio complemento='{}' grupo={} produto={}",
+            r.getSlug(), nome.trim(), g.getId(), g.getProduto().getId());
+        Map<String, Object> out = texto("Pronto! ✅ *" + nome.trim() + "* foi adicionado ao grupo *"
+            + g.getNome() + "* de *" + g.getProduto().getNome() + ".");
         out.put("alterado", true);
         return out;
     }

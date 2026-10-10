@@ -22,6 +22,8 @@ public class PedidoResponse {
     private BigDecimal subtotal;
     private BigDecimal taxaEntrega;
     private BigDecimal total;
+    private BigDecimal mycashUsado;
+    private BigDecimal desconto;
     private LocalDateTime criadoEm;
     private LocalDateTime agendadoPara;
     private String restauranteNome;
@@ -79,6 +81,16 @@ public class PedidoResponse {
     /** Razao da ultima FALHA de auto-emit (populada quando SEFAZ rejeitou
      *  ou pre-checks bloquearam). Null quando ok. */
     private String fiscalErroAuto;
+    /** Opções públicas da loja; nunca inclui token, localização exata nem hash de segredo. */
+    private Boolean rastreamentoHabilitado;
+    private Boolean codigoConfirmacaoNecessario;
+    private Boolean codigoConfirmacaoGerado;
+    private Boolean localizacaoCompartilhada;
+    private Boolean rastreamentoConsentido;
+    private LocalDateTime ultimaLocalizacaoEntregador;
+    private Boolean codigoConfirmado;
+    /** Presente somente na resposta do checkout, nunca nas respostas do painel. */
+    private String rastreamentoTokenCliente;
 
     @Data @Builder
     public static class ItemPedidoResponse {

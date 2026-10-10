@@ -47,6 +47,9 @@ public class ConfiguracaoController {
     public ResponseEntity<Restaurante> getPublico(@PathVariable String slug) {
         Restaurante r = restauranteRepository.findBySlug(slug)
                 .orElseThrow(() -> new RuntimeException("Restaurante não encontrado"));
+        var cfg = configRestauranteRepository.findByRestauranteId(r.getId()).orElse(null);
+        r.setPixOnlineDisponivel(com.mydelivery.service.mercadopago.MercadoPagoDisponibilidade.pix(cfg));
+        r.setCartaoOnlineDisponivel(com.mydelivery.service.mercadopago.MercadoPagoDisponibilidade.cartao(cfg));
         // Calcula on-the-fly se está aceitando pedidos AGORA (considera cutoff
         // antes do fechamento). null = não-determinado (front trata como true).
         try {
@@ -110,13 +113,19 @@ public class ConfiguracaoController {
                     "mpAccessTokenMasked", "",
                     "mpPublicKey", "",
                     "mpWebhookSecretMasked", "",
-                    "configurado", false));
+                    "configurado", false,
+                    "pixDisponivel", false,
+                    "cartaoDisponivel", false,
+                    "pendencias", com.mydelivery.service.mercadopago.MercadoPagoDisponibilidade.pendencias(null)));
         }
         return ResponseEntity.ok(Map.of(
                 "mpAccessTokenMasked", mascarar(cfg.getMpAccessToken()),
                 "mpPublicKey", cfg.getMpPublicKey() != null ? cfg.getMpPublicKey() : "",
                 "mpWebhookSecretMasked", mascarar(cfg.getMpWebhookSecret()),
-                "configurado", cfg.getMpAccessToken() != null && !cfg.getMpAccessToken().isBlank()));
+                "configurado", com.mydelivery.service.mercadopago.MercadoPagoDisponibilidade.cartao(cfg),
+                "pixDisponivel", com.mydelivery.service.mercadopago.MercadoPagoDisponibilidade.pix(cfg),
+                "cartaoDisponivel", com.mydelivery.service.mercadopago.MercadoPagoDisponibilidade.cartao(cfg),
+                "pendencias", com.mydelivery.service.mercadopago.MercadoPagoDisponibilidade.pendencias(cfg)));
     }
 
     /**
@@ -141,7 +150,7 @@ public class ConfiguracaoController {
         String erro = mercadoPagoClient.validarToken(token);
         return ResponseEntity.ok(Map.of(
                 "ok", erro == null,
-                "mensagem", erro != null ? erro : "Conexão validada com sucesso."));
+                "mensagem", erro != null ? erro : "Access Token válido. Salve as credenciais e configure o webhook para confirmar os pagamentos automaticamente."));
     }
 
     private String mascarar(String s) {
@@ -165,6 +174,48 @@ public class ConfiguracaoController {
         r.setAceitarPedidosAutomaticamente(novo);
         restauranteRepository.save(r);
         return ResponseEntity.ok(Map.of("aceitarPedidosAutomaticamente", novo));
+    }
+
+    /**
+     * Atualiza somente a disponibilidade manual da loja. Mantém o atalho da
+     * tela de pedidos independente do salvamento das demais configurações.
+     */
+    @PatchMapping("/api/restaurante/configuracoes/status-loja")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    @com.mydelivery.equipe.PermissaoRequerida(com.mydelivery.equipe.Permissao.ALTERAR_CONFIGURACOES)
+    public ResponseEntity<Map<String, Boolean>> atualizarStatusLoja(
+            @AuthenticationPrincipal String email,
+            @RequestBody Map<String, Boolean> body) {
+        Restaurante r = restauranteRepository.findByUsuarioEmail(email).orElseThrow();
+        if (body == null || body.get("aberto") == null) {
+            return ResponseEntity.badRequest().body(Map.of("aberto", Boolean.TRUE.equals(r.getAberto())));
+        }
+        boolean aberto = Boolean.TRUE.equals(body.get("aberto"));
+        r.setAberto(aberto);
+        r.setStatusManualAte(horarioLojaService.proximoLimite(r, aberto));
+        restauranteRepository.save(r);
+        return ResponseEntity.ok(Map.of("aberto", aberto));
+    }
+
+    @PatchMapping("/api/restaurante/configuracoes/somente-retirada")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    @com.mydelivery.equipe.PermissaoRequerida(com.mydelivery.equipe.Permissao.ALTERAR_CONFIGURACOES)
+    public ResponseEntity<Map<String, Boolean>> atualizarSomenteRetirada(
+            @AuthenticationPrincipal String email,
+            @RequestBody Map<String, Boolean> body) {
+        Restaurante r = restauranteRepository.findByUsuarioEmail(email).orElseThrow();
+        if (body == null || body.get("ativo") == null) {
+            return ResponseEntity.badRequest().body(Map.of("somenteRetiradaAtivo", Boolean.TRUE.equals(r.getSomenteRetiradaAtivo())));
+        }
+        boolean ativo = Boolean.TRUE.equals(body.get("ativo"));
+        if (ativo && (r.getModos() == null || !r.getModos().contains("retirada"))) {
+            java.util.List<String> modos = new java.util.ArrayList<>(r.getModos() == null ? java.util.List.of() : r.getModos());
+            modos.add("retirada");
+            r.setModos(modos);
+        }
+        r.setSomenteRetiradaAtivo(ativo);
+        restauranteRepository.save(r);
+        return ResponseEntity.ok(Map.of("somenteRetiradaAtivo", ativo));
     }
 
     /**

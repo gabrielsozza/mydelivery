@@ -87,8 +87,8 @@ public class UazapiBootSyncService {
      * do bootstrap de tokens do {@link UazapiClient} (evita 401 se sync
      * precisar chamar rota da instância).
      */
-    @Order(Ordered.LOWEST_PRECEDENCE)
     @EventListener(ApplicationReadyEvent.class)
+    @Order(Ordered.LOWEST_PRECEDENCE)
     public void sincronizarNoBoot() {
         log.info("[UazapiSync] boot — iniciando sincronização full (Uazapi como fonte da verdade)");
         sincronizarComLog("boot");
@@ -165,6 +165,7 @@ public class UazapiBootSyncService {
                     if (tokenUazapi != null && !tokenUazapi.isBlank()
                             && !tokenUazapi.equals(inst.getInstanceToken())) {
                         inst.setInstanceToken(tokenUazapi);
+                        uazapiClient.registrarToken(name, tokenUazapi);
                         atualizadosTokens++;
                         log.info("[UazapiSync][{}] token atualizado pra {}",
                                 origem, name);

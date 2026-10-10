@@ -57,6 +57,19 @@ public class RelatorioFinanceiroDTO {
 
     // ── Insights automáticos (texto interpretativo) ──
     private List<Insight> insights;
+    private PedidosRepetidosWhatsapp pedidosRepetidosWhatsapp;
+
+    @Data @Builder @NoArgsConstructor @AllArgsConstructor
+    public static class PedidosRepetidosWhatsapp {
+        private long ofertas;
+        private long aceites;
+        private long pedidosCriados;
+        private long pedidosConfirmados;
+        private long clientesUnicos;
+        private BigDecimal faturamentoConfirmado;
+        private BigDecimal ticketMedio;
+        private BigDecimal conversaoPercentual;
+    }
 
     @Data @Builder @NoArgsConstructor @AllArgsConstructor
     public static class SerieItem {

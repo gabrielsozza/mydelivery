@@ -37,6 +37,9 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 @Service
 public class MercadoPagoWebhookService {
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.mydelivery.metaads.RestaurantMetaTrackingService metaTracking;
+    @org.springframework.beans.factory.annotation.Autowired private org.springframework.jdbc.core.JdbcTemplate beneficiosDb;
 
     private final PagamentoRepository pagamentoRepository;
     private final PedidoRepository pedidoRepository;
@@ -193,6 +196,16 @@ public class MercadoPagoWebhookService {
             pedido.setStatus(Pedido.Status.PENDENTE);
         }
 
+        if (metaTracking != null && org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive()) {
+            Long confirmedOrderId = pedido.getId();
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                new org.springframework.transaction.support.TransactionSynchronization() {
+                    @Override public void afterCommit() {
+                        try { metaTracking.trackConfirmedOrder(confirmedOrderId); } catch (Exception ignored) {}
+                    }
+                });
+        }
+
         log.info("✅ Webhook MP confirmou pagamento: pedido #{} (mpPaymentId={})",
                 pedido.getId(), pagamento.getMpPaymentId());
     }
@@ -235,7 +248,10 @@ public class MercadoPagoWebhookService {
             return null;
         }
         String extRef = atual.getExternalReference();
-        if (extRef == null || !extRef.startsWith("assinatura-")) {
+        String status = atual.getStatus() != null ? atual.getStatus().toLowerCase(java.util.Locale.ROOT) : "";
+        boolean estornoRenovacao = extRef != null && extRef.startsWith("renov-")
+                && ("refunded".equals(status) || "charged_back".equals(status));
+        if (extRef == null || (!extRef.startsWith("assinatura-") && !estornoRenovacao)) {
             return null; // não é assinatura — caller segue fluxo padrão
         }
 
@@ -290,7 +306,6 @@ public class MercadoPagoWebhookService {
             return Resultado.OK;
         }
 
-        String status = atual.getStatus() != null ? atual.getStatus().toLowerCase() : "";
         log.info("[Webhook:Assinatura] payment {} restaurante={} plano={} status={}",
                 mpPaymentId, restauranteId, plano, status);
 
@@ -310,6 +325,9 @@ public class MercadoPagoWebhookService {
                         restauranteId, plano, e.getMessage(), e);
                 return Resultado.ERRO; // MP reentrega
             }
+        } else if ("refunded".equals(status) || "charged_back".equals(status)) {
+            // Provider status was fetched with the admin token above, never trusted from the payload.
+            beneficiosDb.update("UPDATE pagamentos_mensalidade SET status='CANCELADO',mp_status_detail=? WHERE restaurante_id=? AND mp_payment_id=?",status,restauranteId,mpPaymentId);
         } else if ("rejected".equals(status) || "cancelled".equals(status)) {
             log.info("[Webhook:Assinatura] pagamento {} status={} — sem ativação", mpPaymentId, status);
             // Status final negativo — não ativa, mas registra evento pra não reprocessar

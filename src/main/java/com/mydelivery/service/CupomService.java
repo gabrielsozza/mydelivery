@@ -114,10 +114,13 @@ public class CupomService {
 
     @Transactional
     public CupomDTO atualizar(Long restauranteId, Long id, CupomDTO dto) {
-        Cupom c = cupomRepository.findById(id)
+        Cupom c = cupomRepository.findByIdForUpdate(id)
                 .orElseThrow(() -> new RuntimeException("Cupom não encontrado"));
         if (!c.getRestaurante().getId().equals(restauranteId)) {
             throw new RuntimeException("Acesso negado");
+        }
+        if (c.getExcluidoEm() != null) {
+            throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.NOT_FOUND, "Cupom excluído");
         }
         if (c.getOrigem() == Cupom.Origem.FIDELIDADE) {
             throw new RuntimeException("Cupons de fidelidade não podem ser editados");
@@ -138,12 +141,15 @@ public class CupomService {
 
     @Transactional
     public void deletar(Long restauranteId, Long id) {
-        Cupom c = cupomRepository.findById(id)
+        Cupom c = cupomRepository.findByIdForUpdate(id)
                 .orElseThrow(() -> new RuntimeException("Cupom não encontrado"));
         if (!c.getRestaurante().getId().equals(restauranteId)) {
             throw new RuntimeException("Acesso negado");
         }
-        cupomRepository.delete(c);
+        if (c.getExcluidoEm() != null) return;
+        c.setAtivo(false);
+        c.setExcluidoEm(LocalDateTime.now());
+        cupomRepository.save(c);
     }
 
     // ── PÚBLICO: banner no cardápio ─────────────────────────────────────────
@@ -168,6 +174,9 @@ public class CupomService {
         }
         Cupom c = opt.get();
         LocalDateTime agora = LocalDateTime.now();
+
+        if (c.getExcluidoEm() != null)
+            return invalid(c, "Cupom não encontrado");
 
         if (!Boolean.TRUE.equals(c.getAtivo()))
             return invalid(c, "Cupom inativo");

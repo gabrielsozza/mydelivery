@@ -107,6 +107,26 @@ public class HorarioLojaService {
         return e;
     }
 
+    /** Next configured opening/closing in the restaurant's local timezone. */
+    public LocalDateTime proximoLimite(Restaurante r, boolean aberto) {
+        LocalDateTime agora = LocalDateTime.now(TZ);
+        LocalDateTime proximo = null;
+        // Inclui ontem: uma janela 22:00–02:00 ainda termina hoje às 02:00.
+        for (int dia = -1; dia < 8; dia++) {
+            LocalDate data = agora.toLocalDate().plusDays(dia);
+            Map<String, Object> horario = horarioDoDia(r, data);
+            if (horario == null || Boolean.FALSE.equals(horario.get("aberto"))) continue;
+            for (Intervalo intervalo : extrairIntervalos(horario)) {
+                LocalDateTime inicio = data.atTime(intervalo.abertura);
+                LocalDateTime fim = data.atTime(intervalo.fechamento);
+                if (!fim.isAfter(inicio)) fim = fim.plusDays(1);
+                LocalDateTime limite = aberto ? fim : inicio;
+                if (limite.isAfter(agora) && (proximo == null || limite.isBefore(proximo))) proximo = limite;
+            }
+        }
+        return proximo;
+    }
+
     /**
      * Extrai a lista de intervalos do map do dia. Aceita:
      *  - Formato NOVO: {@code {aberto, intervalos: [{abertura,fechamento}, ...]}}

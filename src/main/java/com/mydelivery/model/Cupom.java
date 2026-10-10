@@ -99,6 +99,10 @@ public class Cupom {
     @Column(nullable = false)
     private Boolean ativo = true;
 
+    // Mantém as referências dos usos anteriores após a remoção no painel.
+    @Column(name = "excluido_em")
+    private LocalDateTime excluidoEm;
+
     // ── Origem ──
     @Enumerated(EnumType.STRING)
     @Builder.Default

@@ -7,6 +7,8 @@ import org.hibernate.annotations.UpdateTimestamp;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
@@ -83,6 +85,11 @@ public class GrupoComplementoModelo {
     @Builder.Default
     @Column(name = "max_escolhas", nullable = false)
     private Integer maxEscolhas = 1;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "modo_preco", length = 10)
+    @Builder.Default
+    private ComplementoGrupo.ModoPreco modoPreco = ComplementoGrupo.ModoPreco.SOMA;
 
     /**
      * Itens serializados como JSON: [{"nome":"Morango","precoAdicional":2.5}, …].

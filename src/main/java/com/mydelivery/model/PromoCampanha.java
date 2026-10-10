@@ -27,13 +27,7 @@ import lombok.NoArgsConstructor;
  *  ENVIANDO ↔ PAUSADA (dono pode pausar / retomar a qualquer momento)
  *  ENVIANDO/PAUSADA → CANCELADA (dono cancela no meio)
  *
- * Regras anti-ban aplicadas pelo PromoCampanhaSender:
- *  - Só envia entre 09h e 20h (janela conservadora)
- *  - Rate limit específico de broadcast: 40 msg/h, 200/dia por instância
- *  - Delay randomizado entre 45s-120s entre envios
- *  - Cada cliente recebe UMA vez por campanha (unique em PromoCampanhaEnvio)
- *  - Cliente em opt-out (PARE) é pulado
- *  - Só destinos com 2+ pedidos concluídos entram na fila
+ * Histórico anterior ao CRM responsável. Novas campanhas usam campanhas_crm.
  */
 @Entity
 @Table(name = "promo_campanhas", indexes = {
@@ -57,6 +51,10 @@ public class PromoCampanha {
     /** Texto que o cliente vai receber. Máx. 900 chars (mesmo cap do WhatsApp). */
     @Column(nullable = false, length = 900)
     private String texto;
+
+    /** Imagem opcional hospedada pelo serviço de upload existente. */
+    @Column(name = "imagem_url", length = 1500)
+    private String imagemUrl;
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)

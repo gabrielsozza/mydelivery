@@ -17,6 +17,13 @@ public interface NotaFiscalEmitidaRepository
 
     List<NotaFiscalEmitida> findByPedidoId(Long pedidoId);
 
+    Optional<NotaFiscalEmitida> findFirstByRestauranteIdAndPedidoIdAndStatusOrderByIdDesc(
+            Long restauranteId, Long pedidoId, NotaFiscalEmitida.Status status);
+
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @org.springframework.data.jpa.repository.Query("select n from NotaFiscalEmitida n where n.pedidoId = :pedidoId order by n.id")
+    List<NotaFiscalEmitida> findByPedidoIdForUpdate(@org.springframework.data.repository.query.Param("pedidoId") Long pedidoId);
+
     /** Notas em retry (rejeição transitória / contingência). */
     List<NotaFiscalEmitida> findByStatusAndProximaTentativaEmBefore(
             NotaFiscalEmitida.Status status, LocalDateTime agora);

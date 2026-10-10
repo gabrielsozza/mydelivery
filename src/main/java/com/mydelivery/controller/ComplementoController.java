@@ -144,6 +144,8 @@ public class ComplementoController {
                     .grupo(g)
                     .nome(strReq(imap, "nome"))
                     .descricao(strOr(imap, "descricao", null))
+                    .fotoUrl(strOr(imap, "fotoUrl", null))
+                    .maisPedido(boolOr(imap, "maisPedido", false))
                     .precoAdicional(decOr(imap, "precoAdicional", BigDecimal.ZERO))
                     .maxSelecoes(intOrNull(imap, "maxSelecoes"))
                     .ativo(boolOr(imap, "ativo", true))
@@ -481,6 +483,8 @@ public class ComplementoController {
                         mi.put("id", i.getId());
                         mi.put("nome", i.getNome());
                         mi.put("descricao", i.getDescricao()); // pode ser null — front trata
+                        mi.put("fotoUrl", i.getFotoUrl());
+                        mi.put("maisPedido", Boolean.TRUE.equals(i.getMaisPedido()));
                         mi.put("precoAdicional", i.getPrecoAdicional() != null ? i.getPrecoAdicional() : BigDecimal.ZERO);
                         mi.put("maxSelecoes", i.getMaxSelecoes()); // null = sem limite individual
                         mi.put("ativo", Boolean.TRUE.equals(i.getAtivo()));

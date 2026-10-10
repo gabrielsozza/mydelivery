@@ -89,6 +89,8 @@ public class PagamentoController {
         resp.put("metodo", p.getMetodo().name());
         resp.put("valor", p.getValor());
         resp.put("status", p.getStatus().name());
+        resp.put("pagamentoOnline", p.getMpPaymentId() != null);
+        resp.put("pedidoCancelado", p.getPedido().getStatus() == com.mydelivery.model.Pedido.Status.CANCELADO);
         resp.put("pixBrCode", p.getPixBrCode() != null ? p.getPixBrCode() : "");
         resp.put("pixQrBase64", p.getPixQrBase64() != null ? p.getPixQrBase64() : "");
         resp.put("pixChave", p.getPixChave() != null ? p.getPixChave() : "");

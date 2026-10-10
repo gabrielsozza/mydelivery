@@ -47,7 +47,7 @@ public class PromoCampanhaController {
         return ResponseEntity.ok(out);
     }
 
-    /** Body: { texto: "..." }. Cria + dispara imediatamente. */
+    /** Texto obrigatório e imagemUrl opcional. Cria e coloca na fila. */
     @PostMapping
     @PreAuthorize("hasRole('RESTAURANTE')")
     public ResponseEntity<Map<String, Object>> criar(
@@ -63,7 +63,7 @@ public class PromoCampanhaController {
         else if (mc != null) {
             try { minCompras = Integer.parseInt(mc.toString().trim()); } catch (Exception ignore) {}
         }
-        PromoCampanha c = service.criarEDisparar(r, texto, minCompras);
+        PromoCampanha c = service.criarEDisparar(r, texto, minCompras, body.get("imagemUrl") instanceof String url ? url : null);
         return ResponseEntity.ok(serializar(c));
     }
 
@@ -113,6 +113,7 @@ public class PromoCampanhaController {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("id", c.getId());
         m.put("texto", c.getTexto());
+        m.put("imagemUrl", c.getImagemUrl());
         m.put("status", c.getStatus().name());
         m.put("minCompras", c.getMinCompras());
         m.put("totalDestinos", c.getTotalDestinos());

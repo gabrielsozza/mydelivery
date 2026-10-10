@@ -139,6 +139,10 @@ public class IfoodService {
         // Já existe? (ack perdido em polling anterior) → reaproveita
         var existente = pedidoRepo.findByIfoodOrderId(orderId);
         if (existente.isPresent()) {
+            // Reconcile payment fields too: older versions incorrectly stored
+            // every iFood order as PIX, even when the API reported card/cash.
+            try { aplicarPagamentoIfood(existente.get(), client.getOrderDetalhe(orderId)); }
+            catch (Exception e) { log.warn("[iFood] Não foi possível atualizar pagamento do pedido existente {}: {}", orderId, e.getMessage()); }
             log.info("[iFood] Pedido {} já existe localmente (duplicata de PLC) — ack", orderId);
             return true;
         }
@@ -156,10 +160,7 @@ public class IfoodService {
         p.setIfoodDisplayId(strOf(det.get("displayId")));
         p.setStatus(Pedido.Status.CONFIRMADO); // pedidos iFood já vêm pagos+confirmados
         p.setTipo(extrairTipo(det));
-        p.setFormaPagamento(Pedido.FormaPagamento.PIX); // genérico — iFood não detalha
-        p.setModoPagamento(Pedido.ModoPagamento.ONLINE);
-        p.setPago(true);
-        p.setPagoEm(LocalDateTime.now());
+        aplicarPagamentoIfood(p, det);
 
         // Customer
         Map<String, Object> customer = mapOf(det.get("customer"));
@@ -265,6 +266,10 @@ public class IfoodService {
         }
         Pedido p = opt.get();
         Pedido.Status statusAntigo = p.getStatus();
+        // Status events carry only orderId/code. Fetch the canonical order to
+        // repair payment details if an earlier import used the legacy PIX default.
+        try { aplicarPagamentoIfood(p, client.getOrderDetalhe(orderId)); }
+        catch (Exception e) { log.warn("[iFood] Não foi possível reconciliar pagamento de {}: {}", orderId, e.getMessage()); }
         switch (code) {
             case "CFM" -> p.setStatus(Pedido.Status.CONFIRMADO);
             case "RPR" -> p.setStatus(Pedido.Status.PRONTO);
@@ -337,9 +342,7 @@ public class IfoodService {
         p.setIfoodDisplayId(strOf(det.get("displayId")));
         p.setStatus(Pedido.Status.CANCELADO);
         p.setTipo(extrairTipo(det));
-        p.setFormaPagamento(Pedido.FormaPagamento.PIX);
-        p.setModoPagamento(Pedido.ModoPagamento.ONLINE);
-        p.setPago(true);
+        aplicarPagamentoIfood(p, det);
 
         Map<String, Object> customer = mapOf(det.get("customer"));
         p.setNomeChamada(strOf(customer.get("name")));
@@ -361,6 +364,17 @@ public class IfoodService {
     }
 
     // ── helpers ──
+
+    private void aplicarPagamentoIfood(Pedido pedido, Map<String, Object> detalhe) {
+        if (pedido.getId() != null && (detalhe == null || !(detalhe.get("payments") instanceof Map<?, ?>))) {
+            return; // Do not erase a known payment when an API response omits payments.
+        }
+        IfoodPaymentMapper.Details pagamento = IfoodPaymentMapper.mapear(detalhe);
+        pedido.setFormaPagamento(pagamento.forma());
+        pedido.setModoPagamento(pagamento.modo());
+        pedido.setPago(pagamento.pago());
+        pedido.setPagoEm(pagamento.pago() ? LocalDateTime.now() : null);
+    }
 
     private Pedido.Tipo extrairTipo(Map<String, Object> det) {
         Map<String, Object> delivery = mapOf(det.get("delivery"));

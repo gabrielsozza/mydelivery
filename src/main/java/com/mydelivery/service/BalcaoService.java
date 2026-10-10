@@ -38,6 +38,7 @@ import lombok.extern.slf4j.Slf4j;
 @Service
 @RequiredArgsConstructor
 public class BalcaoService {
+    @org.springframework.beans.factory.annotation.Autowired private com.mydelivery.beneficios.MyCashService mycash;
 
     private final PedidoRepository pedidoRepo;
     private final ProdutoRepository produtoRepo;
@@ -238,7 +239,8 @@ public class BalcaoService {
             p.setPagamentosJson(sb.toString());
         }
 
-        Pedido salvo = pedidoRepo.save(p);
+        Pedido salvo = pedidoRepo.saveAndFlush(p);
+        if (mycash != null) mycash.captureCounter(salvo);
 
         // ── Módulo Caixa: vincula automaticamente ao caixa aberto ──
         // Idempotente + fail-safe. Se não tem caixa aberto, ignora silêncio;

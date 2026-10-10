@@ -19,7 +19,7 @@ import lombok.extern.slf4j.Slf4j;
  * Upload de imagens pro Cloudinary.
  *
  * Validação:
- *  - Extensão whitelist (jpg/jpeg/png/webp/heic)
+ *  - Extensão whitelist (jpg/jpeg/png/webp/heic/avif)
  *  - Tamanho máximo 5MB
  *  - Cloudinary detecta tipo real via header automaticamente — proteção extra
  *
@@ -39,14 +39,14 @@ public class CloudinaryService {
     private String folder;
 
     /**
-     * Upload de imagem (JPG/PNG/WEBP/HEIC) — aplica otimizações automáticas.
+     * Upload de imagem (JPG/PNG/WEBP/HEIC/AVIF) — aplica otimizações automáticas.
      * Usado pra fotos de produtos, logo e capa de restaurante.
      */
     public String upload(MultipartFile file, String subfolder) {
         return uploadInterno(file, subfolder, 5L * 1024 * 1024,
-                "jpg|jpeg|png|webp|heic",
+                "jpg|jpeg|png|webp|heic|avif",
                 /* otimizar imagem */ true,
-                /* Use JPG, PNG, WEBP ou HEIC. */ "Use JPG, PNG, WEBP ou HEIC.");
+                "Use JPG, PNG, WEBP, HEIC ou AVIF.");
     }
 
     /**
@@ -134,6 +134,8 @@ public class CloudinaryService {
         if (otimizar && !"pdf".equals(ext)) {
             opts.put("quality", "auto:good");
             opts.put("fetch_format", "auto");
+            // A foto do cardápio também precisa abrir em navegadores sem AVIF.
+            if ("avif".equals(ext)) opts.put("format", "jpg");
         }
 
         try {

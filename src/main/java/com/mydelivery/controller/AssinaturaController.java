@@ -294,6 +294,18 @@ public class AssinaturaController {
         return ResponseEntity.ok(assinaturaService.trocarPlano(r, novo));
     }
 
+    @PostMapping("/mudar-para-essencial")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Map<String, Object>> mudarParaEssencial(
+            @AuthenticationPrincipal String email,
+            @RequestBody Map<String, Object> body) {
+        if (!Boolean.TRUE.equals(body.get("confirmarPerdaFiscal"))) {
+            throw new IllegalArgumentException("Confirme que a Área Fiscal será desativada.");
+        }
+        Restaurante r = restauranteRepository.findByUsuarioEmail(email).orElseThrow();
+        return ResponseEntity.ok(assinaturaService.mudarParaEssencial(r));
+    }
+
     /**
      * Troca o método de pagamento (PIX↔CARTAO). Não cobra nada.
      * Se for trocar pra CARTAO sem cartão salvo, frontend deve chamar

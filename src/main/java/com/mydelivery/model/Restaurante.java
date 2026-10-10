@@ -37,6 +37,23 @@ public class Restaurante {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    // Nullable, additive measurement fields. Never exposed in restaurant API responses.
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    @Column(name = "google_client_id", length = 80)
+    private String googleClientId;
+
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    @Column(name = "google_measurement_consent")
+    private Boolean googleMeasurementConsent;
+
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    @Column(name = "google_consent_at")
+    private java.time.Instant googleConsentAt;
+
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    @jakarta.persistence.Column(name = "google_consent_version")
+    private Integer googleConsentVersion;
+
     @OneToOne
     @JoinColumn(name = "usuario_id", nullable = false)
     private Usuario usuario;
@@ -97,6 +114,18 @@ public class Restaurante {
     @Column(name = "endereco_longitude", precision = 10, scale = 7)
     private java.math.BigDecimal enderecoLongitude;
 
+    /** Rastreamento ao vivo de entregadores próprios; desligado para lojas existentes. */
+    @Builder.Default
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    @Column(name = "rastreamento_entrega_ativo", nullable = false)
+    private Boolean rastreamentoEntregaAtivo = false;
+
+    /** Confirmação por código é opt-in e independente do mapa. */
+    @Builder.Default
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    @Column(name = "entrega_codigo_confirmacao_ativo", nullable = false)
+    private Boolean entregaCodigoConfirmacaoAtivo = false;
+
     /**
      * Modo de cálculo da taxa de entrega:
      * <ul>
@@ -114,6 +143,10 @@ public class Restaurante {
     // ── Operação ──
     @Builder.Default
     private Boolean aberto = false;
+
+    /** Manual open/close takes precedence until the next configured schedule boundary. */
+    @Column(name = "status_manual_ate")
+    private LocalDateTime statusManualAte;
 
     /** Tempo mínimo de entrega (em minutos). Mostrado como "30 - 50 min" se max definido. */
     private Integer tempoEntrega;
@@ -147,12 +180,23 @@ public class Restaurante {
     @Builder.Default
     private List<String> modos = List.of("delivery", "retirada", "mesa");
 
+    /** Pausa temporária das entregas sem fechar a loja ou alterar os modos permanentes. */
+    @Builder.Default
+    @Column(name = "somente_retirada_ativo", nullable = false)
+    private Boolean somenteRetiradaAtivo = false;
+
     // ── Formas de pagamento ──
     @ElementCollection(fetch = FetchType.EAGER)
     @CollectionTable(name = "restaurante_pagamentos", joinColumns = @JoinColumn(name = "restaurante_id"))
     @Column(name = "pagamento")
     @Builder.Default
     private List<String> pagamentos = List.of("pix", "credito", "debito", "dinheiro");
+
+    @jakarta.persistence.Transient
+    private boolean pixOnlineDisponivel;
+
+    @jakarta.persistence.Transient
+    private boolean cartaoOnlineDisponivel;
 
     /** Se true, cliente que escolher PIX no checkout recebe a chave PIX do
      *  restaurante e é orientado a pagar antes e mandar comprovante no WhatsApp.
@@ -232,6 +276,13 @@ public class Restaurante {
     private Boolean confirmacaoWhatsappAtiva = false;
 
     /**
+     * Texto opcional enviado pelo assistente somente no primeiro contato de
+     * cada cliente. Vazio significa usar a apresentação padrão do MyDelivery.
+     */
+    @Column(name = "whatsapp_mensagem_inicial", columnDefinition = "TEXT")
+    private String whatsappMensagemInicial;
+
+    /**
      * Quando true (default), bot WhatsApp envia 1 mensagem proativa pro
      * cliente DEPOIS de criar o pedido pelo cardápio, com link único de
      * acompanhamento em tempo real (mydeliveryfood.com.br/acompanhar/{id}).
@@ -250,6 +301,12 @@ public class Restaurante {
     @Builder.Default
     @Column(name = "notif_link_acomp_whatsapp")
     private Boolean notificarLinkAcompanhamentoWhatsapp = true;
+
+    /** Repetição de pedidos no WhatsApp. Opt-in individual por restaurante. */
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    @Builder.Default
+    @Column(name = "repeticao_inteligente_whatsapp", nullable = false)
+    private Boolean repeticaoInteligenteWhatsapp = false;
 
     // ── Integração com balança de pesagem (venda por peso) ──
     /**
@@ -378,6 +435,10 @@ public class Restaurante {
      */
     @Column(name = "afiliado_codigo", length = 16)
     private String afiliadoCodigo;
+
+    /** Origem comercial interna, distinta dos programas de afiliados e myMoney. */
+    @Column(name = "colaborador_origem_id")
+    private Long colaboradorOrigemId;
 
     /**
      * SNAPSHOT do afiliado no momento do cadastro. Imutável.

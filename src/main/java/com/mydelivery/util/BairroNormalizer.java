@@ -66,6 +66,72 @@ public final class BairroNormalizer {
         return r.trim();
     }
 
+    /** Resolve variações de escrita sem misturar números de bairros ou candidatos próximos. */
+    public static com.mydelivery.model.BairroEntrega encontrar(
+            java.util.List<com.mydelivery.model.BairroEntrega> bairros, String nome) {
+        String digitado = normalizar(nome);
+        if (bairros == null || digitado.isEmpty() || digitado.length() > 120) return null;
+        var candidatos = new java.util.LinkedHashMap<String, com.mydelivery.model.BairroEntrega>();
+        for (var bairro : bairros) {
+            if (bairro != null && bairro.getNome() != null) {
+                String chave = normalizar(bairro.getNome());
+                if (!chave.isEmpty()) candidatos.putIfAbsent(chave, bairro);
+            }
+        }
+        if (candidatos.containsKey(digitado)) return candidatos.get(digitado);
+
+        // 1/I e 2/II são equivalentes, mas 1 e 2 nunca são erros de digitação presumidos.
+        String numeros = numeros(digitado);
+        var compativeis = candidatos.entrySet().stream()
+                .filter(e -> numeros(e.getKey()).equals(numeros)).toList();
+        var parciais = compativeis.stream().filter(e -> contemNome(e.getKey(), digitado)
+                || contemNome(digitado, e.getKey())).toList();
+        if (parciais.size() == 1) return parciais.getFirst().getValue();
+        if (parciais.size() > 1 || digitado.length() < 5) return null;
+
+        // Até duas pequenas edições; exige vantagem clara sobre o segundo candidato.
+        int melhor = Integer.MAX_VALUE, segundo = Integer.MAX_VALUE;
+        com.mydelivery.model.BairroEntrega resultado = null;
+        for (var candidato : compativeis) {
+            String cadastrado = candidato.getKey();
+            if (cadastrado.length() < 5 || Math.abs(cadastrado.length() - digitado.length()) > 2) continue;
+            int distancia = distanciaEdicao(digitado, cadastrado);
+            if (distancia < melhor) {
+                segundo = melhor;
+                melhor = distancia;
+                resultado = candidato.getValue();
+            } else if (distancia < segundo) segundo = distancia;
+        }
+        int limite = digitado.length() >= 12 ? 2 : 1;
+        return melhor <= limite && (segundo == Integer.MAX_VALUE || segundo - melhor >= 2)
+                ? resultado : null;
+    }
+
+    private static String numeros(String nome) {
+        return java.util.regex.Pattern.compile("\\d+").matcher(nome).results()
+                .map(java.util.regex.MatchResult::group).collect(java.util.stream.Collectors.joining(","));
+    }
+
+    private static boolean contemNome(String completo, String trecho) {
+        return (" " + completo + " ").contains(" " + trecho + " ");
+    }
+
+    /** Inserção, remoção, substituição e troca de duas letras vizinhas. */
+    private static int distanciaEdicao(String a, String b) {
+        int[][] d = new int[a.length() + 1][b.length() + 1];
+        for (int i = 0; i <= a.length(); i++) d[i][0] = i;
+        for (int j = 0; j <= b.length(); j++) d[0][j] = j;
+        for (int i = 1; i <= a.length(); i++) {
+            for (int j = 1; j <= b.length(); j++) {
+                int custo = a.charAt(i - 1) == b.charAt(j - 1) ? 0 : 1;
+                d[i][j] = Math.min(Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1), d[i - 1][j - 1] + custo);
+                if (i > 1 && j > 1 && a.charAt(i - 1) == b.charAt(j - 2) && a.charAt(i - 2) == b.charAt(j - 1))
+                    d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+            }
+        }
+        return d[a.length()][b.length()];
+    }
+
     /**
      * Match tolerante entre 2 nomes de bairro. True se um normalizado
      * contém o outro (suficiente pra "Serra Dourada" casar com "Serra Dourada II"

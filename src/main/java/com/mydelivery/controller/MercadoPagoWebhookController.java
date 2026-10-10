@@ -33,7 +33,6 @@ import lombok.extern.slf4j.Slf4j;
 public class MercadoPagoWebhookController {
 
     private final MercadoPagoWebhookService webhookService;
-    private final com.mydelivery.service.WebhookDedupService dedupService;
 
     @PostMapping("/api/webhooks/mercadopago")
     public ResponseEntity<Void> receber(
@@ -50,23 +49,9 @@ public class MercadoPagoWebhookController {
 
         log.info("Webhook MP recebido: type={}, action={}, dataId={}, reqId={}", tipo, acao, dataId, requestId);
 
-        // Dedup: MP reenvia webhook em timeout/retry.
-        // Chave = (type, dataId, action). Sem "action" o dedup era destrutivo pra PIX:
-        // o MP dispara payment.created (status=pending) e depois payment.updated
-        // (status=approved) pro MESMO paymentId — e a segunda notificação era
-        // descartada como "duplicata", fazendo PIX aprovado nunca virar loja liberada
-        // nem faturamento. Com action, cada mudança de status é evento único; retries
-        // do mesmo (type,dataId,action) continuam sendo filtrados. Idempotência de
-        // negócio (Pagamento.aprovar, existsByMpPaymentIdAndStatus) já garante
-        // não-duplicação a jusante caso o mesmo action seja reentregue.
-        String chaveDedup = (tipo == null ? "" : tipo) + ":"
-                + (dataId == null ? "" : dataId) + ":"
-                + (acao == null ? "" : acao);
-        if (!"::".equals(chaveDedup) && !dedupService.tryClaim("mercadopago", chaveDedup)) {
-            log.info("Webhook MP duplicado ignorado: {}", chaveDedup);
-            return ResponseEntity.ok().build();
-        }
-
+        // A deduplicação é feita pelo serviço, na mesma transação da confirmação.
+        // Registrar antes de processar descartava novas atualizações do pagamento
+        // e impedia o retry após falhas de rede/assinatura/configuração.
         var input = new WebhookInput(requestId, signature, tipo, acao, dataId);
         Resultado r = webhookService.processar(input);
 

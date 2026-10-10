@@ -40,6 +40,7 @@ public class EntregadorAppController {
     private final PedidoRepository pedidoRepository;
     private final PedidoService pedidoService;
     private final EntregadorAuthService entregadorAuthService;
+    private final com.mydelivery.service.RastreamentoEntregaService rastreamentoService;
 
     private record Ctx(Long entregadorId, Long restauranteId) {}
 
@@ -153,6 +154,10 @@ public class EntregadorAppController {
         if (p.getEntregador() == null || !p.getEntregador().getId().equals(ctx.entregadorId())) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Pedido não atribuído a você");
         }
+        if (novo == Pedido.Status.ENTREGUE && Boolean.TRUE.equals(p.getRestaurante().getEntregaCodigoConfirmacaoAtivo())
+                && p.getTipo() == Pedido.Tipo.DELIVERY && p.getOrigem() != Pedido.Origem.IFOOD && p.getEntregaCodigoConfirmadoEm() == null) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Informe primeiro o código de confirmação do cliente");
+        }
         // Transição: marca ENTREGUE só vindo de SAIU_ENTREGA (delivery) ou
         // PRONTO (retirada — cliente pode ter pegado direto). Não bloqueia
         // demais combinações pra não engessar fluxo de exceção.
@@ -167,6 +172,74 @@ public class EntregadorAppController {
             liberarEntregadorSeOcioso(ctx.entregadorId(), ctx.restauranteId());
         }
         return ResponseEntity.ok(resp);
+    }
+
+    /** Consentimento informado e explícito antes de iniciar captura do GPS nesta entrega. */
+    @PostMapping("/pedido/{pedidoId}/rastreamento/iniciar")
+    @PreAuthorize("hasRole('ENTREGADOR')")
+    @Transactional
+    public ResponseEntity<Map<String,Object>> iniciarRastreamento(@AuthenticationPrincipal String subject,
+            @PathVariable Long pedidoId, @RequestBody Map<String,Object> body) {
+        Ctx ctx = parseCtx(subject);
+        if (body == null) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Informe o consentimento de localização");
+        Pedido p = pedidoRepository.findByIdForTracking(pedidoId).orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Pedido não encontrado"));
+        validarPedidoDoEntregador(p, ctx);
+        if (p.getTipo() != Pedido.Tipo.DELIVERY || p.getOrigem() == Pedido.Origem.IFOOD)
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Rastreamento disponível apenas em delivery próprio");
+        boolean gpsAtivo = Boolean.TRUE.equals(p.getRestaurante().getRastreamentoEntregaAtivo());
+        boolean consentiu = Boolean.TRUE.equals(body.get("consentimentoInformado"));
+        if (gpsAtivo && !consentiu)
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "É necessário confirmar a autorização de localização");
+        if (p.getStatus() != Pedido.Status.SAIU_ENTREGA) {
+            AtualizarStatusRequest status = new AtualizarStatusRequest(); status.setStatus(Pedido.Status.SAIU_ENTREGA);
+            pedidoService.atualizarStatus(ctx.restauranteId(), pedidoId, status);
+            p = pedidoRepository.findByIdForTracking(pedidoId).orElseThrow();
+        }
+        rastreamentoService.iniciar(p, consentiu);
+        return ResponseEntity.ok(Map.of("rastreamento", gpsAtivo ? "iniciado" : "desativado", "status", "SAIU_ENTREGA"));
+    }
+
+    @PostMapping("/pedido/{pedidoId}/rastreamento/localizacao")
+    @PreAuthorize("hasRole('ENTREGADOR')")
+    @Transactional
+    public ResponseEntity<Void> atualizarLocalizacao(@AuthenticationPrincipal String subject,
+            @PathVariable Long pedidoId, @RequestBody Map<String,Object> body) {
+        Ctx ctx = parseCtx(subject);
+        Pedido p = pedidoRepository.findByIdForTracking(pedidoId).orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Pedido não encontrado"));
+        validarPedidoDoEntregador(p, ctx);
+        try {
+            double lat = Double.parseDouble(String.valueOf(body.get("latitude")));
+            double lng = Double.parseDouble(String.valueOf(body.get("longitude")));
+            Double accuracy = body.get("precisao") == null ? null : Double.valueOf(String.valueOf(body.get("precisao")));
+            long capturadoEm = Long.parseLong(String.valueOf(body.get("capturadoEmMs")));
+            rastreamentoService.atualizarPosicao(p, ctx.entregadorId(), lat, lng, accuracy, capturadoEm);
+        } catch (NumberFormatException ex) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Coordenadas inválidas");
+        }
+        return ResponseEntity.noContent().build();
+    }
+
+    @PostMapping("/pedido/{pedidoId}/confirmar-entrega")
+    @PreAuthorize("hasRole('ENTREGADOR')")
+    @Transactional
+    public ResponseEntity<Map<String,Object>> confirmarEntrega(@AuthenticationPrincipal String subject,
+            @PathVariable Long pedidoId, @RequestBody Map<String,String> body) {
+        Ctx ctx = parseCtx(subject);
+        Pedido p = pedidoRepository.findByIdForTracking(pedidoId).orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Pedido não encontrado"));
+        validarPedidoDoEntregador(p, ctx);
+        if (!rastreamentoService.confirmarCodigo(p, ctx.entregadorId(), body == null ? null : body.get("codigo")))
+            return ResponseEntity.badRequest().body(Map.of("erro", "Código incorreto"));
+        AtualizarStatusRequest sr = new AtualizarStatusRequest(); sr.setStatus(Pedido.Status.ENTREGUE);
+        PedidoResponse resp = pedidoService.atualizarStatus(ctx.restauranteId(), pedidoId, sr);
+        liberarEntregadorSeOcioso(ctx.entregadorId(), ctx.restauranteId());
+        return ResponseEntity.ok(Map.of("status", resp.getStatus()));
+    }
+
+    private void validarPedidoDoEntregador(Pedido p, Ctx ctx) {
+        if (!p.getRestaurante().getId().equals(ctx.restauranteId()))
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Pedido de outro restaurante");
+        if (p.getEntregador() == null || !p.getEntregador().getId().equals(ctx.entregadorId()))
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Pedido não atribuído a você");
     }
 
     /**

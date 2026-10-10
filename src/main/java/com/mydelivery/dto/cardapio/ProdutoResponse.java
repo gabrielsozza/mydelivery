@@ -18,6 +18,10 @@ public class ProdutoResponse {
     private BigDecimal preco;
     /** Preço "de" (riscado no cliente). Null = sem promo. */
     private BigDecimal precoOriginal;
+    private BigDecimal precoPix;
+    private BigDecimal precoDinheiro;
+    private BigDecimal precoDebito;
+    private BigDecimal precoCredito;
     private String fotoUrl;
     private Boolean disponivel;
     private Boolean destaque;
@@ -45,6 +49,10 @@ public class ProdutoResponse {
     private Boolean precoAPartirDe;
     /** CSV de dias da semana ativos ("SEG,QUA,SAB") ou null pra sempre ativo. */
     private String diasSemanaAtivos;
+    @com.fasterxml.jackson.annotation.JsonFormat(pattern = "HH:mm")
+    private java.time.LocalTime horarioInicio;
+    @com.fasterxml.jackson.annotation.JsonFormat(pattern = "HH:mm")
+    private java.time.LocalTime horarioFim;
 
     /** Upsell manual: IDs de produtos sugeridos quando este vai pro carrinho.
      *  Array vazio ou null = usa inteligência automática do cliente-side. */
@@ -66,7 +74,7 @@ public class ProdutoResponse {
         private Boolean obrigatorio;
         private Integer minEscolhas;
         private Integer maxEscolhas;
-        /** SOMA (preço soma ao produto) ou MAIOR (preço do produto vira o mais caro). */
+        /** SOMA, MAIOR ou MEDIA (metade de cada sabor quando há 2 ou 3). */
         private String modoPreco;
         private Boolean permitirNenhuma;
         /** Se true, aparece 1x mesmo em pedidos de N unidades (brinde). */

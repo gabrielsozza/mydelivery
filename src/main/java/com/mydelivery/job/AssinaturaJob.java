@@ -36,12 +36,26 @@ public class AssinaturaJob {
                 .toList();
 
         for (Restaurante restaurante : expirados) {
+            // A confirmação do pagamento pode chegar perto do fim do trial.
+            // Nunca bloquear uma loja que já tem assinatura paga vigente,
+            // mesmo que o status legado do restaurante ainda esteja em TRIAL.
+            var assinatura = assinaturaRepository.findByRestauranteId(restaurante.getId());
+            if (assinatura.isPresent()
+                    && assinatura.get().getStatus() == Assinatura.Status.ATIVA
+                    && assinatura.get().getValidaAte() != null
+                    && assinatura.get().getValidaAte().isAfter(LocalDateTime.now())) {
+                restaurante.setStatus(Restaurante.Status.ATIVO);
+                restaurante.setBloqueadoEm(null);
+                restaurante.setMotivoBloqueio(null);
+                restauranteRepository.save(restaurante);
+                continue;
+            }
             restaurante.setStatus(Restaurante.Status.BLOQUEADO);
             restaurante.setBloqueadoEm(LocalDateTime.now());
             restaurante.setMotivoBloqueio("Trial expirado. Assine um plano para continuar.");
             restauranteRepository.save(restaurante);
 
-            assinaturaRepository.findByRestauranteId(restaurante.getId())
+            assinatura
                     .ifPresent(a -> {
                         a.setStatus(Assinatura.Status.INADIMPLENTE);
                         assinaturaRepository.save(a);

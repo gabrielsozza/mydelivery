@@ -33,6 +33,7 @@ import lombok.extern.slf4j.Slf4j;
 @Component
 @RequiredArgsConstructor
 public class CobrancaAutomaticaJob {
+    @jakarta.persistence.PersistenceContext private jakarta.persistence.EntityManager entityManager;
 
     private final AssinaturaRepository assinaturaRepo;
     private final AssinaturaPagamentoService pagamentoService;
@@ -72,6 +73,9 @@ public class CobrancaAutomaticaJob {
         int ok = 0, falha = 0;
         for (Assinatura a : aCobrar) {
             try {
+                entityManager.refresh(a,jakarta.persistence.LockModeType.PESSIMISTIC_WRITE);
+                if (a.getProximaCobranca()==null || a.getProximaCobranca().isAfter(LocalDateTime.now())
+                        || a.getStatus()==Assinatura.Status.CANCELADA || a.getStatus()==Assinatura.Status.TRIAL) continue;
                 var resp = pagamentoService.cobrarCartaoSalvo(
                         a.getRestaurante(), a.getPlano(), a.getReferenciaGateway());
                 if (Boolean.TRUE.equals(resp.get("aprovado"))) {

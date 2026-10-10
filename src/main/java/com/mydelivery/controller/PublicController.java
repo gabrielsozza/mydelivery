@@ -39,6 +39,8 @@ public class PublicController {
     private final ProdutoRepository produtoRepo;
     private final PedidoService pedidoService;
     private final ConfiguracaoRestauranteRepository configRepo;
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.mydelivery.service.EntregaService entregaService;
 
     @GetMapping("/restaurante/{slug}")
     public ResponseEntity<RestaurantePublicResponse> getRestaurante(@PathVariable String slug) {
@@ -47,9 +49,8 @@ public class PublicController {
 
         // Public Key do MP é segura de expor (designada como pública pelo MP) —
         // usada pelo SDK no browser pra tokenizar cartão sem expor o access token.
-        String mpPublicKey = configRepo.findByRestauranteId(r.getId())
-                .map(cfg -> cfg.getMpPublicKey())
-                .orElse(null);
+        var cfgPagamento = configRepo.findByRestauranteId(r.getId()).orElse(null);
+        String mpPublicKey = cfgPagamento == null ? null : cfgPagamento.getMpPublicKey();
 
         List<RestaurantePublicResponse.BairroAtendidoPublic> bairros = r.getBairrosAtendidos() == null
                 ? List.of()
@@ -60,6 +61,12 @@ public class PublicController {
                             .taxa(b.getTaxa())
                             .build())
                     .toList();
+
+        List<String> modosPublicos = new java.util.ArrayList<>(r.getModos() == null ? List.of() : r.getModos());
+        if (Boolean.TRUE.equals(r.getSomenteRetiradaAtivo())) {
+            modosPublicos.removeIf(m -> "delivery".equalsIgnoreCase(m));
+            if (!modosPublicos.contains("retirada")) modosPublicos.add("retirada");
+        }
 
         RestaurantePublicResponse response = RestaurantePublicResponse.builder()
                 .nome(r.getNome())
@@ -72,7 +79,8 @@ public class PublicController {
                 .taxaEntrega(r.getTaxaEntrega())  // legado — front novo ignora
                 .pedidoMinimo(r.getPedidoMinimo())
                 .freteGratisApartirDe(r.getFreteGratisApartirDe())
-                .modos(r.getModos())
+                .modos(modosPublicos)
+                .somenteRetiradaAtivo(Boolean.TRUE.equals(r.getSomenteRetiradaAtivo()))
                 .pagamentos(r.getPagamentos())
                 // PIX antecipado — só expõe a chave se a flag estiver ativa (evita vazar info sem motivo)
                 .exigirPixAntecipado(Boolean.TRUE.equals(r.getExigirPixAntecipado()))
@@ -83,6 +91,8 @@ public class PublicController {
                 .estado(r.getEstado())
                 .bairrosAtendidos(bairros)
                 .mpPublicKey(mpPublicKey)
+                .pixOnlineDisponivel(com.mydelivery.service.mercadopago.MercadoPagoDisponibilidade.pix(cfgPagamento))
+                .cartaoOnlineDisponivel(com.mydelivery.service.mercadopago.MercadoPagoDisponibilidade.cartao(cfgPagamento))
                 .modoTaxa(r.getModoTaxa() == null ? "BAIRRO" : r.getModoTaxa())
                 .build();
 
@@ -105,17 +115,21 @@ public class PublicController {
                     // Filtro por dia da semana: se produto tem restrição de dias e
                     // hoje não está na lista, esconde do cliente. Sem restrição =
                     // aparece sempre (retrocompat pra 99% dos produtos).
-                    final String hoje = codigoDiaSemanaAtual();
+                    final java.time.ZonedDateTime agora = java.time.ZonedDateTime.now(java.time.ZoneId.of("America/Sao_Paulo"));
                     List<ProdutoPublicResponse> produtos = produtoRepo
                             .findByCategoriaAndDisponivelTrueOrderByOrdem(cat)
                             .stream()
-                            .filter(p -> diasSemanaAceita(p.getDiasSemanaAtivos(), hoje))
+                            .filter(p -> p.disponivelNoHorario(agora))
                             .map(p -> ProdutoPublicResponse.builder()
                             .id(p.getId())
                             .nome(p.getNome())
                             .desc(p.getDescricao())
                             .preco(p.getPreco())
                             .precoOriginal(p.getPrecoOriginal())
+                            .precoPix(p.getPrecoPix())
+                            .precoDinheiro(p.getPrecoDinheiro())
+                            .precoDebito(p.getPrecoDebito())
+                            .precoCredito(p.getPrecoCredito())
                             .imgUrl(p.getFotoUrl())
                             .destaque(Boolean.TRUE.equals(p.getDestaque()))
                             .tipo(p.getTipo() != null ? p.getTipo().name() : "NORMAL")
@@ -200,16 +214,18 @@ public class PublicController {
             return ResponseEntity.ok(Map.of("atendido", false));
         }
 
+        if(com.mydelivery.service.EntregaService.porDistancia(r)) {
+            var cotacao=entregaService.consultarTaxaBairro(r,bairro);
+            var resp=new java.util.HashMap<String,Object>();
+            resp.put("atendido",cotacao.taxa()!=null);resp.put("bairro",cotacao.bairro());resp.put("taxa",cotacao.taxa());
+            return ResponseEntity.ok(resp);
+        }
+
         // Normalização avançada: romanos↔árabicos, sem acento, abreviações
         // (sta→santa, dr→doutor, etc). Garante que "Serra Dourada II" do
         // cadastro casa com "serra dourada 2" digitado pelo cliente, e
         // "Capão" casa com "capao".
-        BairroEntrega match = r.getBairrosAtendidos() == null ? null
-                : r.getBairrosAtendidos().stream()
-                    .filter(b -> b != null && b.getNome() != null)
-                    .filter(b -> com.mydelivery.util.BairroNormalizer.combina(b.getNome(), bairro))
-                    .findFirst()
-                    .orElse(null);
+        BairroEntrega match = com.mydelivery.util.BairroNormalizer.encontrar(r.getBairrosAtendidos(), bairro);
 
         if (match == null) {
             return ResponseEntity.ok(Map.of("atendido", false));
@@ -229,37 +245,5 @@ public class PublicController {
         return n.toLowerCase().trim();
     }
 
-    /**
-     * Código de 3 letras pro dia da semana atual no fuso Brasil.
-     * SEG,TER,QUA,QUI,SEX,SAB,DOM — mesmo padrão do campo Produto.diasSemanaAtivos.
-     */
-    private static String codigoDiaSemanaAtual() {
-        java.time.DayOfWeek d = java.time.LocalDate.now(
-                java.time.ZoneId.of("America/Sao_Paulo")).getDayOfWeek();
-        switch (d) {
-            case MONDAY:    return "SEG";
-            case TUESDAY:   return "TER";
-            case WEDNESDAY: return "QUA";
-            case THURSDAY:  return "QUI";
-            case FRIDAY:    return "SEX";
-            case SATURDAY:  return "SAB";
-            case SUNDAY:    return "DOM";
-            default:        return "";
-        }
-    }
 
-    /**
-     * Retorna true se o produto pode aparecer hoje. Regras:
-     *  - diasCsv null/vazio → sempre aparece (99% dos produtos).
-     *  - diasCsv contém código de hoje → aparece.
-     *  - caso contrário → escondido.
-     * Comparação tolerante a espaços e casing.
-     */
-    private static boolean diasSemanaAceita(String diasCsv, String hoje) {
-        if (diasCsv == null || diasCsv.isBlank()) return true;
-        for (String d : diasCsv.split(",")) {
-            if (d.trim().equalsIgnoreCase(hoje)) return true;
-        }
-        return false;
-    }
 }

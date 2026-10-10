@@ -51,7 +51,7 @@ public class GoogleGeocodingService {
                     .queryParam("address.addressLines", endereco).queryParam("address.regionCode", "BR")
                     .queryParam("languageCode", "pt-BR").build())
                     .header("X-Goog-Api-Key", apiKey)
-                    .header("X-Goog-FieldMask", "results.location,results.addressComponents")
+                    .header("X-Goog-FieldMask", "results.location,results.addressComponents,results.granularity")
                     .retrieve().body(Map.class);
             if (resposta == null || !(resposta.get("results") instanceof List<?> resultados)) return List.of();
             return resultados.stream().filter(Map.class::isInstance)
@@ -84,7 +84,7 @@ public class GoogleGeocodingService {
                 }
             }
             if (rua.isBlank()) return null;
-            return new Localizacao(lat, lng, rua, numero, bairro, cidade, uf, cep);
+            return new Localizacao(lat, lng, rua, numero, bairro, cidade, uf, cep, texto(resultado.get("granularity")));
         } catch (IllegalArgumentException e) { return null; }
     }
 
@@ -95,5 +95,8 @@ public class GoogleGeocodingService {
     private static String texto(Object value) { return value == null ? "" : value.toString().trim(); }
 
     public record Localizacao(double lat, double lng, String rua, String numero, String bairro,
-                              String cidade, String uf, String cep) {}
+                              String cidade, String uf, String cep, String granularity) {
+        public String precisao() { return !numero.isBlank() && "ROOFTOP".equals(granularity) ? "imovel" : "rua"; }
+        public List<String> bairros() { return bairro.isBlank()?List.of():List.of(bairro); }
+    }
 }

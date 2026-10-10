@@ -123,8 +123,13 @@ public class WmixvideoNfeGateway implements NfeGateway {
             } catch (Exception ignored) {}
 
             WSFacade ws = new WSFacade(cfg);
-            NFLoteEnvioRetornoDados dados = ws.enviaLote(lote);
-            NFLoteEnvioRetorno ret = dados.getRetorno();
+            NFLoteEnvio assinado = ws.getLoteAssinado(lote);
+            // infNFeSupl fica fora da referência assinada: prepara o mesmo QR antes do envio e do armazenamento.
+            for (NFNota assinada : assinado.getNotas()) {
+                assinada.getInfoSuplementar().setQrCode(montarQrCodeUrl(req, assinada.getInfo().getChaveAcesso()));
+            }
+            NFLoteEnvioRetorno ret = ws.enviaLoteAssinado(assinado.toString(), DFModelo.NFCE);
+            NFLoteEnvioRetornoDados dados = new NFLoteEnvioRetornoDados(ret, assinado);
             NFProtocoloInfo proto = ret == null ? null : ret.getProtocoloInfo();
 
             String cStat = proto != null ? proto.getStatus() : (ret == null ? null : ret.getStatus());
@@ -137,16 +142,6 @@ public class WmixvideoNfeGateway implements NfeGateway {
             String qr  = aprovada && chave != null
                     ? montarQrCodeUrl(req, chave)
                     : null;
-            // Reescreve o QR dentro do XML pra usar o cscId REAL do dono
-            // (0 no ES). A lib fincatto sempre gera o QR interno com o cscId
-            // do config (forcado 1 pelo workaround), mas o QR no cupom PRECISA
-            // usar o cscId cadastrado na SEFAZ. Sem isso a consulta na SEFAZ
-            // retorna "QR Code Invalido".
-            if (aprovada && xml != null && qr != null) {
-                xml = xml.replaceAll("<qrCode>[^<]*</qrCode>",
-                        "<qrCode><![CDATA[" + qr + "]]></qrCode>");
-            }
-
             log.info("[Fiscal][Wmix] emit cnpj={} n={} → cStat={} motivo={} proto={}",
                     req.emitente().cnpj(), req.numero(), cStat, truncar(motivo, 80), nProt);
             return new ResultadoEmissao(aprovada, cStat, motivo, chave, nProt, xml, qr);
@@ -170,25 +165,29 @@ public class WmixvideoNfeGateway implements NfeGateway {
             NFCancelamentoRetornoDados dados = ws.cancelaNota(
                     req.chaveAcesso(), req.protocoloAutorizacao(), req.justificativa());
 
-            NFEnviaEventoRetorno ret = dados.getRetorno();
-            Integer cStat = ret == null ? null : ret.getCodigoStatusReposta();
-            String motivo = ret == null ? "sem retorno" : ret.getMotivo();
-            String protoCanc = null;
-            List<NFEventoRetorno> evs = ret == null ? null : ret.getEventoRetorno();
-            if (evs != null && !evs.isEmpty()) {
-                protoCanc = evs.get(0).toString();
-            }
-            boolean ok = cStat != null && (cStat == 135 || cStat == 128 || cStat == 155);
-            log.info("[Fiscal][Wmix] canc chave={} → cStat={} motivo={}",
-                    req.chaveAcesso(), cStat, truncar(motivo, 80));
-            return new ResultadoCancelamento(ok, cStat == null ? null : cStat.toString(),
-                    motivo, protoCanc, null);
+            return interpretarCancelamento(dados.getRetorno(), req.chaveAcesso());
         } catch (Exception e) {
             log.error("[Fiscal][Wmix] erro técnico no cancelamento chave={}: {}",
                     req.chaveAcesso(), e.toString());
             return new ResultadoCancelamento(false, "ERRO_TEC",
                     "Falha técnica no cancelamento: " + e.getMessage(), null, null);
         }
+    }
+
+    static ResultadoCancelamento interpretarCancelamento(NFEnviaEventoRetorno ret, String chave) {
+        // 128 confirma apenas o processamento do lote, não o cancelamento.
+        if (ret != null && ret.getEventoRetorno() != null) {
+            for (NFEventoRetorno evento : ret.getEventoRetorno()) {
+                var info = evento.getInfoEventoRetorno();
+                if (info == null || !chave.equals(info.getChave())) continue;
+                Integer status = info.getCodigoStatus();
+                boolean ok = status != null && (status == 135 || status == 155)
+                        && info.getNumeroProtocolo() != null && !info.getNumeroProtocolo().isBlank();
+                return new ResultadoCancelamento(ok, String.valueOf(status), info.getMotivo(), info.getNumeroProtocolo(), evento.toString());
+            }
+        }
+        return new ResultadoCancelamento(false, ret == null ? "SEM_RETORNO" : String.valueOf(ret.getCodigoStatusReposta()),
+                ret == null ? "Sem retorno de cancelamento" : "Cancelamento não confirmado: " + ret.getMotivo(), null, null);
     }
 
     // =================== CONTINGÊNCIA (offline NFC-e, tpEmis=9) ===================
@@ -376,6 +375,10 @@ public class WmixvideoNfeGateway implements NfeGateway {
         int regime = req.emitente().regimeTributario();
         boolean simples = regime == 1 || regime == 4;
 
+        BigDecimal produtos = req.itens().stream().map(it -> scale2(it.quantidade().multiply(it.valorUnitario())))
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal descontoRateado = BigDecimal.ZERO, freteRateado = BigDecimal.ZERO;
+        int indice = 0;
         for (ItemNota it : req.itens()) {
             NFNotaInfoItem item = new NFNotaInfoItem();
             item.setNumeroItem(it.numero());
@@ -396,6 +399,14 @@ public class WmixvideoNfeGateway implements NfeGateway {
             p.setCodigoDeBarrasTributavel("SEM GTIN");
             // indTot obrigatório: 1 = valor do item COMPÕE o total da NF-e.
             p.setCompoeValorNota(com.fincatto.documentofiscal.nfe400.classes.NFProdutoCompoeValorNota.SIM);
+            BigDecimal bruto = scale2(it.quantidade().multiply(it.valorUnitario()));
+            boolean ultimo = ++indice == req.itens().size();
+            BigDecimal descontoItem = ratear(req.desconto(), bruto, produtos, descontoRateado, ultimo);
+            BigDecimal freteItem = ratear(req.frete(), bruto, produtos, freteRateado, ultimo);
+            descontoRateado = descontoRateado.add(descontoItem);
+            freteRateado = freteRateado.add(freteItem);
+            if (descontoItem.signum() > 0) p.setValorDesconto(descontoItem);
+            if (freteItem.signum() > 0) p.setValorFrete(freteItem);
             item.setProduto(p);
 
             item.setImposto(montarImposto(it, simples));
@@ -506,19 +517,19 @@ public class WmixvideoNfeGateway implements NfeGateway {
         return imp;
     }
 
+    static BigDecimal ratear(BigDecimal valor, BigDecimal item, BigDecimal total, BigDecimal acumulado, boolean ultimo) {
+        valor = scale2(valor);
+        if (ultimo) return valor.subtract(acumulado);
+        if (total.signum() <= 0) return BigDecimal.ZERO;
+        // Trunca as parcelas intermediárias: o último item absorve os centavos sem ficar negativo.
+        return valor.multiply(item).divide(total, 2, RoundingMode.DOWN);
+    }
+
     private NFNotaInfoTotal montarTotal(RequisicaoEmissao req) {
         NFNotaInfoTotal total = new NFNotaInfoTotal();
         NFNotaInfoICMSTotal ic = new NFNotaInfoICMSTotal();
-        // Total dos PRODUTOS = SOMA (qtd × preço unit) dos itens — NUNCA o
-        // valorTotal do pedido, que inclui taxa de entrega. SEFAZ compara
-        // vProd com o somatório dos itens (cStat 564 se divergir).
-        BigDecimal vProd = BigDecimal.ZERO;
-        for (ItemNota it : req.itens()) {
-            vProd = vProd.add(it.quantidade().multiply(it.valorUnitario()));
-        }
-        vProd = scale2(vProd);
-        // vNF = vProd (taxa de entrega vira serviço, não entra em NFC-e).
-        // Se algum dia integrarmos frete no XML, aí soma aqui.
+        BigDecimal vProd = req.itens().stream().map(it -> scale2(it.quantidade().multiply(it.valorUnitario())))
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
         ic.setBaseCalculoICMS(BigDecimal.ZERO);
         ic.setValorTotalICMS(BigDecimal.ZERO);
         ic.setValorICMSDesonerado(BigDecimal.ZERO);
@@ -528,16 +539,16 @@ public class WmixvideoNfeGateway implements NfeGateway {
         ic.setValorTotalFundoCombatePobrezaST(BigDecimal.ZERO);
         ic.setValorTotalFundoCombatePobrezaSTRetido(BigDecimal.ZERO);
         ic.setValorTotalDosProdutosServicos(vProd);
-        ic.setValorTotalFrete(BigDecimal.ZERO);
+        ic.setValorTotalFrete(scale2(req.frete()));
         ic.setValorTotalSeguro(BigDecimal.ZERO);
-        ic.setValorTotalDesconto(BigDecimal.ZERO);
+        ic.setValorTotalDesconto(scale2(req.desconto()));
         ic.setValorTotalII(BigDecimal.ZERO);
         ic.setValorTotalIPI(BigDecimal.ZERO);
         ic.setValorTotalIPIDevolvido(BigDecimal.ZERO);
         ic.setValorPIS(BigDecimal.ZERO);
         ic.setValorCOFINS(BigDecimal.ZERO);
         ic.setOutrasDespesasAcessorias(BigDecimal.ZERO);
-        ic.setValorTotalNFe(vProd);
+        ic.setValorTotalNFe(scale2(vProd.subtract(scale2(req.desconto())).add(scale2(req.frete()))));
         total.setIcmsTotal(ic);
         return total;
     }
@@ -703,16 +714,21 @@ public class WmixvideoNfeGateway implements NfeGateway {
 
     // =================== HELPERS ===================
 
-    private static String extrairXmlProc(NFLoteEnvioRetornoDados dados) {
-        // A lib guarda o XML assinado dentro do lote — se disponível,
-        // retornamos como string. Caso a versão da lib não exponha, gravamos
-        // apenas a essência (chave/protocolo) num XML mínimo.
-        try {
-            if (dados != null && dados.getLoteAssinado() != null) {
-                return dados.getLoteAssinado().toString();
-            }
-        } catch (Exception ignored) { /* fallback abaixo */ }
-        return null;
+    static String extrairXmlProc(NFLoteEnvioRetornoDados dados) {
+        if (dados == null || dados.getLoteAssinado() == null || dados.getRetorno() == null
+                || dados.getRetorno().getProtocoloInfo() == null) return null;
+        var info = dados.getRetorno().getProtocoloInfo();
+        var nota = dados.getLoteAssinado().getNotas().stream()
+                .filter(n -> n.getInfo() != null && ("NFe" + info.getChave()).equals(n.getInfo().getIdentificador()))
+                .findFirst().orElseThrow(() -> new IllegalStateException("Protocolo não corresponde ao XML da nota"));
+        var protocolo = new com.fincatto.documentofiscal.nfe400.classes.NFProtocolo();
+        protocolo.setVersao("4.00");
+        protocolo.setProtocoloInfo(info);
+        var processada = new com.fincatto.documentofiscal.nfe400.classes.nota.NFNotaProcessada();
+        processada.setVersao(new BigDecimal("4.00"));
+        processada.setNota(nota);
+        processada.setProtocolo(protocolo);
+        return processada.toString();
     }
 
     private static NFRegimeTributario regimePorCodigo(int c) {

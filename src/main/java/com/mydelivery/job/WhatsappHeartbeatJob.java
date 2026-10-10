@@ -124,8 +124,23 @@ public class WhatsappHeartbeatJob {
                 return Resultado.OK;
             }
 
-            // State != open. Uazapi discorda do nosso banco (achamos CONECTADA).
-            // Rebate: marca DESCONECTADA + registra QUEDA.
+            // /instance/status pode responder "connecting" durante keepalive,
+            // ou usar um token antigo. Confirme no inventário administrativo
+            // antes de remover uma sessão que ainda está ativa no provedor.
+            Boolean conectadaNoInventario = conexaoNoInventario(nome);
+            if (conectadaNoInventario == null) {
+                throw new IllegalStateException("não foi possível confirmar a sessão no inventário do provedor");
+            }
+            if (conectadaNoInventario) {
+                inst.setUltimoHeartbeatEm(agora);
+                inst.setUltimoHeartbeatOk(false);
+                inst.setHeartbeatsFalhadosSeguidos(0);
+                repo.save(inst);
+                log.info("[WAHeartbeat][{}] status={} transitório; inventário confirma conexão ativa", nome, state);
+                return Resultado.FALHA_SOFT;
+            }
+
+            // Ambas as consultas concordam que a sessão caiu.
             inst.setUltimoHeartbeatEm(agora);
             inst.setUltimoHeartbeatOk(false);
             inst.setHeartbeatsFalhadosSeguidos(inst.getHeartbeatsFalhadosSeguidos() + 1);
@@ -152,24 +167,35 @@ public class WhatsappHeartbeatJob {
             inst.setHeartbeatsFalhadosSeguidos(novoContador);
             log.warn("[WAHeartbeat][{}] falha #{} de consulta: {}", nome, novoContador, e.getMessage());
 
-            if (novoContador >= MAX_FALHAS_ANTES_INSTAVEL) {
-                inst.setStatus(WhatsappInstance.Status.DESCONECTADA);
-                inst.setUltimaQuedaEm(agora);
-                inst.setMotivoUltimaQueda("heartbeat: " + novoContador + " falhas seguidas");
-                whatsappService.registrarEventoAuditoria(inst,
-                        WhatsappDesconexaoLog.Tipo.MARCADA_INSTAVEL,
-                        "heartbeat: " + novoContador + " falhas seguidas",
-                        e.getMessage() == null ? null : e.getMessage().substring(0, Math.min(60, e.getMessage().length())),
-                        "CONECTADA", "DESCONECTADA",
-                        null, "wa-hb-" + nome + "-" + System.currentTimeMillis());
-                repo.save(inst);
-                log.error("[WAHeartbeat][{}] MARCADA INSTAVEL após {} falhas — HealthJob vai avaliar reconexão",
+            // Erro de autenticação/rede não prova desconexão do WhatsApp.
+            // Mantém o estado no banco até o inventário confirmar a queda.
+            if (novoContador >= MAX_FALHAS_ANTES_INSTAVEL)
+                log.error("[WAHeartbeat][{}] {} consultas falharam; mantendo CONECTADA até confirmação do provedor",
                         nome, novoContador);
-                return Resultado.MARCADA_INSTAVEL_HARD;
-            }
             repo.save(inst);
             return Resultado.FALHA_SOFT;
         }
+    }
+
+    private Boolean conexaoNoInventario(String nome) {
+        for (Map<String, Object> instancia : uazapiClient.fetchInstancesRaw()) {
+            if (!nome.equals(String.valueOf(instancia.get("name")))) continue;
+            Object conectado = instancia.get("isConnected");
+            Object autenticado = instancia.get("isLogged");
+            if (conectado instanceof Boolean || autenticado instanceof Boolean) {
+                if (Boolean.TRUE.equals(conectado) && Boolean.TRUE.equals(autenticado)) return true;
+                if (Boolean.FALSE.equals(conectado) && Boolean.FALSE.equals(autenticado)) return false;
+                return null;
+            }
+            Object status = instancia.get("status");
+            if (status == null) status = instancia.get("state");
+            if (status == null) return null;
+            String valor = status.toString().toLowerCase(java.util.Locale.ROOT);
+            if (valor.equals("connected") || valor.equals("open")) return true;
+            if (valor.equals("disconnected") || valor.equals("close") || valor.equals("closed")) return false;
+            return null;
+        }
+        return null;
     }
 
     /** Extrai state do formato Evolution { instance: { state: "open" } }. */

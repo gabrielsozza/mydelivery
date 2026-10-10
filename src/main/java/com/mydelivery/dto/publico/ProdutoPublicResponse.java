@@ -14,6 +14,10 @@ public class ProdutoPublicResponse {
     private String imgUrl;
     private BigDecimal preco;
     private BigDecimal precoOriginal;
+    private BigDecimal precoPix;
+    private BigDecimal precoDinheiro;
+    private BigDecimal precoDebito;
+    private BigDecimal precoCredito;
     /** Flag de destaque — produto aparece em seção/escala maior no cardápio do cliente. */
     private Boolean destaque;
     /** Tipo do produto: "NORMAL" ou "COMBO" — frontend usa pra renderizar

@@ -8,6 +8,8 @@ import java.util.Map;
 import jakarta.servlet.http.HttpServletRequest;
 
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -25,11 +27,13 @@ import com.mydelivery.fiscal.model.NotaFiscalEmitida;
 import com.mydelivery.equipe.Permissao;
 import com.mydelivery.equipe.PermissaoRequerida;
 import com.mydelivery.fiscal.repository.NotaFiscalEntradaRepository;
+import com.mydelivery.fiscal.repository.NotaEntradaAnexoRepository;
 import com.mydelivery.fiscal.service.CategoriaTributariaService;
 import com.mydelivery.fiscal.service.CertificadoService;
 import com.mydelivery.fiscal.service.NfceEmissorService;
 import com.mydelivery.fiscal.service.NfceStorageService;
 import com.mydelivery.fiscal.service.NfeEntradaService;
+import com.mydelivery.fiscal.service.NotaEntradaAnexoService;
 import com.mydelivery.fiscal.service.PerfilFiscalService;
 import com.mydelivery.model.Restaurante;
 import com.mydelivery.repository.RestauranteRepository;
@@ -48,6 +52,8 @@ import lombok.extern.slf4j.Slf4j;
 @RequiredArgsConstructor
 public class FiscalController {
 
+    private final com.mydelivery.repository.PedidoRepository pedidoRepo;
+    private final com.mydelivery.repository.ProdutoRepository produtoRepo;
     private final FiscalConfig fiscalConfig;
     private final RestauranteRepository restauranteRepo;
     private final PerfilFiscalRestauranteRepository perfilRepo;
@@ -59,6 +65,8 @@ public class FiscalController {
     private final ContadorNumeroNfceRepository contadorRepo;
     private final NfeEntradaService nfeEntradaService;
     private final NotaFiscalEntradaRepository nfeEntradaRepo;
+    private final NotaEntradaAnexoRepository entradaAnexoRepo;
+    private final NotaEntradaAnexoService entradaAnexoService;
     private final NfceStorageService storage;
     private final com.mydelivery.fiscal.repository.NotaFiscalEmitidaRepository notaRepo;
     private final com.mydelivery.fiscal.service.NfeGateway gateway;
@@ -322,6 +330,9 @@ public class FiscalController {
             @PathVariable Long pedidoId,
             HttpServletRequest req) {
         Restaurante r = exigirAtivo(email);
+        if (!pedidoRepo.existsByIdAndRestauranteId(pedidoId, r.getId())) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("ok", false, "erro", "Pedido não encontrado"));
+        }
         try {
             NotaFiscalEmitida n = emissor.emitirParaPedido(pedidoId, email, ipDe(req));
             Map<String, Object> out = new LinkedHashMap<>();
@@ -398,7 +409,7 @@ public class FiscalController {
         }
         var perfil = perfilRepo.findByRestauranteId(r.getId()).orElse(null);
         if (perfil == null || perfil.getCnpj() == null) return ResponseEntity.notFound().build();
-        String xml = storage.lerXml(perfil.getCnpj(), nota.getChaveAcesso());
+        String xml = storage.lerXml(nota.getCnpj(), nota.getChaveAcesso());
         if (xml == null || xml.isBlank()) return ResponseEntity.notFound().build();
         byte[] body = xml.getBytes(java.nio.charset.StandardCharsets.UTF_8);
         return ResponseEntity.ok()
@@ -428,6 +439,7 @@ public class FiscalController {
      */
     @PostMapping("/reemitir-pendentes")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
     public ResponseEntity<Map<String, Object>> reemitirPendentes(
             @AuthenticationPrincipal String email,
             @RequestBody(required = false) Map<String, Object> body) {
@@ -466,6 +478,7 @@ public class FiscalController {
 
     @PostMapping("/categorias/repropagar")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
     public ResponseEntity<Map<String, Object>> repropagarCategorias(@AuthenticationPrincipal String email) {
         Restaurante r = exigirAtivo(email);
         int cats = categoriaService.repropagarTodas(r);
@@ -480,6 +493,7 @@ public class FiscalController {
      */
     @PostMapping("/categorias/vincular-por-nome")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
     public ResponseEntity<Map<String, Object>> vincularPorNome(
             @AuthenticationPrincipal String email,
             @RequestBody Map<String, Object> body) {
@@ -498,6 +512,7 @@ public class FiscalController {
      */
     @PostMapping("/categorias/vincular-por-id")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
     public ResponseEntity<Map<String, Object>> vincularPorId(
             @AuthenticationPrincipal String email,
             @RequestBody Map<String, Object> body) {
@@ -513,24 +528,31 @@ public class FiscalController {
     /** Diagnóstico do pedido — mostra CFOP/CSOSN gravados pra CADA item. */
     @GetMapping("/pedido/{id}/diag-itens")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
     public ResponseEntity<Map<String, Object>> diagPedidoItens(
             @AuthenticationPrincipal String email, @PathVariable Long id) {
-        exigirAtivo(email);
+        Restaurante r = exigirAtivo(email);
+        if (!pedidoRepo.existsByIdAndRestauranteId(id, r.getId())) return ResponseEntity.notFound().build();
         return ResponseEntity.ok(emissor.diagnosticoItensPedido(id));
     }
 
     /** Diagnóstico do PerfilFiscalProduto de um produto — mostra o CFOP/CSOSN gravados. */
     @GetMapping("/produto/{produtoId}/perfil-fiscal")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
     public ResponseEntity<Map<String, Object>> diagPerfilProduto(
             @AuthenticationPrincipal String email, @PathVariable Long produtoId) {
-        exigirAtivo(email);
+        Restaurante r = exigirAtivo(email);
+        var produto = produtoRepo.findById(produtoId).orElse(null);
+        if (produto == null || produto.getRestaurante() == null || !r.getId().equals(produto.getRestaurante().getId()))
+            return ResponseEntity.notFound().build();
         var perfil = categoriaService.diagnosticoPerfilProduto(produtoId);
         return ResponseEntity.ok(perfil);
     }
 
     @PostMapping("/notas/rejeitadas/limpar")
     @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
     public ResponseEntity<Map<String, Object>> deletarRejeitadas(@AuthenticationPrincipal String email) {
         log.info("[Fiscal][LimparRejeitadas] chamado por {}", email);
         Restaurante r = exigirAtivo(email);
@@ -630,25 +652,23 @@ public class FiscalController {
      */
     @GetMapping("/pedido/{id}/dados-fiscais")
     @PreAuthorize("hasRole('RESTAURANTE')")
-    @PermissaoRequerida(Permissao.VER_FISCAL)
+    @PermissaoRequerida({Permissao.VER_PEDIDOS_DELIVERY, Permissao.VER_PEDIDOS_BALCAO, Permissao.VER_PEDIDOS_MESA, Permissao.VER_FISCAL})
     public ResponseEntity<Map<String, Object>> dadosFiscaisDoPedido(
             @AuthenticationPrincipal String email, @PathVariable Long id) {
-        Restaurante r = exigirAtivo(email);
-        var notas = emissor.listarNotas(r.getId());
-        Map<String, Object> autorizada = notas.stream()
-                .filter(n -> String.valueOf(n.get("pedidoId")).equals(String.valueOf(id)))
-                .filter(n -> "AUTORIZADA".equals(n.get("status")))
-                .findFirst().orElse(null);
-        if (autorizada == null) return ResponseEntity.ok(Map.of("temNota", false));
+        Restaurante r = restauranteRepo.findByUsuarioEmail(email).orElseThrow();
+        if (!pedidoRepo.existsByIdAndRestauranteId(id, r.getId())) return ResponseEntity.notFound().build();
+        var nota = notaRepo.findFirstByRestauranteIdAndPedidoIdAndStatusOrderByIdDesc(
+                r.getId(), id, NotaFiscalEmitida.Status.AUTORIZADA).orElse(null);
+        if (nota == null) return ResponseEntity.ok(Map.of("temNota", false));
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("temNota", true);
-        out.put("chaveAcesso", autorizada.get("chaveAcesso"));
-        out.put("numero", autorizada.get("numero"));
-        out.put("serie", autorizada.get("serie"));
-        out.put("ambiente", autorizada.get("ambiente"));
-        out.put("protocolo", autorizada.get("protocolo"));
-        out.put("qrCodeUrl", autorizada.get("qrCodeUrl"));
-        out.put("emitidaEm", autorizada.get("emitidaEm"));
+        out.put("chaveAcesso", nota.getChaveAcesso());
+        out.put("numero", nota.getNumero());
+        out.put("serie", nota.getSerie());
+        out.put("ambiente", nota.getAmbiente());
+        out.put("protocolo", nota.getProtocolo());
+        out.put("qrCodeUrl", nota.getQrcodeUrlConsulta());
+        out.put("emitidaEm", nota.getEmitidaEm());
         return ResponseEntity.ok(out);
     }
 
@@ -665,6 +685,11 @@ public class FiscalController {
             @RequestBody Map<String, Object> body,
             HttpServletRequest req) {
         Restaurante r = exigirAtivo(email);
+        var existente = notaRepo.findById(id).orElse(null);
+        if (existente == null || existente.getRestaurante() == null
+                || !r.getId().equals(existente.getRestaurante().getId())) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("ok", false, "erro", "Nota não encontrada"));
+        }
         String justif = str(body, "justificativa", "");
         try {
             NotaFiscalEmitida n = emissor.cancelarNota(id, justif, email, ipDe(req));
@@ -915,6 +940,74 @@ public class FiscalController {
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("ok", false));
         }
         nfeEntradaRepo.delete(n);
+        return ResponseEntity.ok(Map.of("ok", true));
+    }
+
+    /** Fotos/PDFs são comprovantes anexos; não são tratados como XML fiscal. */
+    @PostMapping(path = "/notas-entrada/anexos", consumes = "multipart/form-data")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
+    public ResponseEntity<Map<String, Object>> uploadAnexoEntrada(
+            @AuthenticationPrincipal String email,
+            @RequestParam("arquivo") MultipartFile arquivo) {
+        Restaurante r = exigirAtivo(email);
+        try {
+            var anexo = entradaAnexoService.salvar(r, arquivo);
+            return ResponseEntity.ok(Map.of("ok", true, "id", anexo.getId(),
+                    "nomeArquivo", anexo.getNomeArquivo(), "tipoMime", anexo.getTipoMime()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("ok", false, "erro", e.getMessage()));
+        } catch (Exception e) {
+            log.error("[Fiscal][Entrada] Falha ao guardar comprovante rest={}", r.getId(), e);
+            return ResponseEntity.internalServerError().body(Map.of("ok", false,
+                    "erro", "Não foi possível guardar o comprovante."));
+        }
+    }
+
+    @GetMapping("/notas-entrada/anexos")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
+    public ResponseEntity<List<Map<String, Object>>> listarAnexosEntrada(@AuthenticationPrincipal String email) {
+        Restaurante r = exigirAtivo(email);
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (var a : entradaAnexoRepo.listarResumos(r.getId())) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("id", a.getId());
+            item.put("nomeArquivo", a.getNomeArquivo());
+            item.put("tipoMime", a.getTipoMime());
+            item.put("tamanho", a.getTamanho());
+            item.put("criadoEm", a.getCriadoEm() == null ? null : a.getCriadoEm().toString());
+            out.add(item);
+        }
+        return ResponseEntity.ok(out);
+    }
+
+    @GetMapping("/notas-entrada/anexos/{id}/download")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
+    public ResponseEntity<byte[]> baixarAnexoEntrada(
+            @AuthenticationPrincipal String email, @PathVariable Long id) {
+        Restaurante r = exigirAtivo(email);
+        var anexo = entradaAnexoRepo.findByIdAndRestauranteId(id, r.getId())
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, org.springframework.http.ContentDisposition.attachment()
+                        .filename(anexo.getNomeArquivo(), java.nio.charset.StandardCharsets.UTF_8).build().toString())
+                .header("X-Content-Type-Options", "nosniff")
+                .header(HttpHeaders.CACHE_CONTROL, "no-store")
+                .contentType(MediaType.parseMediaType(anexo.getTipoMime()))
+                .body(anexo.getConteudo());
+    }
+
+    @DeleteMapping("/notas-entrada/anexos/{id}")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    @PermissaoRequerida(Permissao.VER_FISCAL)
+    public ResponseEntity<Map<String, Object>> removerAnexoEntrada(
+            @AuthenticationPrincipal String email, @PathVariable Long id) {
+        Restaurante r = exigirAtivo(email);
+        var anexo = entradaAnexoRepo.findByIdAndRestauranteId(id, r.getId())
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+        entradaAnexoRepo.delete(anexo);
         return ResponseEntity.ok(Map.of("ok", true));
     }
 

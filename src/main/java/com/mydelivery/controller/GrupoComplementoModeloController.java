@@ -203,6 +203,7 @@ public class GrupoComplementoModeloController {
                     .obrigatorio(Boolean.TRUE.equals(modelo.getObrigatorio()))
                     .minEscolhas(modelo.getMinEscolhas() != null ? modelo.getMinEscolhas() : 0)
                     .maxEscolhas(modelo.getMaxEscolhas() != null ? modelo.getMaxEscolhas() : 1)
+                    .modoPreco(modelo.getModoPreco() != null ? modelo.getModoPreco() : com.mydelivery.model.ComplementoGrupo.ModoPreco.SOMA)
                     .itens(new java.util.ArrayList<>())
                     .build();
             for (Map<String, Object> it : itensModelo) {
@@ -221,12 +222,17 @@ public class GrupoComplementoModeloController {
                 if (msRaw != null) {
                     try { int n = Integer.parseInt(msRaw.toString()); if (n > 0) maxSel = n; } catch (Exception ignore) {}
                 }
+                String fotoUrl = it.get("fotoUrl") == null ? null : it.get("fotoUrl").toString().trim();
+                if (fotoUrl != null && fotoUrl.isEmpty()) fotoUrl = null;
                 ComplementoItem ci = ComplementoItem.builder()
                         .grupo(novo)
                         .nome(it.get("nome").toString().trim())
                         .descricao(desc)
+                        .fotoUrl(fotoUrl)
+                        .maisPedido(Boolean.parseBoolean(String.valueOf(it.getOrDefault("maisPedido", false))))
                         .precoAdicional(preco)
                         .maxSelecoes(maxSel)
+                        .variavel(Boolean.parseBoolean(String.valueOf(it.getOrDefault("variavel", false))))
                         .ativo(true)
                         .build();
                 novo.getItens().add(ci);
@@ -284,6 +290,7 @@ public class GrupoComplementoModeloController {
         g.setObrigatorio(boolOr(body, "obrigatorio", false));
         g.setMinEscolhas(intOr(body, "minEscolhas", 0));
         g.setMaxEscolhas(intOr(body, "maxEscolhas", 1));
+        g.setModoPreco(parseModoPreco(body.get("modoPreco")));
 
         Object itens = body.get("itens");
         try {
@@ -304,6 +311,7 @@ public class GrupoComplementoModeloController {
         out.put("obrigatorio", Boolean.TRUE.equals(g.getObrigatorio()));
         out.put("minEscolhas", g.getMinEscolhas() != null ? g.getMinEscolhas() : 0);
         out.put("maxEscolhas", g.getMaxEscolhas() != null ? g.getMaxEscolhas() : 1);
+        out.put("modoPreco", g.getModoPreco() != null ? g.getModoPreco().name() : "SOMA");
         // Itens: parse JSON pra array — frontend já consome esse formato
         List<?> itens = List.of();
         if (g.getItensJson() != null && !g.getItensJson().isBlank()) {
@@ -334,5 +342,10 @@ public class GrupoComplementoModeloController {
         Object v = m.get(k);
         if (v == null) return d;
         try { return Integer.parseInt(v.toString()); } catch (Exception e) { return d; }
+    }
+    private static com.mydelivery.model.ComplementoGrupo.ModoPreco parseModoPreco(Object value) {
+        if (value == null) return com.mydelivery.model.ComplementoGrupo.ModoPreco.SOMA;
+        try { return com.mydelivery.model.ComplementoGrupo.ModoPreco.valueOf(value.toString().trim().toUpperCase()); }
+        catch (Exception e) { return com.mydelivery.model.ComplementoGrupo.ModoPreco.SOMA; }
     }
 }

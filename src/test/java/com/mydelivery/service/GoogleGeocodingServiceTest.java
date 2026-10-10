@@ -8,37 +8,46 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class GoogleGeocodingServiceTest {
+
     @Test
-    void parsesBrazilianStreetAddressComponents() {
-        Map<String, Object> result = Map.of(
-                "location", Map.of("latitude", -20.14, "longitude", -40.25),
+    void converteEnderecoBrasileiroCompletoSemConfundirBairroComCidade() {
+        Map<String,Object> resultado = Map.of(
+                "location", Map.of("latitude", -20.144809, "longitude", -40.2590467),
+                "granularity", "ROOFTOP",
+                "viewport", Map.of(
+                        "low", Map.of("latitude", -20.146, "longitude", -40.260),
+                        "high", Map.of("latitude", -20.143, "longitude", -40.258)),
+                "types", List.of("street_address"),
                 "addressComponents", List.of(
-                        component("Rua Rio Jucu", "R. Rio Jucu", "route"),
-                        component("220", "220", "street_number"),
-                        component("Eldorado", "Eldorado", "sublocality", "sublocality_level_1"),
-                        component("Serra", "Serra", "administrative_area_level_2"),
-                        component("Espírito Santo", "ES", "administrative_area_level_1"),
-                        component("29169-220", "29169-220", "postal_code")));
+                        componente("Rua Rio Jucú", "R. Rio Jucú", "route"),
+                        componente("220", "220", "street_number"),
+                        componente("Eldorado", "Eldorado", "sublocality_level_1", "sublocality", "political"),
+                        componente("Serra", "Serra", "administrative_area_level_2", "political"),
+                        componente("Espírito Santo", "ES", "administrative_area_level_1", "political"),
+                        componente("29169-220", "29169-220", "postal_code")));
 
-        var location = GoogleGeocodingService.lerLocalizacao(result);
+        var local = GoogleGeocodingService.lerLocalizacao(resultado);
 
-        assertThat(location).isNotNull();
-        assertThat(location.rua()).isEqualTo("Rua Rio Jucu");
-        assertThat(location.numero()).isEqualTo("220");
-        assertThat(location.bairro()).isEqualTo("Eldorado");
-        assertThat(location.cidade()).isEqualTo("Serra");
-        assertThat(location.uf()).isEqualTo("ES");
-        assertThat(location.cep()).isEqualTo("29169-220");
+        assertThat(local).isNotNull();
+        assertThat(local.precisao()).isEqualTo("imovel");
+        assertThat(local.rua()).isEqualTo("Rua Rio Jucú");
+        assertThat(local.numero()).isEqualTo("220");
+        assertThat(local.bairros()).containsExactly("Eldorado");
+        assertThat(local.cidade()).isEqualTo("Serra");
+        assertThat(local.uf()).isEqualTo("ES");
+        assertThat(local.cep()).isEqualTo("29169-220");
     }
 
     @Test
-    void rejectsCoordinatesWithoutAStreet() {
-        assertThat(GoogleGeocodingService.lerLocalizacao(Map.of(
-                "location", Map.of("latitude", -20.14, "longitude", -40.25),
-                "addressComponents", List.of(component("Serra", "Serra", "locality"))))).isNull();
+    void rejeitaResultadoSemVia() {
+        var resultado = Map.<String,Object>of(
+                "location", Map.of("latitude", -20.1, "longitude", -40.2),
+                "granularity", "APPROXIMATE",
+                "addressComponents", List.of(componente("Serra", "Serra", "locality")));
+        assertThat(GoogleGeocodingService.lerLocalizacao(resultado)).isNull();
     }
 
-    private static Map<String, Object> component(String longText, String shortText, String... types) {
-        return Map.of("longText", longText, "shortText", shortText, "types", List.of(types));
+    private static Map<String,Object> componente(String longo, String curto, String... tipos) {
+        return Map.of("longText", longo, "shortText", curto, "types", List.of(tipos));
     }
 }

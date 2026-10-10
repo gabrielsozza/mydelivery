@@ -1,6 +1,7 @@
 package com.mydelivery.service.whatsapp;
 
 import java.time.LocalDateTime;
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -33,12 +34,8 @@ import org.springframework.http.HttpStatus;
 /**
  * Regras de negócio das campanhas de disparo do WhatsApp.
  *
- * <p>Filosofia: cada método muda estado e devolve o estado atualizado — sem
- * lógica de "fire and forget" aqui dentro. O envio propriamente dito roda
- * no {@link PromoCampanhaSender} (job agendado), que respeita os limites
- * anti-ban configurados no {@code enviarMensagem} do {@link WhatsappService}
- * (rate por hora + rate por número + dedup) e adiciona um cap adicional
- * de broadcast por hora/dia.
+ * O envio roda no PromoCampanhaSender, com horário e ritmo próprios,
+ * preservando os controles por destinatário e a opção PARE.
  */
 @Service
 @RequiredArgsConstructor
@@ -74,7 +71,8 @@ public class PromoCampanhaService {
     private Map<String, String> coletarTelefonesElegiveis(Restaurante restaurante, int minCompras) {
         Set<String> optOuts = new HashSet<>();
         for (PromoOptOut o : optOutRepo.findByRestauranteId(restaurante.getId())) {
-            optOuts.add(o.getTelefone());
+            String tel = normalizarTel(o.getTelefone());
+            if (tel != null) optOuts.add(tel);
         }
 
         // Fonte primária: aba Clientes (cadastro manual + importação + WhatsApp bot)
@@ -101,7 +99,7 @@ public class PromoCampanhaService {
 
     /** Aceita "84999998888", "(84) 99999-8888", "5584999998888". Sempre volta
      *  o formato canônico (só dígitos, sem DDI 55). Rejeita &lt;10 ou &gt;13 dígitos. */
-    private String normalizarTel(String bruto) {
+    static String normalizarTel(String bruto) {
         if (bruto == null) return null;
         String d = bruto.replaceAll("\\D", "");
         if (d.isEmpty()) return null;
@@ -120,6 +118,15 @@ public class PromoCampanhaService {
      */
     @Transactional
     public PromoCampanha criarEDisparar(Restaurante restaurante, String texto, int minCompras) {
+        return criarEDisparar(restaurante, texto, minCompras, null);
+    }
+
+    @Transactional
+    public PromoCampanha criarEDisparar(Restaurante restaurante, String texto, int minCompras, String imagemUrl) {
+        impedirEnvioLegado();
+        if (com.mydelivery.crm.ProspectingPolicy.isStore(restaurante.getId()))
+            throw new ResponseStatusException(org.springframework.http.HttpStatus.CONFLICT, "A loja comercial utiliza exclusivamente a fila do CRM no admin.");
+        String imagemValidada = validarImagemUrl(imagemUrl);
         String textoLimpo = texto == null ? "" : texto.trim();
         if (textoLimpo.isEmpty()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
@@ -159,6 +166,7 @@ public class PromoCampanhaService {
         PromoCampanha campanha = PromoCampanha.builder()
                 .restaurante(restaurante)
                 .texto(textoLimpo)
+                .imagemUrl(imagemValidada)
                 .minCompras(minCompras2)
                 .status(PromoCampanha.Status.ENVIANDO)
                 .criadaEm(LocalDateTime.now())
@@ -183,6 +191,24 @@ public class PromoCampanhaService {
         return campanha;
     }
 
+    static String validarImagemUrl(String imagemUrl) {
+        if (imagemUrl == null || imagemUrl.isBlank()) return null;
+        try {
+            String url = imagemUrl.trim();
+            URI uri = URI.create(url);
+            if (url.length() > 1400 || !"https".equals(uri.getScheme())
+                    || !"res.cloudinary.com".equals(uri.getHost()) || uri.getUserInfo() != null
+                    || uri.getPort() != -1 || uri.getQuery() != null || uri.getFragment() != null
+                    || !uri.getPath().matches("/[^/]+/image/upload/.+")) {
+                throw new IllegalArgumentException();
+            }
+            // JPEG evita depender de suporte a WEBP/HEIC no envio do WhatsApp.
+            return url.replace("/image/upload/", "/image/upload/f_jpg,q_auto,w_1600,c_limit/");
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Escolha uma imagem pelo botão da campanha.");
+        }
+    }
+
     @Transactional
     public PromoCampanha pausar(Restaurante restaurante, Long campanhaId) {
         PromoCampanha c = exigirDoRestaurante(restaurante, campanhaId);
@@ -196,6 +222,7 @@ public class PromoCampanhaService {
 
     @Transactional
     public PromoCampanha retomar(Restaurante restaurante, Long campanhaId) {
+        impedirEnvioLegado();
         PromoCampanha c = exigirDoRestaurante(restaurante, campanhaId);
         if (c.getStatus() != PromoCampanha.Status.PAUSADA) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
@@ -225,6 +252,10 @@ public class PromoCampanhaService {
     @Transactional(readOnly = true)
     public PromoCampanha detalhe(Restaurante restaurante, Long campanhaId) {
         return exigirDoRestaurante(restaurante, campanhaId);
+    }
+
+    private void impedirEnvioLegado() {
+        throw new ResponseStatusException(HttpStatus.CONFLICT, "Recrie esta campanha no novo painel para revisar elegibilidade e consentimento. O histórico foi preservado.");
     }
 
     private PromoCampanha exigirDoRestaurante(Restaurante restaurante, Long campanhaId) {

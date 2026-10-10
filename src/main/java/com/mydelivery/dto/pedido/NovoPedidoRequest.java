@@ -55,6 +55,17 @@ public class NovoPedidoRequest {
     /** "online" = paga agora no site. "entrega" = paga ao receber. Default: entrega. */
     private String modoPagamento;
 
+    private BigDecimal mycashUsado;
+    private String mycashSegredo;
+    private String mycashRequestKey;
+
+    @Data
+    public static class ComplementoDto {
+        private Long grupoId;
+        private Long itemId;
+        private Integer quantidade;
+    }
+
     // ── Inner classes ──
 
     @Data
@@ -86,6 +97,11 @@ public class NovoPedidoRequest {
 
         private BigDecimal preco;
 
+        /** Preço base mostrado ao cliente para a forma de pagamento escolhida. */
+        private BigDecimal precoBasePagamento;
+
         private String obs;
+
+        private List<ComplementoDto> complementos;
     }
 }

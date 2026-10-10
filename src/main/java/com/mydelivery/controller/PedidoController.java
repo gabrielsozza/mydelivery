@@ -15,6 +15,7 @@ import lombok.RequiredArgsConstructor;
 @lombok.extern.slf4j.Slf4j
 public class PedidoController {
     private final PedidoService pedidoService;
+    private final com.mydelivery.metaads.RestaurantMetaTrackingService metaTracking;
     private final RestauranteRepository restauranteRepository;
 
     /**
@@ -31,6 +32,8 @@ public class PedidoController {
                 request == null ? null : request.getPagamento(),
                 request == null || request.getItens() == null ? 0 : request.getItens().size());
         PedidoResponse resp = pedidoService.criarPedido(request);
+        try { if (resp != null && resp.getId() != null) metaTracking.trackConfirmedOrder(resp.getId()); }
+        catch (Exception e) { log.warn("Rastreamento Meta indisponível para pedido {}", resp == null ? null : resp.getId()); }
         log.info("[Pedidos-Novo] criado pedidoId={} total={}",
                 resp == null ? null : resp.getId(),
                 resp == null ? null : resp.getTotal());

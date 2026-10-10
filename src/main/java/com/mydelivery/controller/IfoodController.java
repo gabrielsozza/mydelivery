@@ -36,16 +36,14 @@ public class IfoodController {
 
     private final RestauranteRepository restauranteRepo;
     private final IfoodClient ifoodClient;
+    private final com.mydelivery.service.ifood.IfoodConnectionService connectionService;
 
     @GetMapping("/api/restaurante/ifood/status")
     @PreAuthorize("hasRole('RESTAURANTE')")
     public ResponseEntity<Map<String, Object>> status(@AuthenticationPrincipal String email) {
         Restaurante r = restauranteRepo.findByUsuarioEmail(email).orElseThrow();
-        Map<String, Object> out = new HashMap<>();
-        out.put("conectado", r.getIfoodMerchantId() != null && !r.getIfoodMerchantId().isBlank());
-        out.put("ativo", Boolean.TRUE.equals(r.getIfoodIntegracaoAtiva()));
-        out.put("merchantId", r.getIfoodMerchantId());
-        if (r.getIfoodUltimoPollingEm() != null) {
+        Map<String, Object> out = connectionService.consultar(r);
+        if (Boolean.TRUE.equals(out.get("conectado")) && r.getIfoodUltimoPollingEm() != null) {
             long minutos = Duration.between(r.getIfoodUltimoPollingEm(), LocalDateTime.now()).toMinutes();
             out.put("ultimoPollingEm", r.getIfoodUltimoPollingEm().toString());
             out.put("minutosDesdeUltimoPoll", minutos);
@@ -68,7 +66,15 @@ public class IfoodController {
         if (mid == null || mid.isBlank()) {
             throw new RuntimeException("merchantId é obrigatório");
         }
-        r.setIfoodMerchantId(mid.trim());
+        mid = mid.trim().toLowerCase(java.util.Locale.ROOT);
+        if (!mid.matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"))
+            throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.BAD_REQUEST, "Informe o identificador completo da loja no iFood (merchantId).");
+        var vinculado = restauranteRepo.findByIfoodMerchantId(mid);
+        if (vinculado.isPresent() && !vinculado.get().getId().equals(r.getId()))
+            throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.CONFLICT, "Esta loja do iFood já está vinculada a outro restaurante no myDelivery.");
+        connectionService.exigirAutorizacao(mid);
+        if (!mid.equals(r.getIfoodMerchantId())) r.setIfoodUltimoPollingEm(null);
+        r.setIfoodMerchantId(mid);
         r.setIfoodIntegracaoAtiva(true);
         restauranteRepo.save(r);
         log.info("[iFood] Restaurante {} conectado com merchantId={}", r.getId(), mid);
@@ -83,6 +89,11 @@ public class IfoodController {
             @RequestBody Map<String, Boolean> body) {
         Restaurante r = restauranteRepo.findByUsuarioEmail(email).orElseThrow();
         boolean ativo = Boolean.TRUE.equals(body.get("ativo"));
+        if (ativo) {
+            if (r.getIfoodMerchantId() == null || r.getIfoodMerchantId().isBlank())
+                throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.CONFLICT, "Cadastre a loja antes de ativar a integração.");
+            connectionService.exigirAutorizacao(r.getIfoodMerchantId());
+        }
         r.setIfoodIntegracaoAtiva(ativo);
         restauranteRepo.save(r);
         return ResponseEntity.ok(Map.of("ok", true, "ativo", ativo));
@@ -147,6 +158,10 @@ public class IfoodController {
 
         // 4. checklist de pronto-pra-homologação
         java.util.List<String> bloqueios = new java.util.ArrayList<>();
+        var conexao = connectionService.consultar(r);
+        out.put("autorizacaoLoja", conexao);
+        if (!Boolean.TRUE.equals(conexao.get("conectado")))
+            bloqueios.add(String.valueOf(conexao.getOrDefault("mensagem", "Loja não conectada ao iFood")));
         if (!oauthOk) bloqueios.add("OAuth falhou — confira IFOOD_CLIENT_ID e IFOOD_CLIENT_SECRET no Railway");
         if (r.getIfoodMerchantId() == null || r.getIfoodMerchantId().isBlank())
             bloqueios.add("merchantId não cadastrado — autorize o app no Gestor de Pedidos do iFood e conecte aqui");

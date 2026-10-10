@@ -74,11 +74,13 @@ public class AssinaturaService {
     // se detectar inconsistência real.
     @Transactional
     public Map<String, Object> obterStatus(Restaurante r) {
-        Assinatura a = assinaturaRepository.findByRestauranteId(r.getId()).orElse(null);
+        Assinatura a = assinaturaRepository.findLockedByRestauranteId(r.getId()).orElse(null);
         LocalDateTime agora = LocalDateTime.now();
 
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("planosDisponiveis", listarPlanos(r));
+        out.put("fiscalHabilitado", Boolean.TRUE.equals(r.getFiscalHabilitado()));
+        out.put("valorMensalEssencial", planoCatalogoService.valorAtual(Plano.MENSAL));
 
         // PRIORIDADE MÁXIMA: bloqueio manual do admin. Sobrepõe qualquer outra
         // fase — o dono vê modal com o MOTIVO exato que o admin registrou,
@@ -239,6 +241,35 @@ public class AssinaturaService {
             return out;
         }
 
+        // Uma mensalidade paga garante no mínimo a duração do plano a partir
+        // da confirmação. Em cadastros antigos a cobrança foi reconhecida,
+        // mas validaAte permaneceu no fim do trial e bloqueou a loja dias depois.
+        if (a.getStatus() == Assinatura.Status.ATIVA) {
+            try {
+                var ultimoPago = pagamentoMensalidadeRepository
+                        .findTop12ByRestauranteIdOrderByCriadoEmDesc(r.getId()).stream()
+                        .filter(p -> p.getStatus() == PagamentoMensalidade.Status.PAGO
+                                && p.getPagoEm() != null
+                                && (p.getPlano() == null || p.getPlano() == a.getPlano()))
+                        .map(PagamentoMensalidade::getPagoEm)
+                        .max(LocalDateTime::compareTo);
+                if (ultimoPago.isPresent()) {
+                    LocalDateTime minimoPago = ultimoPago.get().plusMonths(a.getPlano().getDuracaoMeses());
+                    if (fimVigencia.isBefore(minimoPago)) {
+                        log.warn("[Assinatura] corrigindo vigência menor que mensalidade paga para restaurante #{}", r.getId());
+                        a.setValidaAte(minimoPago);
+                        a.setProximaCobranca(minimoPago);
+                        assinaturaRepository.save(a);
+                        fimVigencia = minimoPago;
+                        out.put("validaAte", minimoPago.toString());
+                        out.put("proximaCobranca", minimoPago.toString());
+                    }
+                }
+            } catch (Exception e) {
+                log.warn("[Assinatura] não foi possível conferir a vigência paga da loja #{}: {}", r.getId(), e.getMessage());
+            }
+        }
+
         // Janela máxima permitida: max(ultimaCobranca, agora) + duracaoMeses.
         // CRÍTICO: usar Math.max com AGORA — se ultimaCobranca ficou no passado
         // (ex: data original de compra do restaurante), a correção NÃO pode
@@ -249,7 +280,9 @@ public class AssinaturaService {
         LocalDateTime base = baseCobranca.isBefore(agora) ? agora : baseCobranca;
         LocalDateTime maxValidaAte = base.plusMonths(a.getPlano().getDuracaoMeses())
                 .plusDays(3); // tolerância de 3 dias pra evitar correção em borda
-        if (fimVigencia.isAfter(maxValidaAte)) {
+        boolean beneficioProtegido = a.getBeneficioVigenteAte() != null
+                && !fimVigencia.isAfter(a.getBeneficioVigenteAte());
+        if (fimVigencia.isAfter(maxValidaAte) && !beneficioProtegido) {
             LocalDateTime corrigido = base.plusMonths(a.getPlano().getDuracaoMeses());
             // Só corrige se o resultado ainda for FUTURO — nunca empurra pra passado.
             if (corrigido.isAfter(agora)) {
@@ -268,7 +301,7 @@ public class AssinaturaService {
         // Teto adicional: jamais reporta mais dias do que a duração total do plano.
         // É proteção em profundidade — se algum dado anômalo passar pela correção acima.
         int maxDiasPlano = a.getPlano().getDuracaoMeses() * 31; // 31 = pior caso meses longos
-        if (diasParaVencer > maxDiasPlano) diasParaVencer = maxDiasPlano;
+        if (!beneficioProtegido && diasParaVencer > maxDiasPlano) diasParaVencer = maxDiasPlano;
 
         if (diasParaVencer > 0) {
             out.put("fase", "ATIVA");
@@ -294,7 +327,7 @@ public class AssinaturaService {
         Assinatura a = assinaturaRepository.findByRestauranteId(r.getId())
                 .orElseGet(() -> Assinatura.builder()
                         .restaurante(r)
-                        .valor(planoCatalogoService.valorAtual(plano))
+                        .valor(planoCatalogoService.valorPara(r, plano))
                         .build());
 
         LocalDateTime agora = LocalDateTime.now();
@@ -318,7 +351,7 @@ public class AssinaturaService {
 
         a.setStatus(Assinatura.Status.ATIVA);
         a.setPlano(plano);
-        a.setValor(planoCatalogoService.valorAtual(plano));
+        a.setValor(planoCatalogoService.valorPara(r, plano));
         a.setValidaAte(novoFim);
         a.setProximaCobranca(novoFim);
         a.setUltimaCobranca(agora);
@@ -336,7 +369,7 @@ public class AssinaturaService {
         // Webhook async pro myafiliados-api — só dispara se restaurante veio via link
         try {
             if (afiliadosWebhookService != null) {
-                afiliadosWebhookService.restauranteAssinou(r, plano, planoCatalogoService.valorAtual(plano));
+                afiliadosWebhookService.restauranteAssinou(r, plano, planoCatalogoService.valorPara(r, plano));
             }
         } catch (Exception ignored) { /* fail-safe */ }
 
@@ -344,7 +377,7 @@ public class AssinaturaService {
         try {
             String emailDono = r.getUsuario() != null ? r.getUsuario().getEmail() : null;
             emailService.pagamentoAprovado(emailDono, r.getNome(), plano.getNomeExibicao(),
-                    planoCatalogoService.valorAtual(plano), novoFim);
+                    planoCatalogoService.valorPara(r, plano), novoFim);
         } catch (Exception e) { log.warn("[Email] falha enviar aprovado: {}", e.getMessage()); }
 
         return salva;
@@ -364,7 +397,7 @@ public class AssinaturaService {
         Assinatura a = assinaturaRepository.findByRestauranteId(r.getId())
                 .orElseGet(() -> Assinatura.builder()
                         .restaurante(r)
-                        .valor(planoCatalogoService.valorAtual(plano))
+                        .valor(planoCatalogoService.valorPara(r, plano))
                         .build());
 
         LocalDateTime agora = LocalDateTime.now();
@@ -374,7 +407,7 @@ public class AssinaturaService {
 
         a.setStatus(Assinatura.Status.PENDENTE); // PENDENTE = cartão validado, aguardando trial expirar
         a.setPlano(plano);
-        a.setValor(planoCatalogoService.valorAtual(plano));
+        a.setValor(planoCatalogoService.valorPara(r, plano));
         a.setMetodoPagamento("CARTAO");
         a.setReferenciaGateway(referenciaGateway);
         a.setValidaAte(novoFim);
@@ -468,6 +501,27 @@ public class AssinaturaService {
         return out;
     }
 
+    /** Muda o mensal com Área Fiscal para o mensal essencial após confirmação explícita. */
+    @Transactional
+    public Map<String, Object> mudarParaEssencial(Restaurante r) {
+        Assinatura a = assinaturaRepository.findLockedByRestauranteId(r.getId())
+                .orElseThrow(() -> new RuntimeException("Sem assinatura ativa para trocar"));
+        if (a.getStatus() != Assinatura.Status.ATIVA || a.getPlano() != Plano.MENSAL
+                || !Boolean.TRUE.equals(r.getFiscalHabilitado())) {
+            throw new IllegalArgumentException("A loja não está no plano mensal com Área Fiscal.");
+        }
+        BigDecimal valorEssencial = planoCatalogoService.valorAtual(Plano.MENSAL);
+        r.setFiscalHabilitado(false);
+        r.setValorMensalPersonalizado(null);
+        restauranteRepository.save(r);
+        a.setValor(valorEssencial);
+        assinaturaRepository.save(a);
+        log.info("[Assinatura] Restaurante #{} mudou para o mensal essencial; próxima cobrança R$ {}", r.getId(), valorEssencial);
+        return Map.of("ok", true, "plano", "MENSAL", "valorProximaCobranca", valorEssencial,
+                "fiscalHabilitado", false,
+                "mensagem", "Plano Essencial ativado. O acesso à Área Fiscal foi encerrado; a próxima cobrança será de R$ " + valorEssencial + ".");
+    }
+
     /** Troca apenas o método de pagamento (PIX↔CARTAO). Não cobra nada. */
     @Transactional
     public Assinatura trocarMetodo(Restaurante r, String novoMetodo) {
@@ -537,11 +591,11 @@ public class AssinaturaService {
                 p.setMetodoPagamento(metodo);
                 p.setPlano(plano);
                 p.setPagoEm(pago);
-                p.setValor(planoCatalogoService.valorAtual(plano));
+                p.setValor(planoCatalogoService.valorPara(r, plano));
             } else {
                 p = com.mydelivery.model.PagamentoMensalidade.builder()
                         .restaurante(r)
-                        .valor(planoCatalogoService.valorAtual(plano))
+                        .valor(planoCatalogoService.valorPara(r, plano))
                         .status(com.mydelivery.model.PagamentoMensalidade.Status.PAGO)
                         .metodoPagamento(metodo)
                         .plano(plano)
@@ -565,7 +619,7 @@ public class AssinaturaService {
             if (r != null && r.getUsuario() != null) {
                 var u = r.getUsuario();
                 metaCapiService.subscribe(u.getEmail(), u.getTelefone(), u.getNome(),
-                        planoCatalogoService.valorAtual(plano) == null ? null : planoCatalogoService.valorAtual(plano).doubleValue(),
+                        planoCatalogoService.valorPara(r, plano) == null ? null : planoCatalogoService.valorPara(r, plano).doubleValue(),
                         mpPaymentId);
             }
         } catch (Exception ignored) { /* fail-safe */ }
@@ -598,7 +652,7 @@ public class AssinaturaService {
                     : (mpStatusDetail.length() > 80 ? mpStatusDetail.substring(0, 80) : mpStatusDetail);
             com.mydelivery.model.PagamentoMensalidade p = com.mydelivery.model.PagamentoMensalidade.builder()
                     .restaurante(r)
-                    .valor(plano != null ? planoCatalogoService.valorAtual(plano) : java.math.BigDecimal.ZERO)
+                    .valor(plano != null ? planoCatalogoService.valorPara(r, plano) : java.math.BigDecimal.ZERO)
                     .status(com.mydelivery.model.PagamentoMensalidade.Status.REJEITADO)
                     .metodoPagamento(metodo)
                     .plano(plano)
@@ -616,7 +670,7 @@ public class AssinaturaService {
                 String emailDono = r.getUsuario() != null ? r.getUsuario().getEmail() : null;
                 emailService.pagamentoRecusado(emailDono, r.getNome(),
                         plano != null ? plano.getNomeExibicao() : "—",
-                        plano != null ? planoCatalogoService.valorAtual(plano) : java.math.BigDecimal.ZERO,
+                        plano != null ? planoCatalogoService.valorPara(r, plano) : java.math.BigDecimal.ZERO,
                         motivo);
             }
         } catch (Exception e) {
@@ -639,7 +693,7 @@ public class AssinaturaService {
         if (meses <= 0) throw new RuntimeException("Quantidade de meses deve ser >= 1");
         if (meses > 24) throw new RuntimeException("Limite máximo: 24 meses por vez");
 
-        Assinatura a = assinaturaRepository.findByRestauranteId(r.getId())
+        Assinatura a = assinaturaRepository.findLockedByRestauranteId(r.getId())
                 .orElseGet(() -> Assinatura.builder()
                         .restaurante(r)
                         .valor(java.math.BigDecimal.ZERO)
@@ -652,6 +706,7 @@ public class AssinaturaService {
                 ? a.getValidaAte() : agora;
         LocalDateTime novoFim = base.plusMonths(meses);
         a.setValidaAte(novoFim);
+        a.setBeneficioVigenteAte(novoFim);
         // CRÍTICO: sem atualizar ultimaCobranca, a auto-correção do obterStatus
         // usa a data antiga e ENCOLHE o validaAte pra passado, matando a concessão.
         a.setUltimaCobranca(agora);
@@ -688,11 +743,19 @@ public class AssinaturaService {
         log.info("🎁 Mês grátis concedido — restaurante={}, meses={}, motivo={}, novoFim={}",
                 r.getId(), meses, motivo, novoFim);
 
-        try {
-            String emailDono = r.getUsuario() != null ? r.getUsuario().getEmail() : null;
-            emailService.mesGratisConcedido(emailDono, r.getNome(),
-                    a.getProximaCobranca() != null ? a.getProximaCobranca() : novoFim);
-        } catch (Exception e) { log.warn("[Email] falha enviar mes grátis: {}", e.getMessage()); }
+        String emailDono = r.getUsuario() != null ? r.getUsuario().getEmail() : null;
+        String nomeLoja = r.getNome();
+        LocalDateTime vencimentoInformado = a.getProximaCobranca() != null ? a.getProximaCobranca() : novoFim;
+        Runnable avisar = () -> {
+            try { emailService.mesGratisConcedido(emailDono, nomeLoja, vencimentoInformado); }
+            catch (Exception e) { log.warn("[Email] falha enviar mes grátis: {}", e.getMessage()); }
+        };
+        if (org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive()) {
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                new org.springframework.transaction.support.TransactionSynchronization() {
+                    @Override public void afterCommit() { avisar.run(); }
+                });
+        } else { avisar.run(); }
 
         return salva;
     }

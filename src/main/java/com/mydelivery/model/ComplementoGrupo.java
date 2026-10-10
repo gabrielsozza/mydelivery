@@ -32,6 +32,7 @@ public class ComplementoGrupo {
      * SOMA (padrão) → soma o preço de todos os itens escolhidos (extras, adicionais).
      * MAIOR         → cobra apenas o item mais caro (pizza meio a meio: 2 sabores,
      *                 paga o mais caro dos 2). Aplicado por grupo, não por produto.
+     * MEDIA         → 1 sabor integral; com 2 ou 3, soma metade do preço de cada.
      * Default SOMA garante retrocompat com todos os grupos existentes.
      */
     @Enumerated(EnumType.STRING)
@@ -39,7 +40,7 @@ public class ComplementoGrupo {
     @Builder.Default
     private ModoPreco modoPreco = ModoPreco.SOMA;
 
-    public enum ModoPreco { SOMA, MAIOR }
+    public enum ModoPreco { SOMA, MAIOR, MEDIA }
 
     /**
      * Se true, aparece uma opção "Sem [nome do grupo]" (ex: "Sem carne")

@@ -10,6 +10,7 @@ import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
+import org.springframework.web.client.ResourceAccessException;
 
 import com.mydelivery.config.IfoodProperties;
 
@@ -41,11 +42,19 @@ public class IfoodMerchantClient {
 
     @Autowired
     public IfoodMerchantClient(IfoodClient orderClient, IfoodProperties props) {
+        this(orderClient, criarRestClient(props));
+    }
+
+    IfoodMerchantClient(IfoodClient orderClient, RestClient restClient) {
         this.orderClient = orderClient;
+        this.restClient = restClient;
+    }
+
+    private static RestClient criarRestClient(IfoodProperties props) {
         var factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout((int) java.time.Duration.ofMillis(props.getTimeoutMs()).toMillis());
         factory.setReadTimeout((int) java.time.Duration.ofMillis(props.getTimeoutMs()).toMillis());
-        this.restClient = RestClient.builder()
+        return RestClient.builder()
                 .baseUrl(props.getBaseUrl())
                 .requestFactory(factory)
                 .defaultHeader("User-Agent", "MyDelivery-Merchant/1.0 (+https://mydeliveryfood.com.br)")
@@ -83,18 +92,27 @@ public class IfoodMerchantClient {
      */
     @SuppressWarnings("unchecked")
     public Map<String, Object> detalhesMerchant(String merchantId) {
-        try {
-            return restClient.get()
-                    .uri("/merchant/v1.0/merchants/{id}", merchantId)
-                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + orderClient.obterAccessToken())
-                    .retrieve()
-                    .body(Map.class);
-        } catch (RestClientResponseException e) {
-            log.error("[iFood-Merchant] Detalhe falhou [{}]: {}",
-                    e.getStatusCode(), e.getResponseBodyAsString());
-            throw new IfoodApiException(e.getStatusCode().value(),
-                    e.getResponseBodyAsString(), "GET /merchants/" + merchantId);
+        String token = orderClient.obterAccessToken();
+        for (int tentativa = 0; tentativa < 2; tentativa++) {
+            try {
+                return restClient.get()
+                        .uri("/merchant/v1.0/merchants/{id}", merchantId)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                        .retrieve()
+                        .body(Map.class);
+            } catch (RestClientResponseException e) {
+                if (tentativa == 0 && (e.getStatusCode().value() == 401 || e.getStatusCode().value() == 403)) {
+                    orderClient.invalidarAccessToken(token);
+                    token = orderClient.obterAccessToken();
+                    continue;
+                }
+                log.error("[iFood-Merchant] Detalhe falhou [{}]: {}",
+                        e.getStatusCode(), e.getResponseBodyAsString());
+                throw new IfoodApiException(e.getStatusCode().value(),
+                        e.getResponseBodyAsString(), "GET /merchants/" + merchantId);
+            }
         }
+        throw new IllegalStateException("Consulta da loja não concluída");
     }
 
     /**
@@ -175,18 +193,48 @@ public class IfoodMerchantClient {
 
     /** Remove uma pausa pelo id retornado no create ou no list. */
     public void removerInterrupcao(String merchantId, String interruptionId) {
+        // A exclusão pode ser aplicada mesmo se a conexão encerrar sem resposta.
+        // Consulte a fonte antes de repetir ou informar falha ao restaurante.
+        for (int attempt = 0; attempt < 2; attempt++) {
+            try {
+                restClient.delete()
+                        .uri("/merchant/v1.0/merchants/{merchantId}/interruptions/{id}",
+                                merchantId, interruptionId)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + orderClient.obterAccessToken())
+                        .header(HttpHeaders.CONTENT_LENGTH, "0")
+                        .retrieve()
+                        .toBodilessEntity();
+                return;
+            } catch (ResourceAccessException e) {
+                log.warn("[iFood-Merchant] Resposta da remoção indisponível para pausa {}; conferindo lista (tentativa {})",
+                        interruptionId, attempt + 1);
+                if (confirmarAusencia(merchantId, interruptionId)) return;
+                if (attempt == 0) continue;
+                throw new IfoodApiException(504,
+                        "O iFood não confirmou a remoção. Atualize a lista de pausas e tente novamente se ela continuar aparecendo.",
+                        "DELETE interruption " + interruptionId);
+            } catch (RestClientResponseException e) {
+                boolean reconciliar = e.getStatusCode().value() == 404 || e.getStatusCode().is5xxServerError();
+                if (reconciliar && confirmarAusencia(merchantId, interruptionId)) return;
+                if (e.getStatusCode().is5xxServerError() && attempt == 0) continue;
+                log.error("[iFood-Merchant] Remover pausa falhou [{}]: {}",
+                        e.getStatusCode(), e.getResponseBodyAsString());
+                throw new IfoodApiException(e.getStatusCode().value(),
+                        e.getResponseBodyAsString(), "DELETE interruption " + interruptionId);
+            }
+        }
+    }
+
+    private boolean confirmarAusencia(String merchantId, String interruptionId) {
         try {
-            restClient.delete()
-                    .uri("/merchant/v1.0/merchants/{merchantId}/interruptions/{id}",
-                            merchantId, interruptionId)
-                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + orderClient.obterAccessToken())
-                    .retrieve()
-                    .toBodilessEntity();
-        } catch (RestClientResponseException e) {
-            log.error("[iFood-Merchant] Remover pausa falhou [{}]: {}",
-                    e.getStatusCode(), e.getResponseBodyAsString());
-            throw new IfoodApiException(e.getStatusCode().value(),
-                    e.getResponseBodyAsString(), "DELETE interruption " + interruptionId);
+            var pausas = listarInterrupcoes(merchantId);
+            boolean ausente = pausas != null && pausas.stream()
+                    .noneMatch(pausa -> interruptionId.equals(String.valueOf(pausa.get("id"))));
+            if (ausente) log.info("[iFood-Merchant] Remoção da pausa {} confirmada pela listagem", interruptionId);
+            return ausente;
+        } catch (ResourceAccessException | IfoodApiException e) {
+            log.warn("[iFood-Merchant] Não foi possível confirmar a remoção da pausa {}", interruptionId);
+            return false;
         }
     }
 

@@ -627,6 +627,7 @@ public class ComboController {
         out.put("obrigatorio", Boolean.TRUE.equals(gm.getObrigatorio()));
         out.put("minEscolhas", gm.getMinEscolhas() != null ? gm.getMinEscolhas() : 0);
         out.put("maxEscolhas", gm.getMaxEscolhas() != null ? gm.getMaxEscolhas() : 1);
+        out.put("modoPreco", gm.getModoPreco() != null ? gm.getModoPreco().name() : "SOMA");
         List<Map<String, Object>> itens = new ArrayList<>();
         if (gm.getItensJson() != null && !gm.getItensJson().isBlank()) {
             try {
@@ -639,6 +640,9 @@ public class ComboController {
                     Map<String, Object> mi = new HashMap<>();
                     mi.put("id", gm.getId() * 1000 + (idx++)); // ID sintético único
                     mi.put("nome", it.get("nome").toString());
+                    mi.put("descricao", it.get("descricao"));
+                    mi.put("fotoUrl", it.get("fotoUrl"));
+                    mi.put("maisPedido", Boolean.parseBoolean(String.valueOf(it.getOrDefault("maisPedido", false))));
                     BigDecimal preco = BigDecimal.ZERO;
                     Object pr = it.get("precoAdicional");
                     if (pr != null) {
@@ -663,6 +667,7 @@ public class ComboController {
         out.put("obrigatorio", Boolean.TRUE.equals(g.getObrigatorio()));
         out.put("minEscolhas", g.getMinEscolhas() != null ? g.getMinEscolhas() : 0);
         out.put("maxEscolhas", g.getMaxEscolhas() != null ? g.getMaxEscolhas() : 1);
+        out.put("modoPreco", g.getModoPreco() != null ? g.getModoPreco().name() : "SOMA");
         // "1x por combo": frontend usa pra evitar replicar o grupo por unidade.
         out.put("umaVezPorCombo", Boolean.TRUE.equals(g.getUmaVezPorCombo()));
         List<Map<String, Object>> itens = new ArrayList<>();
@@ -672,6 +677,9 @@ public class ComboController {
                 Map<String, Object> mi = new HashMap<>();
                 mi.put("id", i.getId());
                 mi.put("nome", i.getNome());
+                mi.put("descricao", i.getDescricao());
+                mi.put("fotoUrl", i.getFotoUrl());
+                mi.put("maisPedido", Boolean.TRUE.equals(i.getMaisPedido()));
                 mi.put("precoAdicional", i.getPrecoAdicional() != null
                         ? i.getPrecoAdicional() : BigDecimal.ZERO);
                 itens.add(mi);

@@ -48,7 +48,7 @@ class AssinaturaServiceUpsertTest {
         long mpPaymentId = 12345L;
         Restaurante r = new Restaurante();
         r.setId(1L);
-        when(planoCatalogoService.valorAtual(Plano.MENSAL)).thenReturn(new BigDecimal("99.90"));
+        when(planoCatalogoService.valorPara(r, Plano.MENSAL)).thenReturn(new BigDecimal("99.90"));
 
         // Linha PENDENTE preexistente (criada em criarPix)
         PagamentoMensalidade preexistente = PagamentoMensalidade.builder()
@@ -80,6 +80,7 @@ class AssinaturaServiceUpsertTest {
         assertThat(salvo.getStatus()).isEqualTo(PagamentoMensalidade.Status.PAGO);
         assertThat(salvo.getPagoEm()).isEqualTo(pagoEm);
         assertThat(salvo.getMpPaymentId()).isEqualTo(mpPaymentId);
+        assertThat(salvo.getValor()).isEqualByComparingTo("99.90");
     }
 
     @Test
@@ -94,7 +95,7 @@ class AssinaturaServiceUpsertTest {
         long mpPaymentId = 22222L;
         Restaurante r = new Restaurante();
         r.setId(2L);
-        when(planoCatalogoService.valorAtual(Plano.SEMESTRAL)).thenReturn(new BigDecimal("499.00"));
+        when(planoCatalogoService.valorPara(r, Plano.SEMESTRAL)).thenReturn(new BigDecimal("499.00"));
         when(pmRepo.existsByMpPaymentIdAndStatus(anyLong(), any())).thenReturn(false);
         when(pmRepo.findByMpPaymentId(mpPaymentId)).thenReturn(Optional.empty());
 

@@ -66,6 +66,8 @@ public class Pedido {
     @Column(precision=10,scale=2) private BigDecimal taxaEntrega=BigDecimal.ZERO;
     @Column(precision=10,scale=2) private BigDecimal desconto=BigDecimal.ZERO;
     @Column(precision=10,scale=2) private BigDecimal total;
+    @Column(name="mycash_usado", precision=10, scale=2) @Builder.Default
+    private BigDecimal mycashUsado = BigDecimal.ZERO;
     @Column(name="cupom_codigo", length=40) private String cupomCodigo;
     @Column(name="pontos_ganhos") private Integer pontosGanhos;
     @Column(columnDefinition="TEXT") private String observacao;
@@ -78,6 +80,7 @@ public class Pedido {
     private Boolean pago = false;
     @Column(name="pago_em")
     private LocalDateTime pagoEm;
+    @Column(length = 1200)
     private String enderecoEntrega;
     @Column(name="agendado_para") private LocalDateTime agendadoPara;
 
@@ -111,6 +114,32 @@ public class Pedido {
     @Column(name="ifood_display_id", length=20)
     private String ifoodDisplayId;
 
+    /** Chave idempotente da confirmação de repetição WhatsApp. */
+    @Column(name = "whatsapp_repeticao_conversa_id", unique = true)
+    private Long whatsappRepeticaoConversaId;
+
+    // Rastreamento temporário, armazenado no próprio pedido para manter o isolamento por loja.
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    @Column(name="rastreamento_token_hash", length=64, unique=true)
+    private String rastreamentoTokenHash;
+    @jakarta.persistence.Transient @com.fasterxml.jackson.annotation.JsonIgnore
+    private String rastreamentoTokenTemporario;
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    @Column(name="rastreamento_token_anterior_hash", length=64, unique=true)
+    private String rastreamentoTokenAnteriorHash;
+    @com.fasterxml.jackson.annotation.JsonIgnore @Column(name="rastreamento_expira_em") private LocalDateTime rastreamentoExpiraEm;
+    @com.fasterxml.jackson.annotation.JsonIgnore @Column(name="rastreamento_consentido_em") private LocalDateTime rastreamentoConsentidoEm;
+    @com.fasterxml.jackson.annotation.JsonIgnore @Column(name="destino_latitude", precision=10, scale=7) private BigDecimal destinoLatitude;
+    @com.fasterxml.jackson.annotation.JsonIgnore @Column(name="destino_longitude", precision=10, scale=7) private BigDecimal destinoLongitude;
+    @com.fasterxml.jackson.annotation.JsonIgnore @Column(name="entregador_latitude", precision=10, scale=7) private BigDecimal entregadorLatitude;
+    @com.fasterxml.jackson.annotation.JsonIgnore @Column(name="entregador_longitude", precision=10, scale=7) private BigDecimal entregadorLongitude;
+    @com.fasterxml.jackson.annotation.JsonIgnore @Column(name="entregador_localizacao_em") private LocalDateTime entregadorLocalizacaoEm;
+    @com.fasterxml.jackson.annotation.JsonIgnore @Column(name="entrega_codigo_hash", length=64) private String entregaCodigoHash;
+    @com.fasterxml.jackson.annotation.JsonIgnore @Column(name="entrega_codigo_expira_em") private LocalDateTime entregaCodigoExpiraEm;
+    @com.fasterxml.jackson.annotation.JsonIgnore @Builder.Default @Column(name="entrega_codigo_tentativas", nullable=false) private Integer entregaCodigoTentativas=0;
+    @com.fasterxml.jackson.annotation.JsonIgnore @Column(name="entrega_codigo_confirmado_em") private LocalDateTime entregaCodigoConfirmadoEm;
+    @com.fasterxml.jackson.annotation.JsonIgnore @Column(name="rastreamento_notificacao_tentada_em") private LocalDateTime rastreamentoNotificacaoTentadaEm;
+
     @OneToMany(mappedBy="pedido",cascade=CascadeType.ALL,orphanRemoval=true) private List<PedidoItem> itens=new ArrayList<>();
     @CreationTimestamp private LocalDateTime criadoEm;
     @UpdateTimestamp private LocalDateTime atualizadoEm;
@@ -134,5 +163,5 @@ public class Pedido {
     /** Canal de origem do pedido. Permite distinguir visualmente no painel
      *  (badge com logo) e tratar fluxos específicos (ex.: pedido iFood já vem
      *  pago, não precisa de "marcar como pago"). */
-    public enum Origem { MYDELIVERY, IFOOD }
+    public enum Origem { MYDELIVERY, IFOOD, WHATSAPP_REPETICAO }
 }

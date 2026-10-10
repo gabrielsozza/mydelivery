@@ -104,11 +104,17 @@ public class IfoodClient {
             return token;
         } catch (RestClientResponseException e) {
             log.error("[iFood] Falha OAuth [{}]: {}", e.getStatusCode(), e.getResponseBodyAsString());
-            throw new RuntimeException("iFood OAuth falhou: " + e.getStatusCode());
+            throw new IfoodApiException(e.getStatusCode().value(), truncar(e.getResponseBodyAsString()), "OAuth");
         } catch (Exception e) {
             log.error("[iFood] Erro inesperado no OAuth: {}", e.getMessage());
             throw new RuntimeException("iFood OAuth indisponível");
         }
+    }
+
+    /** Uma autorização nova de loja pode exigir um token emitido depois do aceite. */
+    public synchronized void invalidarAccessToken(String tokenUtilizado) {
+        TokenCache atual = tokenCache.get();
+        if (atual != null && atual.accessToken.equals(tokenUtilizado)) tokenCache.set(null);
     }
 
     // ── Events Polling ───────────────────────────────────────────────────
@@ -136,10 +142,10 @@ public class IfoodClient {
         } catch (RestClientResponseException e) {
             log.warn("[iFood] Polling falhou [{}]: {}", e.getStatusCode(),
                     truncar(e.getResponseBodyAsString()));
-            return List.of();
+            throw new IfoodApiException(e.getStatusCode().value(), truncar(e.getResponseBodyAsString()), "polling");
         } catch (Exception e) {
             log.warn("[iFood] Polling: rede indisponível ({})", e.getMessage());
-            return List.of();
+            throw new IllegalStateException("Não foi possível consultar eventos do iFood", e);
         }
     }
 

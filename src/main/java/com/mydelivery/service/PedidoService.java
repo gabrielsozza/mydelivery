@@ -35,6 +35,11 @@ import lombok.extern.slf4j.Slf4j;
 @RequiredArgsConstructor
 public class PedidoService {
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.mydelivery.beneficios.MyCashService mycash;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.mydelivery.repository.PagamentoRepository pagamentoRepository;
+
     private final PedidoRepository pedidoRepository;
     private final RestauranteRepository restauranteRepository;
     private final ProdutoRepository produtoRepository;
@@ -50,6 +55,7 @@ public class PedidoService {
     private final EstoqueService estoqueService;
     private final PagamentoService pagamentoService;
     private final HorarioLojaService horarioLojaService;
+    private final com.mydelivery.repository.ComplementoGrupoRepository complementoGrupoRepository;
 
     /** Módulo fiscal — auto-emissão de NFC-e quando pedido vira ENTREGUE.
      *  Opcional: se módulo fiscal não estiver no classpath, PedidoService segue
@@ -68,6 +74,8 @@ public class PedidoService {
      *  acompanhamento pro cliente via WhatsApp logo após pedido criado. */
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.mydelivery.service.whatsapp.WhatsappBotService whatsappBotService;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private RastreamentoEntregaService rastreamentoEntregaService;
 
     /** Opcional — só usado no modo RAIO. Calcula taxa por distância
      *  Haversine + zona circular do restaurante. */
@@ -81,10 +89,55 @@ public class PedidoService {
         try { return new java.math.BigDecimal(v); } catch (Exception e) { return null; }
     }
 
+    // O fallback por bairro usa exclusivamente cobertura e preço cadastrados pela loja.
+    public BigDecimal calcularTaxaEntrega(Restaurante restaurante, java.util.Map<String, String> endereco) {
+        if (EntregaService.porDistancia(restaurante)) {
+            if (entregaService == null) throw new IllegalArgumentException("Não foi possível consultar a entrega. Tente novamente.");
+            String bairro = endereco == null ? null : endereco.get("bairro");
+            var end = endereco == null ? java.util.Map.<String,String>of() : endereco;
+            var cotacao = "TRAJETO".equalsIgnoreCase(restaurante.getModoTaxa())
+                    ? entregaService.consultarTaxaEndereco(restaurante,end.get("rua"),end.get("numero"),bairro,
+                        end.get("cidade"),end.get("estado"),end.get("cep"))
+                    : entregaService.consultarTaxaBairro(restaurante,bairro);
+            if (cotacao.taxa()==null) throw new RuntimeException("Desculpe, nossa loja ainda não entrega nesse bairro.");
+            // Coordenadas enviadas por clientes antigos não alteram a taxa final do bairro.
+            return cotacao.taxa();
+        }
+        String bairro = endereco == null ? null : endereco.get("bairro");
+        if (bairro == null || bairro.isBlank()) throw new RuntimeException("Informe o bairro de entrega.");
+        BigDecimal taxa = buscarTaxaPorBairro(restaurante, bairro);
+        if (taxa == null) throw new RuntimeException("Desculpe, nossa loja ainda não entrega nessa região.");
+        return taxa;
+    }
+
     @Transactional
     public PedidoResponse criarPedido(NovoPedidoRequest request) {
+        return criarPedidoInterno(request, Pedido.Origem.MYDELIVERY, null);
+    }
+
+    /** Criação pelo fluxo oficial, com canal de origem específico. */
+    @Transactional
+    public PedidoResponse criarPedidoViaWhatsappRepeticao(NovoPedidoRequest request) {
+        return criarPedidoViaWhatsappRepeticao(request, null);
+    }
+
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.REQUIRES_NEW)
+    public PedidoResponse criarPedidoViaWhatsappRepeticao(NovoPedidoRequest request, Long conversaId) {
+        if (conversaId != null) {
+            var existente = pedidoRepository.findByWhatsappRepeticaoConversaId(conversaId);
+            if (existente.isPresent()) return toResponse(existente.get());
+        }
+        return criarPedidoInterno(request, Pedido.Origem.WHATSAPP_REPETICAO, conversaId);
+    }
+
+    private PedidoResponse criarPedidoInterno(NovoPedidoRequest request, Pedido.Origem origem, Long repeticaoConversaId) {
         Restaurante restaurante = restauranteRepository.findBySlug(request.getSlug())
                 .orElseThrow(() -> new RuntimeException("Restaurante nao encontrado"));
+
+        if (Boolean.TRUE.equals(restaurante.getSomenteRetiradaAtivo())
+                && "delivery".equalsIgnoreCase(request.getModo())) {
+            throw new RuntimeException("Hoje estamos atendendo apenas por retirada no local. Entregas estão pausadas.");
+        }
 
         // Validação de aceitação de pedidos:
         //  - Se a loja está manualmente fechada (aberto=false), recusa.
@@ -103,6 +156,13 @@ public class PedidoService {
             }
         }
 
+        if (mycash != null) {
+            Long existing = mycash.prepare(restaurante.getId(), request);
+            if (existing != null) return toResponse(pedidoRepository.findById(existing).orElseThrow());
+        }
+        if ("delivery".equalsIgnoreCase(request.getModo())) {
+            request.setEndereco(com.mydelivery.util.EnderecoPedidoValidator.validar(request.getEndereco()));
+        }
         Cliente cliente = null;
         if (request.getCliente() != null && request.getCliente().getTelefone() != null) {
             // Sempre normaliza: só dígitos. Garante que telefones com/sem máscara
@@ -167,28 +227,7 @@ public class PedidoService {
         //          Sistema aplica taxa da zona circular que cobre a distância.
         BigDecimal taxaEntrega = BigDecimal.ZERO;
         if ("delivery".equalsIgnoreCase(request.getModo())) {
-            boolean modoRaio = "RAIO".equalsIgnoreCase(restaurante.getModoTaxa());
-            if (modoRaio && entregaService != null) {
-                java.math.BigDecimal lat = decDoEndereco(request.getEndereco(), "latitude");
-                java.math.BigDecimal lng = decDoEndereco(request.getEndereco(), "longitude");
-                if (lat == null || lng == null) {
-                    throw new RuntimeException("Endereço não localizado no mapa — confira e tente novamente.");
-                }
-                taxaEntrega = entregaService.calcularTaxaPorRaio(restaurante, lat.doubleValue(), lng.doubleValue());
-                if (taxaEntrega == null) {
-                    throw new RuntimeException("Desculpe, sua localização está fora da nossa área de entrega.");
-                }
-            } else {
-                String bairroCliente = request.getEndereco() == null ? null
-                        : request.getEndereco().getOrDefault("bairro", null);
-                if (bairroCliente == null || bairroCliente.isBlank()) {
-                    throw new RuntimeException("Informe o bairro de entrega.");
-                }
-                taxaEntrega = buscarTaxaPorBairro(restaurante, bairroCliente);
-                if (taxaEntrega == null) {
-                    throw new RuntimeException("Desculpe, nossa loja ainda não entrega nessa região.");
-                }
-            }
+            taxaEntrega = calcularTaxaEntrega(restaurante, request.getEndereco());
         }
 
         // ── Mesa (presencial) ──
@@ -243,6 +282,9 @@ public class PedidoService {
         Pedido.ModoPagamento modoPagamento = "online".equalsIgnoreCase(request.getModoPagamento())
                 ? Pedido.ModoPagamento.ONLINE
                 : Pedido.ModoPagamento.NA_ENTREGA;
+        if (modoPagamento == Pedido.ModoPagamento.ONLINE) {
+            pagamentoService.validarConfiguracaoOnline(restaurante, fp);
+        }
         String enderecoStr = null;
         if (request.getEndereco() != null && !request.getEndereco().isEmpty()) {
             if ("delivery".equalsIgnoreCase(request.getModo())) {
@@ -282,6 +324,8 @@ public class PedidoService {
         }
         Pedido pedido = new Pedido();
         pedido.setRestaurante(restaurante);
+        pedido.setOrigem(origem);
+        pedido.setWhatsappRepeticaoConversaId(repeticaoConversaId);
         pedido.setCliente(cliente);
         pedido.setMesa(mesa);
         pedido.setNomeClienteMesa(nomeClienteMesa);
@@ -289,6 +333,30 @@ public class PedidoService {
         pedido.setFormaPagamento(fp);
         pedido.setModoPagamento(modoPagamento);
         pedido.setEnderecoEntrega(enderecoStr);
+        // Só grava o destino se o provedor confirmar o imóvel e o número exatos.
+        // Coordenadas enviadas pelo navegador nunca são tratadas como confiáveis.
+        if (tipo == Pedido.Tipo.DELIVERY && Boolean.TRUE.equals(restaurante.getRastreamentoEntregaAtivo())
+                && entregaService != null && request.getEndereco() != null) {
+            try {
+                var end = request.getEndereco();
+                String rua = end.getOrDefault("rua", ""), numero = end.getOrDefault("numero", ""), bairro = end.getOrDefault("bairro", "");
+                String cidade = restaurante.getCidade() == null ? "" : restaurante.getCidade();
+                String uf = restaurante.getEstado() == null ? "" : restaurante.getEstado();
+                if (!rua.isBlank() && !numero.isBlank() && !bairro.isBlank() && !cidade.isBlank() && uf.length() == 2) {
+                    String query = rua + ", " + numero + ", " + bairro + ", " + cidade + ", " + uf;
+                    var candidatos = entregaService.localizar(query, restaurante.getEnderecoLatitude() == null ? null : restaurante.getEnderecoLatitude().doubleValue(),
+                            restaurante.getEnderecoLongitude() == null ? null : restaurante.getEnderecoLongitude().doubleValue());
+                    candidatos.stream().filter(l -> "imovel".equals(l.precisao())
+                                    && EntregaService.correspondeEndereco(l, rua, numero, bairro, cidade, uf, ""))
+                            .findFirst().ifPresent(l -> {
+                                pedido.setDestinoLatitude(BigDecimal.valueOf(l.lat()));
+                                pedido.setDestinoLongitude(BigDecimal.valueOf(l.lng()));
+                            });
+                }
+            } catch (Exception ex) {
+                log.info("Destino não geocodificado para pedido; mapa mostrará o endereço textual: {}", pedido.getId());
+            }
+        }
         pedido.setObservacao(request.getTroco() != null ? "Troco para: " + request.getTroco() : null);
         pedido.setTaxaEntrega(taxaEntrega);
         // Agendamento opcional: se vier preenchido e for futuro, o pedido fica marcado como agendado
@@ -314,8 +382,15 @@ public class PedidoService {
         for (NovoPedidoRequest.ItemDto itemReq : request.getItens()) {
             Produto produto = produtoRepository.findById(itemReq.getProdutoId())
                     .orElseThrow(() -> new RuntimeException("Produto nao encontrado: " + itemReq.getProdutoId()));
-            // Preço base do produto (do banco). É o piso — cliente nunca paga menos.
-            BigDecimal precoUnit = produto.getPreco();
+            if (!Boolean.TRUE.equals(produto.getDisponivel()) || !produto.disponivelNoHorario(
+                    java.time.ZonedDateTime.now(java.time.ZoneId.of("America/Sao_Paulo")))) {
+                throw new org.springframework.web.server.ResponseStatusException(
+                        org.springframework.http.HttpStatus.CONFLICT,
+                        "Este produto não está disponível neste horário. Atualize o cardápio.");
+            }
+            // O servidor escolhe o preço pelo meio informado no pedido. O valor
+            // enviado pelo navegador só pode acrescentar complementos.
+            BigDecimal precoUnit = precoParaPagamento(produto, request.getPagamento());
 
             // ── COBRANÇA DE COMPLEMENTOS — SEM VÁLVULA DE ESCAPE (Ago/2026) ──
             // Regra de DINHEIRO, à prova de perda: o preço unitário cobrado é o
@@ -345,9 +420,32 @@ public class PedidoService {
                 precoUnit = (frontTemPreco ? precoFront : BigDecimal.ZERO).max(porObs);
                 if (precoUnit.compareTo(BigDecimal.ZERO) <= 0) precoUnit = produto.getPreco();
             } else {
+                if (temPrecosPorPagamento(produto)) {
+                    BigDecimal baseMostrada = itemReq.getPrecoBasePagamento();
+                    // Clientes com cardápio antigo continuam podendo pedir pelo
+                    // preço padrão; só exigimos atualização se o método mudar o valor.
+                    if (baseMostrada == null && precoUnit.compareTo(produto.getPreco()) == 0)
+                        baseMostrada = produto.getPreco();
+                    if (baseMostrada == null || baseMostrada.compareTo(precoUnit) != 0) {
+                        throw new org.springframework.web.server.ResponseStatusException(
+                                org.springframework.http.HttpStatus.CONFLICT,
+                                "O preço deste produto mudou. Atualize o cardápio e confira o total antes de pedir.");
+                    }
+                    BigDecimal extrasFront = frontTemPreco ? precoFront.subtract(baseMostrada).max(BigDecimal.ZERO) : BigDecimal.ZERO;
+                    precoUnit = precoUnit.add(extrasFront.max(extrasObs));
+                } else {
                 BigDecimal porObs = precoUnit.add(extrasObs);            // base + complementos da obs
                 BigDecimal porFront = frontTemPreco ? precoFront : BigDecimal.ZERO;
                 precoUnit = porFront.max(porObs).max(precoUnit);         // maior das três, piso = base
+                }
+            }
+            // Grupos MAIOR são recalculados pelo catálogo. Os preços escritos
+            // na observação descrevem os sabores, não parcelas a somar.
+            if (complementoGrupoRepository != null) {
+                var grupos = complementoGrupoRepository.findByProdutoIdOrderByIdAsc(produto.getId());
+                BigDecimal porGrupo = PrecoComplementosMaior.calcular(produto, itemReq, grupos,
+                        precoParaPagamento(produto, request.getPagamento()));
+                if (porGrupo != null) precoUnit = porGrupo;
             }
             BigDecimal itemSub = precoUnit.multiply(BigDecimal.valueOf(itemReq.getQty()));
             PedidoItem item = new PedidoItem();
@@ -409,7 +507,13 @@ public class PedidoService {
         pedido.setTotal(totalCalc);
 
         // Agendamento opcional já está setado acima — só pra deixar claro
-        Pedido salvo = pedidoRepository.save(pedido);
+        if (mycash != null) mycash.apply(pedido, request);
+        Pedido salvo = pedidoRepository.saveAndFlush(pedido);
+        if (rastreamentoEntregaService != null) {
+            rastreamentoEntregaService.prepararLinkCliente(salvo);
+            if (salvo.getRastreamentoTokenTemporario() != null) pedidoRepository.save(salvo);
+        }
+        if (mycash != null) mycash.capture(salvo, request);
 
         // ── Memória "Pedir novamente" ──────────────────────────────────────
         // Aponta o ponteiro ultimoPedido do cliente pro pedido recém-criado.
@@ -437,7 +541,7 @@ public class PedidoService {
         // Pra cartão/applepay online, fica como placeholder (gateway plugaria aqui).
         // Pra NA_ENTREGA, só registra o método escolhido pra histórico.
         try {
-            pagamentoService.criarOuObter(salvo);
+            if (salvo.getTotal().signum() > 0) pagamentoService.criarOuObter(salvo);
         } catch (Exception e) {
             // Não bloqueia o pedido se falhar (ex: chave PIX não cadastrada)
         }
@@ -507,7 +611,7 @@ public class PedidoService {
             try {
                 String tipoPed = salvo.getTipo() == null ? null : salvo.getTipo().name();
                 whatsappBotService.notificarLinkAcompanhamentoAsync(
-                        restaurante, salvo.getId(), tipoPed, cliente.getTelefone());
+                        restaurante, salvo.getId(), tipoPed, cliente.getTelefone(), salvo.getRastreamentoTokenTemporario());
             } catch (Exception ignored) { /* fail-safe total */ }
         }
 
@@ -626,6 +730,17 @@ public class PedidoService {
         return ifoodClient.buscarMotivosCancelamento(p.getIfoodOrderId());
     }
 
+    static void registrarPagamentoPresencialNaEntrega(Pedido pedido, Pedido.Status status) {
+        if (status == Pedido.Status.ENTREGUE
+                && pedido.getModoPagamento() == Pedido.ModoPagamento.NA_ENTREGA
+                && pedido.getFormaPagamento() != null
+                && pedido.getFormaPagamento() != Pedido.FormaPagamento.PENDENTE
+                && !Boolean.TRUE.equals(pedido.getPago())) {
+            pedido.setPago(true);
+            pedido.setPagoEm(java.time.LocalDateTime.now());
+        }
+    }
+
     @Transactional
     public PedidoResponse atualizarStatus(Long rid, Long pid, AtualizarStatusRequest req) {
         Pedido p = pedidoRepository.findById(pid).orElseThrow(() -> new RuntimeException("Pedido nao encontrado"));
@@ -634,8 +749,37 @@ public class PedidoService {
         }
         Pedido.Status statusAntigo = p.getStatus();
         Pedido.Status statusNovo = req.getStatus();
+        if (statusNovo == Pedido.Status.ENTREGUE
+                && p.getTipo() == Pedido.Tipo.DELIVERY
+                && p.getOrigem() != Pedido.Origem.IFOOD
+                && Boolean.TRUE.equals(p.getRestaurante().getEntregaCodigoConfirmacaoAtivo())
+                && p.getEntregaCodigoConfirmadoEm() == null) {
+            throw new IllegalArgumentException("A entrega precisa ser confirmada pelo código do cliente.");
+        }
         p.setStatus(statusNovo);
+        // Na entrega, o recebimento presencial informado no pedido já foi
+        // concluído. Sem este registro o myCash nunca credita o cashback.
+        // Pagamentos online e pedidos "cobrar depois" continuam dependendo
+        // da confirmação explícita do respectivo fluxo de pagamento.
+        boolean aindaNaoPago = !Boolean.TRUE.equals(p.getPago());
+        registrarPagamentoPresencialNaEntrega(p, statusNovo);
         Pedido salvo = pedidoRepository.save(p);
+        if ((statusNovo == Pedido.Status.ENTREGUE || statusNovo == Pedido.Status.CANCELADO)
+                && statusAntigo != statusNovo && rastreamentoEntregaService != null
+                && (salvo.getRastreamentoTokenHash() != null || salvo.getRastreamentoConsentidoEm() != null
+                    || salvo.getEntregadorLocalizacaoEm() != null || salvo.getEntregaCodigoHash() != null)) {
+            rastreamentoEntregaService.encerrar(salvo, statusNovo == Pedido.Status.ENTREGUE ? "ENTREGA_CONCLUIDA" : "PEDIDO_CANCELADO", null);
+        }
+        if (aindaNaoPago && Boolean.TRUE.equals(salvo.getPago()) && pagamentoRepository != null) {
+            pagamentoRepository.findByPedidoId(pid).ifPresent(pagamento -> {
+                if (pagamento.getStatus() == com.mydelivery.model.Pagamento.Status.PENDENTE
+                        && pagamento.getMpPaymentId() == null) {
+                    pagamento.setStatus(com.mydelivery.model.Pagamento.Status.APROVADO);
+                    pagamento.setAprovadoEm(salvo.getPagoEm());
+                    pagamentoRepository.save(pagamento);
+                }
+            });
+        }
 
         // ── PROPAGAÇÃO PRO IFOOD ──────────────────────────────────────────
         // Pedidos vindos do iFood (origem=IFOOD) precisam que o restaurante
@@ -802,6 +946,7 @@ public class PedidoService {
             sub = sub.add(is);
         }
 
+        p.setAtualizadoEm(java.time.LocalDateTime.now());
         p.getItens().addAll(novos);
         p.setSubtotal(sub);
         p.setTotal(sub.add(p.getTaxaEntrega() != null ? p.getTaxaEntrega() : BigDecimal.ZERO));
@@ -809,6 +954,7 @@ public class PedidoService {
             p.setObservacao(req.getObservacao());
         }
 
+        if (mycash != null) mycash.adjusted(p);
         return toResponse(pedidoRepository.save(p));
     }
 
@@ -818,11 +964,21 @@ public class PedidoService {
         if (!p.getRestaurante().getId().equals(rid)) {
             throw new RuntimeException("Acesso negado");
         }
+        Long entregadorAnteriorId = p.getEntregador() == null ? null : p.getEntregador().getId();
+        Long novoEntregadorId = req.getEntregadorId();
+        if (!java.util.Objects.equals(entregadorAnteriorId, novoEntregadorId)
+                && (p.getRastreamentoConsentidoEm() != null || p.getRastreamentoTokenHash() != null || p.getEntregaCodigoHash() != null)
+                && rastreamentoEntregaService != null) {
+            rastreamentoEntregaService.encerrar(p, "ENTREGADOR_REATRIBUIDO", null);
+        }
         if (req.getEntregadorId() == null) {
             p.setEntregador(null);
         } else {
             Entregador e = entregadorRepository.findById(req.getEntregadorId())
                     .orElseThrow(() -> new RuntimeException("Entregador nao encontrado"));
+            if (e.getRestaurante() == null || !rid.equals(e.getRestaurante().getId())) {
+                throw new RuntimeException("Entregador pertence a outro restaurante");
+            }
             p.setEntregador(e);
             e.setStatus(Entregador.Status.EM_ENTREGA);
         }
@@ -831,7 +987,10 @@ public class PedidoService {
 
     @Transactional(readOnly = true)
     public PedidoResponse acompanharPedido(Long pid) {
-        return toResponse(pedidoRepository.findById(pid).orElseThrow(() -> new RuntimeException("Pedido nao encontrado")));
+        Pedido p = pedidoRepository.findById(pid).orElseThrow(() -> new RuntimeException("Pedido nao encontrado"));
+        if (p.getRastreamentoTokenHash() != null || p.getRastreamentoTokenAnteriorHash() != null)
+            throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.NOT_FOUND, "Pedido nao encontrado");
+        return toResponse(p);
     }
 
     /**
@@ -886,6 +1045,7 @@ public class PedidoService {
             // Mesa não tem taxa de entrega; total = subtotal
             pedido.setTotal(sub.add(pedido.getTaxaEntrega() != null ? pedido.getTaxaEntrega() : BigDecimal.ZERO));
         }
+        if (mycash != null) mycash.adjusted(pedido);
         pedidoRepository.save(pedido);
     }
 
@@ -1138,6 +1298,7 @@ public class PedidoService {
                 .telefoneCliente(p.getCliente() != null ? p.getCliente().getTelefone() : null)
                 .enderecoEntrega(p.getEnderecoEntrega()).observacao(p.getObservacao())
                 .subtotal(subtotalOut).taxaEntrega(p.getTaxaEntrega()).total(totalOut)
+                .mycashUsado(p.getMycashUsado()).desconto(p.getDesconto())
                 .criadoEm(p.getCriadoEm())
                 .agendadoPara(p.getAgendadoPara())
                 .restauranteNome(p.getRestaurante() != null ? p.getRestaurante().getNome() : null)
@@ -1163,9 +1324,9 @@ public class PedidoService {
                             ? p.getNomeClienteMesa()
                     : p.getNomeChamada()
                 )
-                .divisaoPagamentos(extrairDivisaoDaSessao(p.getSessaoId()))
-                .incluiuServico(extrairServicoDaSessao(p.getSessaoId()))
-                .valorCobradoSessao(extrairValorCobradoDaSessao(p.getSessaoId()))
+                .divisaoPagamentos(divisaoCobranca(p))
+                .incluiuServico(servicoCobranca(p))
+                .valorCobradoSessao(totalCobranca(p))
                 // Origem do pedido: MYDELIVERY (default) ou IFOOD. Frontend
                 // usa pra mostrar a logo no card/drawer.
                 .origem(p.getOrigem() == null ? "MYDELIVERY" : p.getOrigem().name())
@@ -1178,6 +1339,15 @@ public class PedidoService {
                 .fiscalChave(fiscalChavePara(p))
                 .fiscalQrUrl(fiscalQrUrlPara(p))
                 .fiscalErroAuto(p.getFiscalErroAuto())
+                .rastreamentoHabilitado(Boolean.TRUE.equals(p.getRestaurante().getRastreamentoEntregaAtivo()))
+                .codigoConfirmacaoNecessario(Boolean.TRUE.equals(p.getRestaurante().getEntregaCodigoConfirmacaoAtivo())
+                        && p.getTipo() == Pedido.Tipo.DELIVERY && p.getOrigem() != Pedido.Origem.IFOOD)
+                .codigoConfirmacaoGerado(p.getEntregaCodigoHash() != null)
+                .localizacaoCompartilhada(p.getEntregadorLocalizacaoEm() != null)
+                .rastreamentoConsentido(p.getRastreamentoConsentidoEm() != null)
+                .ultimaLocalizacaoEntregador(p.getEntregadorLocalizacaoEm())
+                .codigoConfirmado(p.getEntregaCodigoConfirmadoEm() != null)
+                .rastreamentoTokenCliente(p.getRastreamentoTokenTemporario())
                 .build();
     }
 
@@ -1249,6 +1419,31 @@ public class PedidoService {
      *  além do número de sessões ativas no dia, em prática não precisa GC. */
     public void limparCachePayloadSessao() { _sessaoPayloadCache.clear(); }
 
+    private List<java.util.Map<String,Object>> partesCobranca(Pedido pedido) {
+        if (pedido.getTipo() != Pedido.Tipo.BALCAO || pedido.getPagamentosJson() == null || !pedido.getPagamentosJson().contains("\"pessoa\"")) return null;
+        try { return new com.fasterxml.jackson.databind.ObjectMapper().readValue(pedido.getPagamentosJson(),
+                new com.fasterxml.jackson.core.type.TypeReference<List<java.util.Map<String,Object>>>() {}); }
+        catch (Exception e) { return null; }
+    }
+    private List<PedidoResponse.DivisaoPagamentoResponse> divisaoCobranca(Pedido pedido) {
+        var partes = partesCobranca(pedido);
+        if (partes == null) return extrairDivisaoDaSessao(pedido.getSessaoId());
+        return partes.stream().map(parte -> PedidoResponse.DivisaoPagamentoResponse.builder()
+                .pessoa(((Number)parte.get("pessoa")).intValue())
+                .formaPagamento(parte.get("forma").toString())
+                .total(new BigDecimal(parte.get("valor").toString())).build()).toList();
+    }
+    private Boolean servicoCobranca(Pedido pedido) {
+        var partes = partesCobranca(pedido);
+        if (partes == null) return extrairServicoDaSessao(pedido.getSessaoId());
+        return !partes.isEmpty() && Boolean.TRUE.equals(partes.get(0).get("comServico"));
+    }
+    private BigDecimal totalCobranca(Pedido pedido) {
+        var partes = partesCobranca(pedido);
+        if (partes == null) return extrairValorCobradoDaSessao(pedido.getSessaoId());
+        return partes.stream().map(p -> new BigDecimal(p.get("valor").toString())).reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
     private List<PedidoResponse.DivisaoPagamentoResponse> extrairDivisaoDaSessao(Long sessaoId) {
         var payload = carregarPayloadSessao(sessaoId);
         if (payload == null || payload.isEmpty()) return null;
@@ -1300,12 +1495,8 @@ public class PedidoService {
         if (r.getBairrosAtendidos() == null || r.getBairrosAtendidos().isEmpty()) return null;
         // Mesma normalização do endpoint de consulta (PublicController.consultarTaxaPorBairro):
         // romanos↔árabicos, sem acento, abreviações comuns.
-        return r.getBairrosAtendidos().stream()
-                .filter(b -> b != null && b.getNome() != null)
-                .filter(b -> com.mydelivery.util.BairroNormalizer.combina(b.getNome(), bairroCliente))
-                .findFirst()
-                .map(b -> b.getTaxa() != null ? b.getTaxa() : BigDecimal.ZERO)
-                .orElse(null);
+        var bairro = com.mydelivery.util.BairroNormalizer.encontrar(r.getBairrosAtendidos(), bairroCliente);
+        return bairro == null ? null : (bairro.getTaxa() != null ? bairro.getTaxa() : BigDecimal.ZERO);
     }
 
     private static String normalizarBairro(String s) {
@@ -1334,6 +1525,23 @@ public class PedidoService {
     // extraídos e o teto anti-fraude vinha baixo demais (loja perdia dinheiro).
     private static final java.util.regex.Pattern COMPLEMENTO_PRECO_RX =
             java.util.regex.Pattern.compile("\\(\\s*\\+?\\s*R\\$\\s*([0-9]+(?:[.,][0-9]{1,2})?)\\s*\\)");
+
+    static BigDecimal precoParaPagamento(Produto produto, String pagamento) {
+        if (Boolean.TRUE.equals(produto.getPrecoVitrine())) return produto.getPreco();
+        BigDecimal especifico = switch (pagamento == null ? "" : pagamento.toLowerCase(java.util.Locale.ROOT)) {
+            case "pix" -> produto.getPrecoPix();
+            case "dinheiro" -> produto.getPrecoDinheiro();
+            case "debito" -> produto.getPrecoDebito();
+            case "credito" -> produto.getPrecoCredito();
+            default -> null;
+        };
+        return especifico == null ? produto.getPreco() : especifico;
+    }
+
+    private static boolean temPrecosPorPagamento(Produto p) {
+        return p.getPrecoPix() != null || p.getPrecoDinheiro() != null
+                || p.getPrecoDebito() != null || p.getPrecoCredito() != null;
+    }
 
     private static BigDecimal extrairValorComplementosDaObs(String obs) {
         if (obs == null || obs.isBlank()) return BigDecimal.ZERO;

@@ -36,10 +36,24 @@ public class PagamentoService {
     private static final String CHARS_TXID = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
     private static final SecureRandom RNG = new SecureRandom();
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.mydelivery.metaads.RestaurantMetaTrackingService metaTracking;
     private final PagamentoRepository pagamentoRepository;
     private final PedidoRepository pedidoRepository;
     private final ConfiguracaoRestauranteRepository configRepo;
     private final MercadoPagoClient mpClient;
+
+    private void trackAfterCommit(Long orderId) {
+        if (metaTracking == null) return;
+        if (org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive()) {
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                new org.springframework.transaction.support.TransactionSynchronization() {
+                    @Override public void afterCommit() {
+                        try { metaTracking.trackConfirmedOrder(orderId); } catch (Exception ignored) {}
+                    }
+                });
+        }
+    }
 
     /**
      * Cria/recupera o Pagamento de um pedido. Pra PIX, gera o BR Code estático.
@@ -104,6 +118,7 @@ public class PagamentoService {
     @Transactional
     public Pagamento criarPagamentoPixOnline(PagarPixRequest req) {
         Pedido pedido = carregarPedido(req.getPedidoId());
+        validarPedidoOnline(pedido, Pedido.FormaPagamento.PIX);
         log.info("[PIX] Iniciando criação para pedido #{} (restaurante {})", pedido.getId(), pedido.getRestaurante().getId());
         ConfiguracaoRestaurante cfg = exigirCredenciaisMp(pedido.getRestaurante());
 
@@ -114,6 +129,8 @@ public class PagamentoService {
         }
         if (existente != null && existente.getMpPaymentId() != null
                 && existente.getStatus() == Pagamento.Status.PENDENTE
+                && existente.getMetodo() == Pedido.FormaPagamento.PIX
+                && existente.getPixBrCode() != null && !existente.getPixBrCode().isBlank()
                 && !pixExpirou(existente)) {
             return existente; // reaproveita QR existente
         }
@@ -192,6 +209,11 @@ public class PagamentoService {
                 .valor(pedido.getTotal())
                 .build();
 
+        p.setMetodo(Pedido.FormaPagamento.PIX);
+        p.setValor(pedido.getTotal());
+        p.setPixBrCode(null);
+        p.setPixQrBase64(null);
+        p.setPixChave(null);
         p.setStatus(mapearStatus(resp.getStatus()));
         p.setMpPaymentId(resp.getId());
         p.setMpIdempotencyKey(idempotencyKey);
@@ -207,6 +229,7 @@ public class PagamentoService {
         if (p.getPixBrCode() == null || p.getPixBrCode().isBlank()) {
             log.error("[PIX] MP NÃO devolveu qr_code pra pedido #{} (status MP={}). Verifique conta/credenciais.",
                     pedido.getId(), resp.getStatus());
+            throw new IllegalStateException("Não foi possível gerar o código Pix. Confira a habilitação de Pix da conta Mercado Pago da loja.");
         }
 
         // Pedido permanece em AGUARDANDO_PAGAMENTO até o webhook confirmar.
@@ -225,6 +248,8 @@ public class PagamentoService {
     @Transactional
     public Pagamento processarCartao(PagarCartaoRequest req) {
         Pedido pedido = carregarPedido(req.getPedidoId());
+        validarPedidoOnline(pedido, Pedido.FormaPagamento.CARTAO_CREDITO);
+        validarConfiguracaoOnline(pedido.getRestaurante(), Pedido.FormaPagamento.CARTAO_CREDITO);
         ConfiguracaoRestaurante cfg = exigirCredenciaisMp(pedido.getRestaurante());
 
         var existente = pagamentoRepository.findByPedidoId(pedido.getId()).orElse(null);
@@ -314,6 +339,7 @@ public class PagamentoService {
                 pedido.setStatus(Pedido.Status.PENDENTE);
             }
             pedidoRepository.save(pedido);
+            trackAfterCommit(pedido.getId());
         }
 
         return pagamentoRepository.save(p);
@@ -336,7 +362,33 @@ public class PagamentoService {
             log.error("[PIX] Restaurante {} sem Access Token do Mercado Pago — configure em Configurações → Pagamento online", r.getId());
             throw new RuntimeException("Restaurante não configurou as credenciais do Mercado Pago");
         }
+        if (cfg.getMpWebhookSecret() == null || cfg.getMpWebhookSecret().isBlank()) {
+            throw new RuntimeException("Pagamento online indisponível: a loja precisa concluir a configuração do Mercado Pago em Integrações.");
+        }
         return cfg;
+    }
+
+    public void validarConfiguracaoOnline(Restaurante restaurante, Pedido.FormaPagamento forma) {
+        ConfiguracaoRestaurante cfg = exigirCredenciaisMp(restaurante);
+        if (forma != Pedido.FormaPagamento.PIX && forma != Pedido.FormaPagamento.CARTAO_CREDITO) {
+            throw new IllegalArgumentException("Pagamento online disponível apenas por Pix ou crédito.");
+        }
+        if (forma == Pedido.FormaPagamento.CARTAO_CREDITO
+                && !com.mydelivery.service.mercadopago.MercadoPagoDisponibilidade.cartao(cfg)) {
+            throw new IllegalArgumentException("Pagamento com cartão indisponível: a loja precisa cadastrar a Public Key em Integrações.");
+        }
+    }
+
+    private void validarPedidoOnline(Pedido pedido, Pedido.FormaPagamento forma) {
+        if (pedido.getStatus() == Pedido.Status.CANCELADO) {
+            throw new IllegalArgumentException("Este pedido foi cancelado e não pode receber uma nova cobrança.");
+        }
+        if (pedido.getModoPagamento() != Pedido.ModoPagamento.ONLINE || pedido.getFormaPagamento() != forma) {
+            throw new IllegalArgumentException("Esta forma de pagamento não corresponde ao pedido.");
+        }
+        if (pedido.getTotal() == null || pedido.getTotal().signum() <= 0) {
+            throw new IllegalArgumentException("Este pedido não tem valor a cobrar.");
+        }
     }
 
     /**
@@ -492,6 +544,7 @@ public class PagamentoService {
             pedido.setStatus(Pedido.Status.PENDENTE);
         }
         pedidoRepository.save(pedido);
+        trackAfterCommit(pedido.getId());
 
         log.info("✅ Pagamento confirmado: pedido #{} ({})", pedidoId, p.getMetodo());
         return p;

@@ -55,6 +55,9 @@ import lombok.extern.slf4j.Slf4j;
 @Component
 public class UazapiClient {
 
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private com.mydelivery.campanhas.CampaignChannelGuard campaignGuard;
+
     private final RestClient restClient;
     private final UazapiProperties props;
 
@@ -173,7 +176,12 @@ public class UazapiClient {
      * ({@code base64}) pra o {@code extrairQrCode} do WhatsappService achar.
      */
     @SuppressWarnings("unchecked")
+    public Map<String, Object> limitesCampanha(String instanceName, String instanceToken) {
+        return executar("GET", "/instance/wa_messages_limits", tokenEfetivo(instanceName, instanceToken), null, Map.class);
+    }
+
     public Map<String, Object> conectar(String instanceName) {
+        if (campaignGuard != null) campaignGuard.checkReconnect(instanceName);
         String token = resolverTokenComFallback(instanceName);
         if (token == null) {
             log.error("[Uazapi] conectar({}) SEM TOKEN — cache vazio e DB tb sem registro. QR não vai vir.",
@@ -512,6 +520,7 @@ public class UazapiClient {
 
     @org.springframework.context.event.EventListener(
             org.springframework.boot.context.event.ApplicationReadyEvent.class)
+    @org.springframework.core.annotation.Order(org.springframework.core.Ordered.HIGHEST_PRECEDENCE)
     public void bootstrapTokens() {
         if (repoRef == null) {
             log.info("[Uazapi] bootstrapTokens: repo não injetado — pulando");
@@ -539,7 +548,7 @@ public class UazapiClient {
     /** Prefere token passado pelo caller (fonte da verdade = DB); se null, cache. */
     private String tokenEfetivo(String instanceName, String tokenPassado) {
         if (tokenPassado != null && !tokenPassado.isBlank()) {
-            tokensPorNome.putIfAbsent(instanceName, tokenPassado);
+            tokensPorNome.put(instanceName, tokenPassado);
             return tokenPassado;
         }
         String cache = tokensPorNome.get(instanceName);
@@ -737,11 +746,11 @@ public class UazapiClient {
             if (e.getStatusCode().is5xxServerError()) registrarFalha(method, path);
             log.error("[Uazapi] {} {} falhou [{}]: {}", method, path, e.getStatusCode(),
                     truncar(e.getResponseBodyAsString()));
-            throw new RuntimeException("Uazapi API: " + truncar(e.getResponseBodyAsString()));
+            throw new RuntimeException("Uazapi API: " + truncar(e.getResponseBodyAsString()), e);
         } catch (Exception e) {
             registrarFalha(method, path);
             log.error("[Uazapi] {} {} erro: {}", method, path, e.getMessage());
-            throw new RuntimeException("Não foi possível contactar a Uazapi API");
+            throw new RuntimeException("Não foi possível contactar a Uazapi API", e);
         }
     }
 

@@ -38,6 +38,11 @@ import lombok.extern.slf4j.Slf4j;
 @Service
 @RequiredArgsConstructor
 public class WhatsappBotService {
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private org.springframework.jdbc.core.JdbcTemplate trackingAuditJdbc;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private AtendimentoManualService atendimentoManualService;
 
     private final WhatsappService whatsappService;
     private final ConfiguracaoRestauranteRepository configRepo;
@@ -52,6 +57,9 @@ public class WhatsappBotService {
      *  recebe broadcast. Opcional pra não quebrar testes que não sobem a bean. */
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.mydelivery.repository.PromoOptOutRepository promoOptOutRepo;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    @org.springframework.context.annotation.Lazy
+    private WhatsappRepeticaoService repeticaoService;
 
     /** Delay (ms) de "digitando…" antes da msg aparecer.
      *  Aumentado pra 2000ms a pedido do operador — bot respondendo em ms
@@ -196,6 +204,7 @@ public class WhatsappBotService {
      * inválido (só ".", emoji, vazio etc.) e ficava saudação estranha.
      */
     public void processar(WhatsappInstance inst, String numero, String texto, String pushName) {
+        if (com.mydelivery.crm.ProspectingPolicy.isInstance(inst)) return;
         try {
             processarInterno(inst, numero, texto, pushName);
         } catch (RuntimeException e) {
@@ -342,6 +351,7 @@ public class WhatsappBotService {
             }
 
             resposta = decidirResposta(inst.getRestaurante(), texto, st, numeroLimpo);
+            resposta = acrescentarAvisoRetiradaNoLink(inst.getRestaurante(), resposta);
             if (resposta == null) {
                 log.info("[Bot:SILENCIO] decidirResposta() retornou null — sem regra casando — texto='{}', instância={}",
                         texto.length() > 60 ? texto.substring(0, 60) + "..." : texto,
@@ -363,8 +373,12 @@ public class WhatsappBotService {
             }
         }
 
+        if (ativouHumano && atendimentoManualService != null) {
+            atendimentoManualService.registrar(inst.getRestaurante(), numeroLimpo);
+        }
+
         // Envio EFETIVO fora do synchronized — não trava outros números.
-        whatsappService.enviarMensagem(inst, numeroLimpo, resposta, typingDelay);
+        whatsappService.enviarRespostaBot(inst, numeroLimpo, resposta, typingDelay);
         if (ativouHumano) {
             log.info("[Bot] modo humano ativado pra {} (silêncio até {})", chave, st.silencioAte);
         }
@@ -378,6 +392,22 @@ public class WhatsappBotService {
         // Cache TTL 60s — economiza ~300ms na primeira msg em cold start
         ConfiguracaoRestaurante cfg = carregarCfg(r.getId());
         st.totalMensagens++;
+
+        // 1. Atendente humano — PRIORIDADE MÁXIMA
+        // Lista ampliada cobrindo "tem alguem", "pra atender", etc.
+        // ATENÇÃO de ordem: precisa vir ANTES de regiões (que tinha "atende"
+        // genérico e capturava "atender" indevidamente).
+        if (contemAlguma(t, "atendente", "humano", "atendimento manual", "pessoa", "falar com alguem",
+                "falar com voce", "atendimento humano", "operador",
+                "tem alguem", "tem alguém", "tem alguem ai", "tem alguém aí",
+                "alguem pra atender", "alguém pra atender", "pra atender",
+                "atender ai", "atender aí", "atende ai", "atende aí",
+                "alguem pode", "alguém pode", "tem gente")) {
+            st.pediuAtendente = true;
+            st.ultimaIntencao = "atendente";
+            return "Sua solicitação de atendimento manual foi enviada à equipe da " + r.getNome() + ".\n\n"
+                    + "A equipe continuará a conversa aqui no WhatsApp.";
+        }
 
         // 0. Confirmação automática de pedido — marcador exclusivo do cardápio.
         java.util.regex.Matcher mPed = MARCADOR_PEDIDO_RX.matcher(texto != null ? texto : "");
@@ -416,20 +446,42 @@ public class WhatsappBotService {
             }
         }
 
-        // 1. Atendente humano — PRIORIDADE MÁXIMA
-        // Lista ampliada cobrindo "tem alguem", "pra atender", etc.
-        // ATENÇÃO de ordem: precisa vir ANTES de regiões (que tinha "atende"
-        // genérico e capturava "atender" indevidamente).
-        if (contemAlguma(t, "atendente", "humano", "pessoa", "falar com alguem",
-                "falar com voce", "atendimento humano", "operador",
-                "tem alguem", "tem alguém", "tem alguem ai", "tem alguém aí",
-                "alguem pra atender", "alguém pra atender", "pra atender",
-                "atender ai", "atender aí", "atende ai", "atende aí",
-                "alguem pode", "alguém pode", "tem gente")) {
-            st.pediuAtendente = true;
-            st.ultimaIntencao = "atendente";
-            return "Sem problema! 👤 Vou transferir você pra um atendente humano da " + r.getNome() + ".\n\n"
-                    + "Em instantes alguém da equipe responde aqui mesmo. 😊";
+        // Repetição opcional por restaurante. O contexto e as confirmações ficam
+        // persistidos, e o serviço só cria o pedido após confirmar endereço e resumo.
+        if (repeticaoService != null) {
+            try {
+                String respostaRepeticao = repeticaoService.processar(r, numeroCliente, texto, montarLinkCardapio(r));
+                if (respostaRepeticao != null) {
+                    if (!st.saudou) {
+                        String saudacao = mensagemInicialPersonalizada(r);
+                        if (saudacao != null) respostaRepeticao = saudacao + "\n\n" + respostaRepeticao;
+                    }
+                    st.ultimaIntencao = "repeticao_pedido";
+                    return respostaRepeticao;
+                }
+            } catch (RuntimeException e) {
+                log.error("[Bot:Repeticao] falha no recurso opcional para loja={} — seguindo atendimento normal",
+                        r.getId(), e);
+            }
+        }
+
+        // A repetição explícita tem prioridade sobre a saudação genérica.
+        // Sem histórico elegível, a primeira mensagem ainda recebe a saudação
+        // configurada pelo restaurante.
+        if (!st.saudou) {
+            String mensagemInicial = mensagemInicialPersonalizada(r);
+            if (mensagemInicial != null) {
+                st.ultimaIntencao = "saudacao_personalizada";
+                return montarMensagemInicialPersonalizada(r, mensagemInicial);
+            }
+        }
+
+        if (Boolean.TRUE.equals(r.getSomenteRetiradaAtivo())
+                && contemAlguma(t, "delivery", "entrega", "entregam", "frete", "taxa de entrega",
+                        "bairro", "bairros", "regiao", "região", "tempo de entrega")) {
+            st.ultimaIntencao = "somente_retirada";
+            return "Hoje estamos atendendo apenas por retirada no local. Entregas estão pausadas."
+                    + "\n\nFaça seu pedido para retirada aqui: " + montarLinkCardapio(r);
         }
 
         // 2. Regiões / bairros atendidos — FRASES ESPECÍFICAS
@@ -615,7 +667,9 @@ public class WhatsappBotService {
                 "boa tarde", "boa noite", "hey", "eai", "e ai", "tudo bem", "td bem", "salve");
         if (!st.saudou || ehSaudacao) {
             st.ultimaIntencao = "saudacao";
-            return montarApresentacao(r, st);
+            // A personalização vale só no primeiro contato. Nas saudações
+            // seguintes, preservamos o comportamento atual do assistente.
+            return !st.saudou ? montarApresentacao(r, st) : montarApresentacaoPadrao(r, st);
         }
 
         // 10. Anti-loop: 8 msgs sem casamento → sugere atendente
@@ -710,9 +764,10 @@ public class WhatsappBotService {
             Restaurante restaurante,
             Long pedidoId,
             String tipo,
-            String telefoneCliente) {
+            String telefoneCliente,
+            String tokenSeguro) {
         try {
-            if (restaurante == null) return;
+            if (restaurante == null || com.mydelivery.crm.ProspectingPolicy.isStore(restaurante.getId())) return;
             // Notificação proativa é padrão sempre que o bot está ativo —
             // não exige toggle do dono. As salvaguardas anti-shadowban
             // (horário, throttle, WA conectado, botAtivo) continuam abaixo.
@@ -749,7 +804,9 @@ public class WhatsappBotService {
             // que o pedido não foi registrado e ligavam pra loja.
             // "Digitando..." de ~2s (jitter ±200ms pra quebrar padrão constante
             // que o WhatsApp usa como fingerprint anti-bot).
-            String link = "https://mydeliveryfood.com.br/acompanhar.html?id=" + pedidoId;
+            String link = tokenSeguro == null || tokenSeguro.isBlank()
+                    ? "https://mydeliveryfood.com.br/acompanhar.html?id=" + pedidoId
+                    : "https://mydeliveryfood.com.br/acompanhar.html?token=" + tokenSeguro;
             String msg = BotVariations.montarMensagemAcompanhamento(pedidoId, link);
             whatsappService.enviarMensagem(inst, numero, msg, notificacaoDelayMs());
             ultimaNotificacaoPorNumero.put(numero, java.time.LocalDateTime.now());
@@ -761,6 +818,40 @@ public class WhatsappBotService {
             // CRÍTICO: nunca propagar — criação do pedido NÃO PODE depender disso.
             log.warn("[Bot:Notif] falha enviando link — pedido#{}: {}", pedidoId, e.getMessage());
         }
+    }
+
+    /** Mensagem de início de rota. O link é uma credencial temporária; o código só vai ao cliente. */
+    @org.springframework.scheduling.annotation.Async
+    public void notificarRastreamentoAsync(Restaurante restaurante, Long pedidoId, String telefone,
+                                           String link, String codigo) {
+        try {
+            if (restaurante == null || com.mydelivery.crm.ProspectingPolicy.isStore(restaurante.getId())
+                    || telefone == null || telefone.isBlank() || (link == null && codigo == null)) return;
+            WhatsappInstance inst = whatsappService.buscar(restaurante);
+            if (inst == null || inst.getStatus() != WhatsappInstance.Status.CONECTADA
+                    || !Boolean.TRUE.equals(inst.getBotAtivo())) {
+                log.warn("[Bot:Rastreamento] WhatsApp indisponível para pedido#{}", pedidoId);
+                auditarEnvioRastreamento(restaurante, pedidoId, "WHATSAPP_FALHOU");
+                return;
+            }
+            StringBuilder msg = new StringBuilder("Seu pedido #").append(pedidoId).append(" saiu para entrega!");
+            if (link != null && !link.isBlank()) msg.append("\n\nAcompanhe sua entrega: ").append(link);
+            if (codigo != null) msg.append("\n\nSeu código de confirmação: ").append(codigo)
+                    .append("\nInforme o código ao entregador somente quando receber o pedido.");
+            whatsappService.enviarMensagem(inst, limparNumero(telefone), msg.toString(), notificacaoDelayMs());
+            log.info("[Bot:Rastreamento] notificação de rota enviada — pedido#{}", pedidoId);
+            auditarEnvioRastreamento(restaurante, pedidoId, "WHATSAPP_ENVIADO");
+        } catch (Exception e) {
+            // Nunca bloqueia a entrega; não registra link, telefone ou código.
+            log.warn("[Bot:Rastreamento] falha de envio — pedido#{}: {}", pedidoId, e.getClass().getSimpleName());
+            auditarEnvioRastreamento(restaurante, pedidoId, "WHATSAPP_FALHOU");
+        }
+    }
+
+    private void auditarEnvioRastreamento(Restaurante restaurante, Long pedidoId, String evento) {
+        if (trackingAuditJdbc == null || restaurante == null || restaurante.getId() == null || pedidoId == null) return;
+        try { trackingAuditJdbc.update("INSERT INTO entrega_rastreamento_auditoria (restaurante_id,pedido_id,evento,ator) VALUES (?,?,?,?)", restaurante.getId(), pedidoId, evento, "sistema:whatsapp"); }
+        catch (Exception e) { log.warn("[Bot:Rastreamento] auditoria indisponível para pedido#{}", pedidoId); }
     }
 
     /**
@@ -792,7 +883,7 @@ public class WhatsappBotService {
             String tipo,
             String telefoneCliente) {
         try {
-            if (restaurante == null || pedidoId == null || statusNovoNome == null) return;
+            if (restaurante == null || com.mydelivery.crm.ProspectingPolicy.isStore(restaurante.getId()) || pedidoId == null || statusNovoNome == null) return;
             if (telefoneCliente == null || telefoneCliente.isBlank()) return;
 
             // Mensagem por status. Se o status não tem mensagem, sai
@@ -981,17 +1072,6 @@ public class WhatsappBotService {
 
     // ── builders de resposta ──
 
-    /** Se o restaurante tem logoUrl, prefixa com "IMG::<url>::" pra o
-     *  WhatsappService enviar como imagem com legenda em vez de texto puro.
-     *  Resolve o "quadrado preto" do preview do link no cliente WhatsApp. */
-    private String comLogoSeHouver(Restaurante r, String texto) {
-        String logo = r.getLogoUrl();
-        if (logo != null && !logo.isBlank()) {
-            return "IMG::" + logo + "::" + texto;
-        }
-        return texto;
-    }
-
     private String montarApresentacao(Restaurante r) {
         return montarApresentacao(r, null);
     }
@@ -1010,6 +1090,29 @@ public class WhatsappBotService {
      * Overload com EstadoNumero (compat) — usa saudação contextual por horário.
      */
     private String montarApresentacao(Restaurante r, EstadoNumero st) {
+        String personalizada = mensagemInicialPersonalizada(r);
+        if (personalizada != null) return montarMensagemInicialPersonalizada(r, personalizada);
+        return montarApresentacaoPadrao(r, st);
+    }
+
+    private String mensagemInicialPersonalizada(Restaurante r) {
+        if (r == null || r.getWhatsappMensagemInicial() == null) return null;
+        String mensagem = r.getWhatsappMensagemInicial().trim();
+        return mensagem.isEmpty() ? null : mensagem;
+    }
+
+    /**
+     * O dono escreve só a abertura. O link do cardápio é responsabilidade do
+     * assistente para ficar correto mesmo se o slug da loja mudar.
+     */
+    private String montarMensagemInicialPersonalizada(Restaurante r, String mensagem) {
+        String link = montarLinkCardapio(r);
+        if (mensagem.contains("mydeliveryfood.com.br/")) return mensagem;
+        return mensagem + "\n\nVocê pode pedir aqui: " + link;
+    }
+
+    /** Apresentação padrão mantida para lojas sem mensagem personalizada. */
+    private String montarApresentacaoPadrao(Restaurante r, EstadoNumero st) {
         String link = montarLinkCardapio(r);
         boolean aberto = Boolean.TRUE.equals(r.getAberto());
         String sauda = saudacaoHorario() + "!";
@@ -1028,7 +1131,7 @@ public class WhatsappBotService {
             if (notBlank(linhaH)) sb.append("\n").append(linhaH);
             sb.append("\n\nDá pra ver o cardápio aqui: ").append(link);
         }
-        return comLogoSeHouver(r, sb.toString());
+        return sb.toString();
     }
 
     /**
@@ -1053,11 +1156,20 @@ public class WhatsappBotService {
           .append("• 👤 *Falar com atendente*\n\n")
           .append(aberto ? "Cardápio: " : "Cardápio (visualização): ")
           .append(montarLinkCardapio(r));
-        return comLogoSeHouver(r, sb.toString());
+        return sb.toString();
     }
 
     private String montarLinkCardapio(Restaurante r) {
         return "https://mydeliveryfood.com.br/" + r.getSlug();
+    }
+
+    private String acrescentarAvisoRetiradaNoLink(Restaurante r, String resposta) {
+        if (r == null || resposta == null || !Boolean.TRUE.equals(r.getSomenteRetiradaAtivo())
+                || !resposta.contains(montarLinkCardapio(r))
+                || resposta.contains("Hoje estamos atendendo apenas por retirada")) {
+            return resposta;
+        }
+        return resposta + "\n\nHoje estamos atendendo apenas por retirada no local. Entregas estão pausadas.";
     }
 
     private String montarRespostaHorario(Restaurante r) {
@@ -1396,6 +1508,9 @@ public class WhatsappBotService {
         if (st == null || st.silencioAte == null) return false;
         st.silencioAte = null;
         st.saudou = false; // próxima msg volta a saudar
+        if (repeticaoService != null && inst.getRestaurante() != null) {
+            repeticaoService.encerrarPorAtendimentoHumano(inst.getRestaurante().getId(), numero);
+        }
         log.info("[Bot] {} devolvido pro bot pelo painel", chave);
         return true;
     }
@@ -1429,18 +1544,7 @@ public class WhatsappBotService {
      * Case-insensitive, ignora acentos e emojis.
      */
     private boolean ehPedidoDeOptOut(String texto) {
-        if (texto == null) return false;
-        String t = texto.trim().toLowerCase()
-                .replaceAll("[áàâã]", "a").replaceAll("[éèê]", "e").replaceAll("[íî]", "i")
-                .replaceAll("[óòôõ]", "o").replaceAll("[úû]", "u").replaceAll("ç", "c");
-        // Palavra sozinha ou msg curta com a palavra
-        if (t.equals("pare") || t.equals("sair") || t.equals("saia")
-                || t.equals("cancelar") || t.equals("stop") || t.equals("parar")) return true;
-        if (t.length() > 60) return false; // msg longa raramente é opt-out
-        return t.contains("nao quero receber")
-                || t.contains("parar promo") || t.contains("cancelar promo")
-                || t.contains("promo nao") || t.contains("tirar da lista")
-                || t.contains("sair da lista") || t.contains("nao envie");
+        return com.mydelivery.campanhas.CampaignPolicy.optOut(texto);
     }
 
     /** Tira sufixo @s.whatsapp.net e qualquer não-dígito. */

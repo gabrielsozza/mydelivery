@@ -38,6 +38,7 @@ import lombok.RequiredArgsConstructor;
 public class BalcaoController {
 
     private final BalcaoService balcaoService;
+    private final com.mydelivery.service.BalcaoCobrancaService cobrancaService;
     private final RestauranteRepository restauranteRepo;
     private final PedidoRepository pedidoRepo;
     private final SenhaBalcaoRepository senhaRepo;
@@ -162,6 +163,15 @@ public class BalcaoController {
         } catch (SecurityException e) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN);
         }
+    }
+
+    @PostMapping("/api/restaurante/balcao/cobranca")
+    @PreAuthorize("hasRole('RESTAURANTE')")
+    public ResponseEntity<Map<String,Object>> cobrarSelecionados(
+            @AuthenticationPrincipal String email,
+            @RequestBody com.mydelivery.service.BalcaoCobrancaService.Cobranca body) {
+        Restaurante r = restauranteRepo.findByUsuarioEmail(email).orElseThrow();
+        return ResponseEntity.ok(cobrancaService.cobrar(r.getId(), body));
     }
 
     @PatchMapping("/api/restaurante/balcao/pedido/{id}")

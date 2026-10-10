@@ -21,6 +21,8 @@ import lombok.extern.slf4j.Slf4j;
 @Service
 @RequiredArgsConstructor
 public class AuthService {
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.mydelivery.beneficios.MyMoneyService mymoney;
 
     private final UsuarioRepository usuarioRepository;
     private final RestauranteRepository restauranteRepository;
@@ -44,14 +46,31 @@ public class AuthService {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.mydelivery.service.afiliados.AfiliadosWebhookService afiliadosWebhookService;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.springframework.context.ApplicationEventPublisher crmEvents;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.mydelivery.crm.CrmRegistrationService crmRegistrations;
+
     @Value("${app.trial.dias}")
     private int trialDias;
 
     @Value("${app.mensalidade.valor}")
     private double mensalidadeValor;
 
+    @Value("${mydelivery.admin.internal-secret:${ADMIN_INTERNAL_SECRET:}}")
+    private String commercialReferralSecret;
+
     @Transactional
     public LoginResponse cadastrar(CadastroRequest request) {
+        int referralSources=(request.getMymoneyCodigo()!=null&&!request.getMymoneyCodigo().isBlank()?1:0)
+                +(request.getAfiliadoCodigo()!=null&&!request.getAfiliadoCodigo().isBlank()?1:0)
+                +(request.getColaboradorCodigo()!=null&&!request.getColaboradorCodigo().isBlank()?1:0);
+        if (referralSources>1)
+            throw com.mydelivery.beneficios.BeneficiosSupport.bad("O cadastro só pode ter uma origem de indicação.");
+        var commercialReferral=request.getColaboradorCodigo()!=null&&!request.getColaboradorCodigo().isBlank()
+                ?com.mydelivery.crm.CommercialReferralCode.parse(request.getColaboradorCodigo(),commercialReferralSecret):null;
+        Long collaboratorId=commercialReferral==null?null:commercialReferral.collaboratorId();
         if (usuarioRepository.existsByEmail(request.getEmail())) {
             throw new RuntimeException("E-mail já cadastrado");
         }
@@ -119,6 +138,7 @@ public class AuthService {
                 .trialExpiraEm(LocalDateTime.now().plusDays(trialDias))
                 // Programa de afiliados: salva o codigo que veio no link (se houver)
                 .afiliadoCodigo(request.getAfiliadoCodigo())
+                .colaboradorOrigemId(collaboratorId)
                 .build();
 
         // ── Snapshot IMUTÁVEL do afiliado ─────────────────────────────
@@ -154,6 +174,10 @@ public class AuthService {
         }
 
         restauranteRepository.save(restaurante);
+        var registration=new com.mydelivery.crm.CrmRegistrationListener.Registration(restaurante.getId(),restaurante.getNome(),restaurante.getTelefone(),collaboratorId,
+                commercialReferral==null?null:commercialReferral.leadId());
+        if(collaboratorId!=null) crmRegistrations.match(registration);
+        else if(crmEvents!=null) crmEvents.publishEvent(registration);
 
         // Webhook async pro myafiliados-api — só dispara se tem código
         try {
@@ -177,7 +201,8 @@ public class AuthService {
                 .validaAte(trialFim)
                 .proximaCobranca(trialFim)
                 .build();
-        assinaturaRepository.save(assinatura);
+        assinaturaRepository.saveAndFlush(assinatura);
+        if (mymoney != null) mymoney.attribute(restaurante, request.getMymoneyCodigo());
 
         // Cria configuração padrão do restaurante
         ConfiguracaoRestaurante config = new ConfiguracaoRestaurante();

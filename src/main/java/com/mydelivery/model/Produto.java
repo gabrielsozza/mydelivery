@@ -52,6 +52,17 @@ public class Produto {
     @Column(precision = 10, scale = 2)
     private BigDecimal precoOriginal;
 
+    /** Valores finais opcionais por instrumento de pagamento no cardápio online.
+     * Null conserva o preço padrão. Não se aplicam a produtos de preço variável. */
+    @Column(name = "preco_pix", precision = 10, scale = 2)
+    private BigDecimal precoPix;
+    @Column(name = "preco_dinheiro", precision = 10, scale = 2)
+    private BigDecimal precoDinheiro;
+    @Column(name = "preco_debito", precision = 10, scale = 2)
+    private BigDecimal precoDebito;
+    @Column(name = "preco_credito", precision = 10, scale = 2)
+    private BigDecimal precoCredito;
+
     /** Preco exclusivo pra vendas de BALCAO (PDV presencial). Null = usa o
      *  preco padrao. Delivery ignora esse campo — clientes online continuam
      *  vendo o preco normal. */
@@ -161,6 +172,37 @@ public class Produto {
      */
     @Column(name = "dias_semana_ativos", length = 40)
     private String diasSemanaAtivos;
+
+    /** Horário diário em que o produto pode aparecer no cardápio público. */
+    @Column(name = "horario_inicio")
+    private java.time.LocalTime horarioInicio;
+
+    @Column(name = "horario_fim")
+    private java.time.LocalTime horarioFim;
+
+    /** Disponibilidade do produto segundo dias e faixa horária no fuso da loja. */
+    public boolean disponivelNoHorario(java.time.ZonedDateTime agora) {
+        java.time.LocalTime inicio = horarioInicio;
+        java.time.LocalTime fim = horarioFim;
+        if (inicio == null || fim == null) return diaAtivo(agora.getDayOfWeek());
+        java.time.LocalTime atual = agora.toLocalTime();
+        if (inicio.isBefore(fim)) {
+            return diaAtivo(agora.getDayOfWeek()) && !atual.isBefore(inicio) && atual.isBefore(fim);
+        }
+        if (!atual.isBefore(inicio)) return diaAtivo(agora.getDayOfWeek());
+        if (atual.isBefore(fim)) return diaAtivo(agora.minusDays(1).getDayOfWeek());
+        return false;
+    }
+
+    private boolean diaAtivo(java.time.DayOfWeek dia) {
+        if (diasSemanaAtivos == null || diasSemanaAtivos.isBlank()) return true;
+        String codigo = switch (dia) {
+            case MONDAY -> "SEG"; case TUESDAY -> "TER"; case WEDNESDAY -> "QUA";
+            case THURSDAY -> "QUI"; case FRIDAY -> "SEX"; case SATURDAY -> "SAB"; case SUNDAY -> "DOM";
+        };
+        for (String ativo : diasSemanaAtivos.split(",")) if (codigo.equalsIgnoreCase(ativo.trim())) return true;
+        return false;
+    }
 
     /**
      * Upsell manual: CSV de IDs de outros produtos deste restaurante que

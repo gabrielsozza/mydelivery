@@ -80,6 +80,12 @@ public class HorarioLojaJob {
      * Antes, esse caso falhava porque horarioConfigurado=false bloqueava.
      */
     private boolean processar(Restaurante r) {
+        boolean expirouManual = false;
+        if (r.getStatusManualAte() != null) {
+            if (java.time.LocalDateTime.now(horarioService.getZone()).isBefore(r.getStatusManualAte())) return false;
+            r.setStatusManualAte(null);
+            expirouManual = true;
+        }
         EstadoHorario e = horarioService.calcular(r);
         boolean estaAberto = Boolean.TRUE.equals(r.getAberto());
 
@@ -105,6 +111,6 @@ public class HorarioLojaJob {
                 return true;
             }
         }
-        return false;
+        return expirouManual;
     }
 }

@@ -44,6 +44,8 @@ public class SecurityConfig {
                 .requestMatchers("/auth/**").permitAll()
                 .requestMatchers("/public/**").permitAll()
                 .requestMatchers("/api/auth/**").permitAll()
+                // Railway só envia tráfego à nova versão depois de o Spring iniciar.
+                .requestMatchers(HttpMethod.GET, "/api/health").permitAll()
                 .requestMatchers("/api/cardapio/**").permitAll()
                 .requestMatchers(HttpMethod.GET, "/api/cardapio/*/banners").permitAll()
                 .requestMatchers("/api/pedidos/novo").permitAll()

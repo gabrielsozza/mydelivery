@@ -21,6 +21,10 @@ class TaxaFinalBairroTest {
         when(repo.findByRestauranteIdOrderByRaioKmAsc(61L)).thenReturn(List.of(ZonaEntrega.builder().raioKm(BigDecimal.ONE).taxa(BigDecimal.ZERO).build()));
         assertThat(service.consultarTaxaBairro(r,"Arruda").taxa()).isZero();
     }
+    @Test void reconheceOlhoDaguaSemAcentoOuApostrofo() {
+        assertThat(EntregaService.selecionarBairro(List.of(bairro("Olho D'Água",-2.49)),"Olho dagua")
+            .getFirst().bairros()).containsExactly("Olho D'Água");
+    }
     @Test void corrigeNomeSemListaENaoEscolheBairroAmbiguo() {
         assertThat(EntregaService.selecionarBairro(List.of(bairro("São João",-25.3),bairro("São José",-25.4)),"sao jao").getFirst().bairros()).containsExactly("São João");
         assertThat(EntregaService.selecionarBairro(List.of(bairro("Arruda",-25.3),bairro("Arruda",-25.4)),"Arruda")).isEmpty();

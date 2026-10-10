@@ -90,6 +90,8 @@ public class EntregaService {
     @Transactional
     public List<ZonaEntrega> substituirZonas(Restaurante restaurante, List<Map<String, Object>> zonas) {
         if (zonas == null) throw new IllegalArgumentException("Informe as zonas de entrega.");
+        if (porDistancia(restaurante) && zonas.isEmpty())
+            throw new IllegalArgumentException("Cadastre ao menos uma zona de entrega com distância e taxa.");
         List<ZonaEntrega> novas = new ArrayList<>();
         var raios = new java.util.HashSet<BigDecimal>();
         for (Map<String, Object> z : zonas) {
@@ -142,6 +144,7 @@ public class EntregaService {
             distKm = distanciaHaversineKm(origLat, origLng, destLat, destLng);
         }
         List<ZonaEntrega> zonas = zonaRepo.findByRestauranteIdOrderByRaioKmAsc(restaurante.getId());
+        if (zonas.isEmpty()) throw new IllegalArgumentException("A loja ainda não configurou as distâncias e taxas de entrega. Fale com a loja.");
         for (ZonaEntrega z : zonas) {
             if (z.getRaioKm().doubleValue() + 1e-9 >= distKm) return z.getTaxa();
         }

@@ -19,6 +19,19 @@ class EntregaRaioTest {
     ZonaEntrega zona(String raio, String taxa) {
         return ZonaEntrega.builder().raioKm(new BigDecimal(raio)).taxa(new BigDecimal(taxa)).build();
     }
+    @Test void faltaDeZonasNaoEConfundidaComBairroForaDaArea() {
+        var r=loja();r.setModoTaxa("RAIO");
+        assertThatThrownBy(() -> service.calcularTaxaPorRaio(r,-25.3159,-49.2366))
+            .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("não configurou");
+    }
+    @Test void naoApagaTodasAsZonasDeUmaLojaPorDistancia() {
+        var r=loja();r.setModoTaxa("RAIO");
+        assertThatThrownBy(() -> service.substituirZonas(r,List.of())).isInstanceOf(IllegalArgumentException.class);
+        verifyNoInteractions(repo);
+        r.setModoTaxa("TRAJETO");
+        assertThatThrownBy(() -> service.substituirZonas(r,List.of())).isInstanceOf(IllegalArgumentException.class);
+        verifyNoInteractions(repo);
+    }
     @Test void aplicaMenorFaixaEmKmENaoEmDiametro() {
         var r = loja();
         when(repo.findByRestauranteIdOrderByRaioKmAsc(61L)).thenReturn(List.of(zona("1","6"),zona("2","7.50"),zona("5","10")));

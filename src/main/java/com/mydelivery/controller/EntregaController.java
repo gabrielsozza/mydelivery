@@ -18,6 +18,7 @@ import org.springframework.web.bind.annotation.RestController;
 import com.mydelivery.model.Restaurante;
 import com.mydelivery.repository.RestauranteRepository;
 import com.mydelivery.service.EntregaService;
+import com.mydelivery.service.GoogleGeocodingService;
 
 import lombok.RequiredArgsConstructor;
 
@@ -43,6 +44,7 @@ public class EntregaController {
 
     private final EntregaService entregaService;
     private final RestauranteRepository restauranteRepo;
+    private final GoogleGeocodingService googleGeocodingService;
 
     // ═════════════════════════════════════════════════════════════════════
     // PAINEL
@@ -103,6 +105,51 @@ public class EntregaController {
     // ═════════════════════════════════════════════════════════════════════
     // PÚBLICO (cliente final)
     // ═════════════════════════════════════════════════════════════════════
+
+    /** Localiza o endereço atualizado da loja usando Google Geocoding, com fallback OSM. */
+    @GetMapping("/api/restaurante/entrega/localizar-loja")
+    @PreAuthorize("hasAnyRole('RESTAURANTE', 'ADMIN')")
+    public ResponseEntity<Map<String, Object>> localizarLoja(@AuthenticationPrincipal String email,
+            @RequestParam String rua, @RequestParam(required = false, defaultValue = "") String numero,
+            @RequestParam String bairro, @RequestParam String cidade, @RequestParam String uf,
+            @RequestParam(required = false, defaultValue = "") String cep) {
+        if (rua.isBlank() || bairro.isBlank() || cidade.isBlank() || uf.length() != 2
+                || rua.length() > 200 || numero.length() > 120 || bairro.length() > 120
+                || cidade.length() > 120 || cep.length() > 10) return ResponseEntity.badRequest().build();
+
+        Restaurante restaurante = restauranteRepo.findByUsuarioEmail(email).orElse(null);
+        if (restaurante == null) return ResponseEntity.notFound().build();
+        String endereco = rua.trim() + ", " + numero.trim() + ", " + bairro.trim() + ", "
+                + cidade.trim() + ", " + uf.trim() + (cep.isBlank() ? "" : ", " + cep.trim()) + ", Brasil";
+
+        if (googleGeocodingService.configurado()) {
+            var local = googleGeocodingService.localizar(endereco).stream()
+                    .filter(p -> normalizarRua(p.rua()).equals(normalizarRua(rua))
+                            && (numero.isBlank() ? p.numero().isBlank() : p.numero().equalsIgnoreCase(numero.trim()))
+                            && (p.bairro().isBlank() || normalizar(p.bairro()).equals(normalizar(bairro)))
+                            && (p.cidade().isBlank() || normalizar(p.cidade()).equals(normalizar(cidade)))
+                            && (p.uf().isBlank() || p.uf().equalsIgnoreCase(uf))
+                            && (cep.isBlank() || p.cep().isBlank() || digitos(p.cep()).equals(digitos(cep))))
+                    .findFirst().orElse(null);
+            if (local != null) return ResponseEntity.ok(Map.of(
+                    "lat", local.lat(), "lng", local.lng(), "provedor", "google"));
+        }
+
+        Double lat = restaurante.getEnderecoLatitude() == null ? null : restaurante.getEnderecoLatitude().doubleValue();
+        Double lng = restaurante.getEnderecoLongitude() == null ? null : restaurante.getEnderecoLongitude().doubleValue();
+        double[] fallback = entregaService.geocodificar(endereco, lat, lng);
+        if (fallback == null) return ResponseEntity.notFound().build();
+        return ResponseEntity.ok(Map.of("lat", fallback[0], "lng", fallback[1], "provedor", "osm"));
+    }
+
+    private static String normalizar(String s) {
+        return java.text.Normalizer.normalize(s, java.text.Normalizer.Form.NFD).replaceAll("\\p{M}", "")
+                .toLowerCase(java.util.Locale.ROOT).replaceAll("[^a-z0-9]", "");
+    }
+    private static String normalizarRua(String s) {
+        return normalizar(s).replaceFirst("^(rua|r|avenida|av|estrada|est)", "");
+    }
+    private static String digitos(String s) { return s.replaceAll("\\D", ""); }
 
     /**
      * Geocodifica string livre (rua + numero + bairro + cidade) pra

@@ -69,12 +69,18 @@ public final class BairroNormalizer {
     /** Resolve variações de escrita sem misturar números de bairros ou candidatos próximos. */
     public static com.mydelivery.model.BairroEntrega encontrar(
             java.util.List<com.mydelivery.model.BairroEntrega> bairros, String nome) {
-        String digitado = normalizar(nome);
+        return encontrar(bairros, nome, null);
+    }
+
+    /** A cidade é um complemento do cadastro, não parte do nome usado para corrigir a digitação. */
+    public static com.mydelivery.model.BairroEntrega encontrar(
+            java.util.List<com.mydelivery.model.BairroEntrega> bairros, String nome, String cidade) {
+        String digitado = chaveBairro(nome, cidade);
         if (bairros == null || digitado.isEmpty() || digitado.length() > 120) return null;
         var candidatos = new java.util.LinkedHashMap<String, com.mydelivery.model.BairroEntrega>();
         for (var bairro : bairros) {
             if (bairro != null && bairro.getNome() != null) {
-                String chave = normalizar(bairro.getNome());
+                String chave = chaveBairro(bairro.getNome(), cidade);
                 if (!chave.isEmpty()) candidatos.putIfAbsent(chave, bairro);
             }
         }
@@ -105,6 +111,15 @@ public final class BairroNormalizer {
         int limite = digitado.length() >= 12 ? 2 : 1;
         return melhor <= limite && (segundo == Integer.MAX_VALUE || segundo - melhor >= 2)
                 ? resultado : null;
+    }
+
+    private static String chaveBairro(String nome, String cidade) {
+        if (nome != null && cidade != null && !cidade.isBlank()) {
+            String[] partes = nome.trim().split("\\s+[-–—]\\s+", 2);
+            if (partes.length == 2 && normalizar(partes[1]).equals(normalizar(cidade)))
+                return normalizar(partes[0]);
+        }
+        return normalizar(nome);
     }
 
     private static String numeros(String nome) {

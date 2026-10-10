@@ -33,6 +33,22 @@ class BairroDigitadoTest {
         assertThat(BairroNormalizer.encontrar(bairros,"Jardim Lima").getNome()).isEqualTo("Jardim Lima");
         assertThat(BairroNormalizer.encontrar(List.of(bairro("Parque Industrial"),bairro("Parque das Orquídeas")),"Parque")).isNull();
     }
+    @Test void novoPortoCanoaNaoERecusadoNemRecebeTaxaDePortoCanoa() {
+        var novo=new BairroEntrega("Novo Porto Canoa - Serra",new BigDecimal("3"));
+        var antigo=new BairroEntrega("porto canoa",new BigDecimal("4"));
+        var bairros=List.of(novo,antigo);
+        assertThat(BairroNormalizer.encontrar(bairros,"Novo Porto Canoa","Serra")).isSameAs(novo);
+        assertThat(BairroNormalizer.encontrar(bairros,"Porto Canoa","Serra")).isSameAs(antigo);
+        assertThat(BairroNormalizer.encontrar(bairros,"Novo Porto Canoa - Serra","Serra")).isSameAs(novo);
+    }
+    @Test void listaAlmeidaComCidadeToleraErroSemMisturarEtapas() {
+        var bairros=List.of(bairro("Serra Dourada I"),bairro("Serra Dourada II - Serra"),bairro("Serra Dourada III - Serra"));
+        for (var nome:List.of("Serra Dourada II","Serra Dourada 2","Serra Douara II","Serra Douara II - Serra"))
+            assertThat(BairroNormalizer.encontrar(bairros,nome,"Serra").getNome()).isEqualTo("Serra Dourada II - Serra");
+        assertThat(BairroNormalizer.encontrar(bairros,"Serra Dourada","Serra")).isNull();
+        assertThat(BairroNormalizer.encontrar(bairros,"Serra Dourada IV","Serra")).isNull();
+        assertThat(BairroNormalizer.encontrar(bairros,"Serra Douara II - Vitória","Serra")).isNull();
+    }
     @Test void bairrosBissComErrosEAcentos() {
         var bairros=List.of(bairro("Parque Industrial"),bairro("Parque das Orquídeas"),bairro("Parque das orquídeas"),bairro("Emaús"));
         assertThat(BairroNormalizer.encontrar(bairros,"parqe industrial").getNome()).isEqualTo("Parque Industrial");

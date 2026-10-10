@@ -269,7 +269,7 @@ public class EntregaService {
     public CotacaoBairro consultarTaxaBairro(Restaurante r, String bairro) {
         if (bairro == null || bairro.isBlank() || bairro.length()>120)
             throw new IllegalArgumentException("Informe o bairro de entrega.");
-        var cadastrado = com.mydelivery.util.BairroNormalizer.encontrar(r.getBairrosAtendidos(),bairro);
+        var cadastrado = com.mydelivery.util.BairroNormalizer.encontrar(r.getBairrosAtendidos(),bairro,r.getCidade());
         String nome = cadastrado == null ? bairro.trim() : cadastrado.getNome();
         if (!porDistancia(r)) return new CotacaoBairro(nome,cadastrado==null ? null : cadastrado.getTaxa(),null,null);
         if (r.getEnderecoLatitude()==null || r.getEnderecoLongitude()==null)

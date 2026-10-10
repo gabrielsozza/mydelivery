@@ -225,7 +225,7 @@ public class PublicController {
         // (sta→santa, dr→doutor, etc). Garante que "Serra Dourada II" do
         // cadastro casa com "serra dourada 2" digitado pelo cliente, e
         // "Capão" casa com "capao".
-        BairroEntrega match = com.mydelivery.util.BairroNormalizer.encontrar(r.getBairrosAtendidos(), bairro);
+        BairroEntrega match = com.mydelivery.util.BairroNormalizer.encontrar(r.getBairrosAtendidos(), bairro, r.getCidade());
 
         if (match == null) {
             return ResponseEntity.ok(Map.of("atendido", false));

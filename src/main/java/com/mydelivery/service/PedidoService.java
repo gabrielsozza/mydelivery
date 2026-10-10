@@ -1495,7 +1495,7 @@ public class PedidoService {
         if (r.getBairrosAtendidos() == null || r.getBairrosAtendidos().isEmpty()) return null;
         // Mesma normalização do endpoint de consulta (PublicController.consultarTaxaPorBairro):
         // romanos↔árabicos, sem acento, abreviações comuns.
-        var bairro = com.mydelivery.util.BairroNormalizer.encontrar(r.getBairrosAtendidos(), bairroCliente);
+        var bairro = com.mydelivery.util.BairroNormalizer.encontrar(r.getBairrosAtendidos(), bairroCliente, r.getCidade());
         return bairro == null ? null : (bairro.getTaxa() != null ? bairro.getTaxa() : BigDecimal.ZERO);
     }
 

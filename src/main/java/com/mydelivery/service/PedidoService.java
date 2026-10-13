@@ -134,9 +134,14 @@ public class PedidoService {
         Restaurante restaurante = restauranteRepository.findBySlug(request.getSlug())
                 .orElseThrow(() -> new RuntimeException("Restaurante nao encontrado"));
 
-        if (Boolean.TRUE.equals(restaurante.getSomenteRetiradaAtivo())
+        java.time.LocalDate dataAtendimento = request.getAgendadoPara() == null
+                ? java.time.LocalDate.now(java.time.ZoneId.of("America/Sao_Paulo"))
+                : request.getAgendadoPara().toLocalDate();
+        if (horarioLojaService.somenteRetiradaEm(restaurante, dataAtendimento)
                 && "delivery".equalsIgnoreCase(request.getModo())) {
-            throw new RuntimeException("Hoje estamos atendendo apenas por retirada no local. Entregas estão pausadas.");
+            throw new RuntimeException(request.getAgendadoPara() == null
+                    ? "Hoje estamos atendendo apenas por retirada no local. Entregas estão pausadas."
+                    : "No dia agendado atendemos apenas por retirada no local. Entregas estão pausadas.");
         }
 
         // Validação de aceitação de pedidos:

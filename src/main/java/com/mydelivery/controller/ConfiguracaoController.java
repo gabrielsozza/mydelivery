@@ -50,6 +50,7 @@ public class ConfiguracaoController {
         var cfg = configRestauranteRepository.findByRestauranteId(r.getId()).orElse(null);
         r.setPixOnlineDisponivel(com.mydelivery.service.mercadopago.MercadoPagoDisponibilidade.pix(cfg));
         r.setCartaoOnlineDisponivel(com.mydelivery.service.mercadopago.MercadoPagoDisponibilidade.cartao(cfg));
+        r.setSomenteRetiradaAgora(horarioLojaService.somenteRetiradaAgora(r));
         // Calcula on-the-fly se está aceitando pedidos AGORA (considera cutoff
         // antes do fechamento). null = não-determinado (front trata como true).
         try {

@@ -382,6 +382,10 @@ public class Restaurante {
     @jakarta.persistence.Transient
     private Boolean aceitandoPedidos;
 
+    /** Effective public pickup-only state; the saved manual toggle remains separate. */
+    @jakarta.persistence.Transient
+    private Boolean somenteRetiradaAgora;
+
     /** Expõe como objeto JSON pro front (mais natural que string). */
     @com.fasterxml.jackson.annotation.JsonProperty("horarios")
     public Object getHorariosAsObject() {

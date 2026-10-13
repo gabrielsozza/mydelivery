@@ -181,7 +181,7 @@
         <dependency>
             <groupId>com.github.wmixvideo</groupId>
             <artifactId>nfe</artifactId>
-            <version>master-SNAPSHOT</version>
+            <version>master-8972733133-1</version>
         </dependency>
 
         <!-- ═══ CLOUDFLARE R2 (S3-compatible) ═══

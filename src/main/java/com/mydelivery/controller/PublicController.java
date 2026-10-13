@@ -38,6 +38,7 @@ public class PublicController {
     private final CategoriaRepository categoriaRepo;
     private final ProdutoRepository produtoRepo;
     private final PedidoService pedidoService;
+    private final com.mydelivery.service.HorarioLojaService horarioLojaService;
     private final ConfiguracaoRestauranteRepository configRepo;
     @org.springframework.beans.factory.annotation.Autowired
     private com.mydelivery.service.EntregaService entregaService;
@@ -63,7 +64,7 @@ public class PublicController {
                     .toList();
 
         List<String> modosPublicos = new java.util.ArrayList<>(r.getModos() == null ? List.of() : r.getModos());
-        if (Boolean.TRUE.equals(r.getSomenteRetiradaAtivo())) {
+        if (horarioLojaService.somenteRetiradaAgora(r)) {
             modosPublicos.removeIf(m -> "delivery".equalsIgnoreCase(m));
             if (!modosPublicos.contains("retirada")) modosPublicos.add("retirada");
         }
@@ -80,7 +81,7 @@ public class PublicController {
                 .pedidoMinimo(r.getPedidoMinimo())
                 .freteGratisApartirDe(r.getFreteGratisApartirDe())
                 .modos(modosPublicos)
-                .somenteRetiradaAtivo(Boolean.TRUE.equals(r.getSomenteRetiradaAtivo()))
+                .somenteRetiradaAtivo(horarioLojaService.somenteRetiradaAgora(r))
                 .pagamentos(r.getPagamentos())
                 // PIX antecipado — só expõe a chave se a flag estiver ativa (evita vazar info sem motivo)
                 .exigirPixAntecipado(Boolean.TRUE.equals(r.getExigirPixAntecipado()))

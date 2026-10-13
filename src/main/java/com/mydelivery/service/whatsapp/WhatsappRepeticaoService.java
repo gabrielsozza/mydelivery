@@ -276,6 +276,10 @@ public class WhatsappRepeticaoService {
             } catch (RuntimeException e) {
                 log.warn("[Bot:Repeticao] criação falhou para restaurante={} telefone={}***: {}",
                         restaurante.getId(), telefone.substring(0, Math.min(5, telefone.length())), e.getMessage());
+                if (e.getMessage() != null && e.getMessage().contains("apenas por retirada")) {
+                    return "Hoje estamos atendendo apenas por retirada no local. Entregas estão pausadas."
+                            + "\n\nFaça seu pedido para retirada aqui: " + linkCardapio;
+                }
                 return "Não consegui confirmar esse pedido porque os dados da loja mudaram. Confira e finalize pelo cardápio:\n" + linkCardapio;
             }
         }

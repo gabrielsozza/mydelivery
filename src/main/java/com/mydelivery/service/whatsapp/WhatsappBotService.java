@@ -48,6 +48,8 @@ public class WhatsappBotService {
     private final ConfiguracaoRestauranteRepository configRepo;
     private final EvolutionProperties props;
     @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.mydelivery.service.HorarioLojaService horarioLojaService = new com.mydelivery.service.HorarioLojaService();
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
     private WhatsappIncidenteService incidenteService;
     /** Pra consulta de status de pedido por telefone do cliente. Opcional
      *  pra não quebrar testes legados. */
@@ -476,7 +478,7 @@ public class WhatsappBotService {
             }
         }
 
-        if (Boolean.TRUE.equals(r.getSomenteRetiradaAtivo())
+        if (horarioLojaService.somenteRetiradaAgora(r)
                 && contemAlguma(t, "delivery", "entrega", "entregam", "frete", "taxa de entrega",
                         "bairro", "bairros", "regiao", "região", "tempo de entrega")) {
             st.ultimaIntencao = "somente_retirada";
@@ -1164,7 +1166,7 @@ public class WhatsappBotService {
     }
 
     private String acrescentarAvisoRetiradaNoLink(Restaurante r, String resposta) {
-        if (r == null || resposta == null || !Boolean.TRUE.equals(r.getSomenteRetiradaAtivo())
+        if (r == null || resposta == null || !horarioLojaService.somenteRetiradaAgora(r)
                 || !resposta.contains(montarLinkCardapio(r))
                 || resposta.contains("Hoje estamos atendendo apenas por retirada")) {
             return resposta;

@@ -40,6 +40,20 @@ public class HorarioLojaService {
     private static final ZoneId TZ = ZoneId.of("America/Sao_Paulo");
     private static final ObjectMapper JSON = new ObjectMapper();
 
+    /** Manual pause or the pickup-only rule for the current São Paulo calendar day. */
+    public boolean somenteRetiradaAgora(Restaurante r) {
+        return somenteRetiradaEm(r, LocalDate.now(TZ));
+    }
+
+    /** Also used for orders scheduled on a future day. */
+    public boolean somenteRetiradaEm(Restaurante r, LocalDate data) {
+        if (r == null) return false;
+        if (Boolean.TRUE.equals(r.getSomenteRetiradaAtivo())) return true;
+        if (data == null) return false;
+        Map<String, Object> dia = horarioDoDia(r, data);
+        return dia != null && Boolean.TRUE.equals(dia.get("somenteRetirada"));
+    }
+
     /** Um intervalo de funcionamento (uma "janela") no dia. */
     public static class Intervalo {
         public final LocalTime abertura;

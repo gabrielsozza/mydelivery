@@ -12,6 +12,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.*;
 @WebMvcTest(controllers=HealthController.class,properties="app.cors.allowed-origins=https://mydeliveryfood.com.br")
+@org.springframework.test.context.ContextConfiguration(classes=HealthController.class)
 @Import({SecurityConfig.class,JwtAuthenticationFilter.class,LoginRateLimitFilter.class})
 class SessaoHttpTest {
     @Autowired MockMvc mvc;
@@ -19,6 +20,8 @@ class SessaoHttpTest {
     @MockitoBean RestauranteRepository lojas;
     @MockitoBean MembroEquipeRepository membros;
     @Test void sessaoAusenteOuExpiradaResponde401() throws Exception {
+        mvc.perform(get("/api/auth/me")).andExpect(status().isUnauthorized());
+        mvc.perform(get("/api/auth/me").header("Authorization","Bearer expired")).andExpect(status().isUnauthorized());
         mvc.perform(get("/api/restaurante/qualquer")).andExpect(status().isUnauthorized());
         mvc.perform(get("/api/restaurante/qualquer").header("Authorization","Bearer expired")).andExpect(status().isUnauthorized());
     }

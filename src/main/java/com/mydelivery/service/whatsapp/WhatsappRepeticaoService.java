@@ -46,6 +46,8 @@ import lombok.extern.slf4j.Slf4j;
 @RequiredArgsConstructor
 @Slf4j
 public class WhatsappRepeticaoService {
+    private static final com.mydelivery.service.HorarioLojaService HORARIO_LOJA =
+            new com.mydelivery.service.HorarioLojaService();
     private static final int EXPIRACAO_MINUTOS = 30;
     private static final int LINK_EXPIRACAO_HORAS = 24;
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
@@ -100,6 +102,16 @@ public class WhatsappRepeticaoService {
                 return "Esse pedido já foi registrado como *#" + id + "*. Acompanhe em:\n"
                         + "https://mydeliveryfood.com.br/acompanhar.html?id=" + id;
             return null;
+        }
+        if (conversa.getEstado() != WhatsappRepeticaoConversa.Estado.ENCAMINHADO_CARDAPIO
+                && conversa.getEstado() != WhatsappRepeticaoConversa.Estado.RECUSADO
+                && !pediuHumano(normalizar(texto))
+                && conversa.getPedidoReferencia() != null
+                && conversa.getPedidoReferencia().getTipo() == Pedido.Tipo.DELIVERY
+                && HORARIO_LOJA.somenteRetiradaAgora(restaurante)) {
+            conversa.setEstado(WhatsappRepeticaoConversa.Estado.ENCAMINHADO_CARDAPIO);
+            return "Hoje estamos atendendo apenas por retirada no local. Entregas estão pausadas."
+                    + "\n\nFaça seu pedido para retirada aqui: " + linkCardapio;
         }
         String t = normalizar(texto);
         if (conversa.getEstado() == WhatsappRepeticaoConversa.Estado.RECUSADO
